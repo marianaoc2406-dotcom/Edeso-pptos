@@ -6622,14 +6622,72 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
 // ═══════════════════════════════════════════════════════
 // TABOBSVIEW — Presupuesto con 💬 por línea (visor + editor obs mode)
 // ═══════════════════════════════════════════════════════
-function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, openKey, setOpenKey, textos, setTextos, replyTo, setReplyTo}) {
-  const lk = (c,i) => c+"__"+i;
-  const k = lk(cid,idx);
+// ── Burbuja individual de mensaje (top-level para evitar remount) ─────────
+function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, setReplyTo, replyTo, textos, setTextos, enviarRespuesta, fmtF}) {
+  const esMio = String(msg.user_id) === String(session?.user?.id);
+  const reps  = allReps.filter(r=>r.parent_id===msg.id);
+  const rKey  = "reply__"+msg.id;
 
-  const obsDeLinea = allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
-  const repsDe     = oid => allObs.filter(o=>o.parent_id===oid);
-  const total      = allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
-  const isOpen     = openKey===k;
+  return React.createElement("div",{style:{marginLeft:depth*20}},
+    React.createElement("div",{style:{
+      background:esMio?(esRespuesta?"#F0FDF4":"#EFF6FF"):(esRespuesta?"#F8FAFC":"#F9FAFB"),
+      border:`1px solid ${esMio?(esRespuesta?"#BBF7D0":"#BFDBFE"):(esRespuesta?"#E5E7EB":"#E5E7EB")}`,
+      borderRadius:8,padding:"10px 14px"
+    }},
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4,flexWrap:"wrap",gap:4}},
+        React.createElement("span",{style:{fontWeight:700,fontSize:esRespuesta?11:12,color:"#374151"}},msg.user_nombre||"—"),
+        React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+          React.createElement("span",{style:{fontSize:10,color:"#9CA3AF"}},fmtF(msg.created_at)),
+          esMio&&React.createElement("button",{
+            onClick:()=>{ if(window.confirm("¿Eliminar esta observación?")) eliminar(msg.id); },
+            title:"Eliminar",
+            style:{background:"none",border:"none",fontSize:12,color:"#EF4444",cursor:"pointer",padding:"0 2px",lineHeight:1}
+          },"🗑")
+        )
+      ),
+      React.createElement("div",{style:{fontSize:esRespuesta?12:13,lineHeight:1.5,marginBottom:6,color:"#111827"}},msg.texto),
+      React.createElement("button",{
+        onClick:()=>setReplyTo(r=>({...r,[rKey]:!r[rKey]})),
+        style:{background:"none",border:"none",fontSize:11,color:"#6B7280",cursor:"pointer",padding:0,fontWeight:600}
+      },"↩ Responder"+(reps.length?" · "+reps.length:""))
+    ),
+    reps.length>0&&React.createElement("div",{style:{marginLeft:20,marginTop:6,display:"flex",flexDirection:"column",gap:6}},
+      reps.map(r=>React.createElement(BurbujaMensaje,{
+        key:r.id,msg:r,depth:0,esRespuesta:true,
+        allReps,session,eliminar,setReplyTo,replyTo,textos,setTextos,enviarRespuesta,fmtF
+      }))
+    ),
+    replyTo[rKey]&&React.createElement("div",{style:{marginLeft:20,marginTop:6,display:"flex",gap:6}},
+      React.createElement("textarea",{
+        style:{flex:1,padding:"8px 10px",border:"1px solid #FDE68A",borderRadius:6,
+          fontSize:12,outline:"none",resize:"vertical",fontFamily:"var(--sans)",minHeight:60},
+        placeholder:"Responder a "+msg.user_nombre+"...",
+        value:textos[rKey]||"",rows:3,autoFocus:true,
+        onChange:e=>setTextos(t=>({...t,[rKey]:e.target.value}))
+      }),
+      React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:4,alignSelf:"flex-end"}},
+        React.createElement("button",{
+          onClick:()=>enviarRespuesta(rKey,msg.id),
+          style:{background:"#B91C1C",color:"#fff",border:"none",borderRadius:6,
+            padding:"0 14px",fontWeight:700,cursor:"pointer",height:36,fontSize:13}
+        },"↩"),
+        React.createElement("button",{
+          onClick:()=>setReplyTo(r=>({...r,[rKey]:false})),
+          style:{background:"#F3F4F6",color:"#6B7280",border:"none",borderRadius:6,
+            padding:"0 14px",fontWeight:700,cursor:"pointer",height:36,fontSize:11}
+        },"×")
+      )
+    )
+  );
+}
+
+function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, openKey, setOpenKey, textos, setTextos, replyTo, setReplyTo}) {
+  const lk    = (c,i) => c+"__"+i;
+  const k     = lk(cid,idx);
+  const raices= allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
+  const allReps=allObs.filter(o=>o.parent_id!=null);
+  const total = allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
+  const isOpen= openKey===k;
 
   const fmtF = iso => {
     const d=new Date(iso);
@@ -6637,65 +6695,9 @@ function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, o
            +" · "+d.toLocaleTimeString("es-CO",{hour:"2-digit",minute:"2-digit"});
   };
 
-  const BurbujaMensaje = ({msg, depth=0, esRespuesta=false}) => {
-    const esMio = msg.user_id===session?.user?.id;
-    const reps  = repsDe(msg.id);
-    const rKey  = k+"_r"+msg.id;
-    return React.createElement("div",{style:{marginLeft:depth*20}},
-      React.createElement("div",{style:{
-        background:esMio?(esRespuesta?"#F0FDF4":"#EFF6FF"):(esRespuesta?"#F8FAFC":"#F9FAFB"),
-        border:`1px solid ${esMio?(esRespuesta?"#BBF7D0":"#BFDBFE"):(esRespuesta?"#E5E7EB":"#E5E7EB")}`,
-        borderRadius:8,padding:"10px 14px",position:"relative"
-      }},
-        // Header: nombre + fecha + eliminar
-        React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4,flexWrap:"wrap",gap:4}},
-          React.createElement("span",{style:{fontWeight:700,fontSize:esRespuesta?11:12}},msg.user_nombre||"—"),
-          React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
-            React.createElement("span",{style:{fontSize:10,color:"#9CA3AF"}},fmtF(msg.created_at)),
-            esMio&&React.createElement("button",{
-              onClick:()=>eliminar(msg.id),
-              title:"Eliminar",
-              style:{background:"none",border:"none",fontSize:12,color:"#EF4444",
-                cursor:"pointer",padding:"0 2px",lineHeight:1}
-            },"🗑")
-          )
-        ),
-        React.createElement("div",{style:{fontSize:esRespuesta?12:13,lineHeight:1.5,marginBottom:6}},msg.texto),
-        // Acciones
-        React.createElement("div",{style:{display:"flex",gap:10}},
-          React.createElement("button",{
-            onClick:()=>setReplyTo(r=>({...r,[rKey]:!r[rKey]})),
-            style:{background:"none",border:"none",fontSize:11,color:"#6B7280",cursor:"pointer",padding:0,fontWeight:600}
-          },"↩ Responder"+(reps.length?" · "+reps.length:""))
-        )
-      ),
-      // Respuestas anidadas (un nivel más)
-      reps.length>0&&React.createElement("div",{style:{marginLeft:20,marginTop:6,display:"flex",flexDirection:"column",gap:6}},
-        reps.map(r=>React.createElement(BurbujaMensaje,{key:r.id,msg:r,depth:0,esRespuesta:true}))
-      ),
-      // Input respuesta
-      replyTo[rKey]&&React.createElement("div",{style:{marginLeft:20,marginTop:6,display:"flex",gap:6}},
-        React.createElement("textarea",{
-          style:{flex:1,padding:"8px 10px",border:"1px solid #FDE68A",borderRadius:6,
-            fontSize:12,outline:"none",resize:"vertical",fontFamily:"var(--sans)",minHeight:60},
-          placeholder:"Responder a "+msg.user_nombre+"...",
-          value:textos[rKey]||"",rows:3,autoFocus:true,
-          onChange:e=>setTextos(t=>({...t,[rKey]:e.target.value}))
-        }),
-        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:4,alignSelf:"flex-end"}},
-          React.createElement("button",{
-            onClick:()=>{enviar(cid,idx,desc,tabLabel,msg.id,rKey);},
-            style:{background:"#B91C1C",color:"#fff",border:"none",borderRadius:6,
-              padding:"0 14px",fontWeight:700,cursor:"pointer",height:36,fontSize:13}
-          },"↩"),
-          React.createElement("button",{
-            onClick:()=>setReplyTo(r=>({...r,[rKey]:false})),
-            style:{background:"#F3F4F6",color:"#6B7280",border:"none",borderRadius:6,
-              padding:"0 14px",fontWeight:700,cursor:"pointer",height:36,fontSize:11}
-          },"×")
-        )
-      )
-    );
+  const enviarRespuesta = (rKey, parentId) => {
+    const txt=(textos[rKey]||"").trim(); if(!txt) return;
+    enviar(cid,idx,desc,tabLabel,parentId,rKey);
   };
 
   return React.createElement("div",{style:{padding:"6px 12px 10px 24px",borderTop:"1px solid #F3F4F6"}},
@@ -6706,12 +6708,15 @@ function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, o
         border:`1px solid ${total>0?"#FDE68A":"#E5E7EB"}`,
         borderRadius:6,padding:"3px 12px",fontSize:11,cursor:"pointer",
         color:total>0?"#92400E":"#6B7280",fontWeight:600,
-        display:"inline-flex",alignItems:"center",gap:5,
+        display:"inline-flex",alignItems:"center",gap:5
       }
     },"💬 "+(total>0?total+" comentario"+(total>1?"s":""):"Comentar")),
 
     isOpen&&React.createElement("div",{style:{marginTop:10,display:"flex",flexDirection:"column",gap:10}},
-      obsDeLinea.map(o=>React.createElement(BurbujaMensaje,{key:o.id,msg:o,depth:0})),
+      raices.map(o=>React.createElement(BurbujaMensaje,{
+        key:o.id,msg:o,depth:0,esRespuesta:false,
+        allReps,session,eliminar,setReplyTo,replyTo,textos,setTextos,enviarRespuesta,fmtF
+      })),
       React.createElement("div",{style:{display:"flex",gap:6}},
         React.createElement("textarea",{
           style:{flex:1,padding:"8px 10px",border:"1px solid #E5E7EB",borderRadius:6,
