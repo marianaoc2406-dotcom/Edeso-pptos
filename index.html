@@ -6812,19 +6812,13 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
   const eliminar = async(obsId) => {
     const id = Number(obsId);
     if(!id) return;
-    // Optimistic update: remove from UI immediately
+    // Optimistic: quitar de UI de inmediato
     setAllObs(prev=>prev.filter(o=>Number(o.id)!==id && Number(o.parent_id)!==id));
-    // Delete replies first, then the observation
-    await _sb.from("observaciones")
-      .delete()
-      .eq("proyecto_id", proyecto.id)
-      .eq("parent_id", id);
-    await _sb.from("observaciones")
-      .delete()
-      .eq("proyecto_id", proyecto.id)
-      .eq("id", id);
-    // Refresh from server after a short delay
-    setTimeout(()=>{ if(obsViewRef.current) obsViewRef.current(); }, 800);
+    // Borrar respuestas primero (por FK), luego el comentario raíz
+    await _sb.from("observaciones").delete().eq("parent_id", id);
+    await _sb.from("observaciones").delete().eq("id", id);
+    // Refrescar desde servidor
+    setTimeout(()=>{ if(obsViewRef.current) obsViewRef.current(); }, 600);
   };
 
   const fmtF = iso => {
