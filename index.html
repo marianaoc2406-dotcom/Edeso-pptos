@@ -8345,6 +8345,12 @@ function ModuloProyectos({
   // ── DETALLE ──
   if (vista === "detalle" && pActivo) {
     // Modo observaciones: visor siempre, editor/admin cuando lo activa
+    if (showExportModal) return React.createElement(React.Fragment, null,
+      React.createElement(ModalExportExcel, {
+        proyecto: pActivo, apus, recursos,
+        onClose: () => setShowExportModal(false)
+      })
+    );
     if (obsMode || esVisor) return React.createElement(TabObsView, {
       proyecto: pActivo, apus, recursos, perfil, session,
       esVisor,
@@ -8896,6 +8902,7 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
         isOpen&&React.createElement("div",null,
           porSeccion.map(({sec,ls,sub})=>{
             const sc=SEC_COLORS[sec.id]||{bg:"#F3F4F6",fg:"#374151",border:"#E5E7EB"};
+            const moTotal=sec.id==="maquinaria"?calcTotalMO(apuObj.lineas||[],recursos):0;
             return React.createElement("div",{key:sec.id},
               React.createElement("div",{style:{
                 background:sc.bg,padding:"8px 20px",
