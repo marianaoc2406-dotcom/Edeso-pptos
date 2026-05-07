@@ -2820,6 +2820,27 @@ function TabAU({
       itemId: item.id
     });
   };
+  const dbSaveAUItem = (item, subsecId) => {
+    if(!proyectoId||!session) return;
+    _sb.from("items_au").upsert({
+      id:String(item.id), proyecto_id:String(proyectoId),
+      subseccion_id:subsecId,
+      descripcion:item.descripcion||"", tipo:item.tipo||"",
+      cantidad:Number(item.cantidad)||0, dedicacion:Number(item.dedicacion)||0,
+      valor_mes_base:Number(item.valorMesBase)||0, meses:Number(item.meses)||0,
+      valor_fijo:Number(item.valorFijo)||0, porcentaje:Number(item.porcentaje)||0,
+      valor_unitario:Number(item.valorUnitario)||0,
+      updated_at:new Date().toISOString(),
+      updated_by:session.user.id, updated_by_email:session.user.email,
+      updated_by_name:perfil?.nombre||session.user.email
+    }).then(({error})=>{if(error)console.error("saveAUItem:",error);});
+  };
+  const dbDelAUItem = (itemId) => {
+    if(!proyectoId) return;
+    _sb.from("items_au").delete().eq("id",String(itemId)).eq("proyecto_id",String(proyectoId))
+      .then(({error})=>{if(error)console.error("delAUItem:",error);});
+  };
+
   const guardarItem = () => {
     if (!(formItem.descripcion || "").trim()) return;
     setAu(prev => {
@@ -2843,9 +2864,12 @@ function TabAU({
         secciones
       };
     });
+    dbSaveAUItem(formItem, modalItem.subsecId);
     setModalItem(null);
   };
-  const removeItem = (subsecId, itemId) => setAu(prev => ({
+  const removeItem = (subsecId, itemId) => {
+    dbDelAUItem(itemId);
+    setAu(prev => ({
     ...prev,
     secciones: prev.secciones.map(sec => ({
       ...sec,
@@ -2855,6 +2879,36 @@ function TabAU({
       } : sub)
     }))
   }));
+  };
+  // Realtime sync for AU items
+  useEffect(()=>{
+    if(!proyectoId||!session) return;
+    const pid=String(proyectoId), myEmail=session.user.email;
+    const ch=_sb.channel("au_items_"+pid)
+      .on("postgres_changes",{event:"*",schema:"public",table:"items_au"},p=>{
+        if((p.new?.updated_by_email||p.old?.updated_by_email)===myEmail) return;
+        const row=p.eventType==="DELETE"?p.old:p.new;
+        if(String(row.proyecto_id)!==pid) return;
+        setAu(prev=>{
+          const secs=(prev.secciones||[]).map(sec=>({...sec,
+            subsecciones:(sec.subsecciones||[]).map(sub=>{
+              if(sub.id!==row.subseccion_id) return sub;
+              if(p.eventType==="DELETE") return{...sub,items:(sub.items||[]).filter(i=>String(i.id)!==String(row.id))};
+              const item={id:row.id,descripcion:row.descripcion,tipo:row.tipo,
+                cantidad:Number(row.cantidad),dedicacion:Number(row.dedicacion),
+                valorMesBase:Number(row.valor_mes_base),meses:Number(row.meses),
+                valorFijo:Number(row.valor_fijo),porcentaje:Number(row.porcentaje),
+                valorUnitario:Number(row.valor_unitario)};
+              const existe=(sub.items||[]).find(i=>String(i.id)===String(row.id));
+              return{...sub,items:existe?(sub.items||[]).map(i=>String(i.id)===String(row.id)?{...i,...item}:i):[...(sub.items||[]),item]};
+            })
+          }));
+          return{...prev,secciones:secs};
+        });
+      }).subscribe();
+    return()=>_sb.removeChannel(ch);
+  },[proyectoId]);
+
   const totalAU = calcAUTotal(au, cd);
   const pctAU = cd > 0 ? totalAU / cd * 100 : 0;
   // Calcular personal11 para la fila ×1.45 \u2014 disponible en todo el render
@@ -3747,8 +3801,52 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
     setShowPlant(false);
   };
 
+  const dbIntervUser=()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
+  const dbSaveInterv=(item,capId,tipo)=>{
+    if(!proyecto?.id||!session) return;
+    _sb.from("items_interv").upsert({
+      id:String(item.id),proyecto_id:String(proyecto.id),
+      storage_key:storageKey,capitulo_id:String(capId),
+      descripcion:item.descripcion||"",unidad:item.unidad||"",tipo:tipo||"",
+      cantidad:Number(item.cantidad)||0,dedicacion:Number(item.dedicacion)||0,
+      valor_mes_base:Number(item.valorMesBase)||0,meses:Number(item.meses)||0,
+      valor_fijo:Number(item.valorFijo)||0,fm:Number(data.fm)||2,
+      ...dbIntervUser()
+    }).then(({error})=>{if(error)console.error("saveInterv:",error);});
+  };
+  const dbDelInterv=(itemId)=>{
+    if(!proyecto?.id) return;
+    _sb.from("items_interv").delete().eq("id",String(itemId)).eq("proyecto_id",String(proyecto.id))
+      .then(({error})=>{if(error)console.error("delInterv:",error);});
+  };
+
+  useEffect(()=>{
+    if(!proyecto?.id||!session) return;
+    const pid=String(proyecto.id), myEmail=session.user.email;
+    const ch=_sb.channel("interv_items_"+pid+"_"+storageKey)
+      .on("postgres_changes",{event:"*",schema:"public",table:"items_interv"},p=>{
+        if((p.new?.updated_by_email||p.old?.updated_by_email)===myEmail) return;
+        const row=p.eventType==="DELETE"?p.old:p.new;
+        if(String(row.proyecto_id)!==pid||row.storage_key!==storageKey) return;
+        const item={id:row.id,descripcion:row.descripcion,unidad:row.unidad,
+          cantidad:Number(row.cantidad),dedicacion:Number(row.dedicacion),
+          valorMesBase:Number(row.valor_mes_base),meses:Number(row.meses),valorFijo:Number(row.valor_fijo)};
+        setData(prev=>{
+          const caps=(prev.capitulos||[]).map(cap=>{
+            if(String(cap.id)!==String(row.capitulo_id)) return cap;
+            if(p.eventType==="DELETE") return{...cap,items:(cap.items||[]).filter(i=>String(i.id)!==String(row.id))};
+            const existe=(cap.items||[]).find(i=>String(i.id)===String(row.id));
+            return{...cap,items:existe?(cap.items||[]).map(i=>String(i.id)===String(row.id)?{...i,...item}:i):[...(cap.items||[]),item]};
+          });
+          return{...prev,capitulos:caps};
+        });
+      }).subscribe();
+    return()=>_sb.removeChannel(ch);
+  },[proyecto?.id,storageKey]);
+
   const guardarItem = () => {
     if (!(formItem.descripcion||"").trim()) return;
+    const cap = data.capitulos.find(c=>c.id===modalSec.capId);
     setData(prev => ({
       ...prev,
       capitulos: prev.capitulos.map(cap => {
@@ -3759,10 +3857,12 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
         return { ...cap, items };
       })
     }));
+    if(cap) dbSaveInterv(formItem, modalSec.capId, cap.tipo);
     setModalSec(null);
   };
 
   const eliminarItem = (capId, itemId) => {
+    dbDelInterv(itemId);
     setData(prev => ({
       ...prev,
       capitulos: prev.capitulos.map(c => c.id!==capId ? c : { ...c, items: c.items.filter(i=>i.id!==itemId) })
@@ -4730,9 +4830,46 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
       }
     }
   };
+  const dbPolUser = ()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
+  const dbSavePol = (pol,plazo) => {
+    if(!proyecto?.id||!session) return;
+    _sb.from("items_polizas").upsert({
+      id:String(pol.id),proyecto_id:String(proyecto.id),componente_id:cid,
+      nombre:pol.nombre||"",pct:Number(pol.pct)||0,pct_prima:Number(pol.pctPrima)||0,
+      meses_extra:Number(pol.mesesExtra)||0,plazo_contractual:Number(plazo||saved.plazoContractual)||0,
+      ...dbPolUser()
+    }).then(({error})=>{if(error)console.error("savePol:",error);});
+  };
+  const dbDelPol = (polId) => {
+    if(!proyecto?.id) return;
+    _sb.from("items_polizas").delete().eq("id",String(polId)).eq("proyecto_id",String(proyecto.id))
+      .then(({error})=>{if(error)console.error("delPol:",error);});
+  };
+
+  useEffect(()=>{
+    if(!proyecto?.id||!session) return;
+    const pid=String(proyecto.id), myEmail=session.user.email;
+    const ch=_sb.channel("pol_items_"+pid+"_"+cid)
+      .on("postgres_changes",{event:"*",schema:"public",table:"items_polizas"},p=>{
+        if((p.new?.updated_by_email||p.old?.updated_by_email)===myEmail) return;
+        const row=p.eventType==="DELETE"?p.old:p.new;
+        if(String(row.proyecto_id)!==pid||row.componente_id!==cid) return;
+        const pol={id:row.id,nombre:row.nombre,pct:Number(row.pct),pctPrima:Number(row.pct_prima),mesesExtra:Number(row.meses_extra)};
+        if(p.eventType==="DELETE"){
+          updateSaved({polizasActivas:(saved.polizasActivas||[]).filter(x=>String(x.id)!==String(row.id))});
+        } else {
+          const existe=(saved.polizasActivas||[]).find(x=>String(x.id)===String(row.id));
+          updateSaved({polizasActivas:existe?(saved.polizasActivas||[]).map(x=>String(x.id)===String(row.id)?{...x,...pol}:x):[...(saved.polizasActivas||[]),pol]});
+        }
+      }).subscribe();
+    return()=>_sb.removeChannel(ch);
+  },[proyecto?.id,cid]);
+
   const updatePoliza = (idx, patch) => {
     const pol = saved.polizasActivas.map((p, i) => i === idx ? { ...p, ...patch } : p);
     updateSaved({ polizasActivas: pol });
+    const updated = pol[idx];
+    if(updated) dbSavePol(updated);
   };
   const addPoliza = (catItem) => {
     const nueva = {
@@ -4744,9 +4881,12 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
       mesesExtra: catItem.mesesExtraDef || 0,
     };
     updateSaved({ polizasActivas: [...(saved.polizasActivas || []), nueva] });
+    dbSavePol(nueva);
     setShowAdd(false);
   };
   const removePoliza = (idx) => {
+    const pol = saved.polizasActivas[idx];
+    if(pol) dbDelPol(pol.id);
     updateSaved({ polizasActivas: saved.polizasActivas.filter((_, i) => i !== idx) });
   };
 
@@ -5213,12 +5353,48 @@ function TabEstampillas({ proyecto, setEstampillas, setAU, totalProyecto, readOn
     const act = saved.activas.map((e, i) => i === idx ? { ...e, ...patch } : e);
     updateSaved({ activas: act });
   };
+  const dbEstUser=()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
+  const dbSaveEst=(est)=>{
+    if(!proyecto?.id||!session) return;
+    _sb.from("items_estampillas").upsert({
+      id:String(est.id),proyecto_id:String(proyecto.id),
+      nombre:est.nombre||"",pct:Number(est.pct)||0,...dbEstUser()
+    }).then(({error})=>{if(error)console.error("saveEst:",error);});
+  };
+  const dbDelEst=(estId)=>{
+    if(!proyecto?.id) return;
+    _sb.from("items_estampillas").delete().eq("id",String(estId)).eq("proyecto_id",String(proyecto.id))
+      .then(({error})=>{if(error)console.error("delEst:",error);});
+  };
+
+  useEffect(()=>{
+    if(!proyecto?.id||!session) return;
+    const pid=String(proyecto.id), myEmail=session.user.email;
+    const ch=_sb.channel("est_items_"+pid)
+      .on("postgres_changes",{event:"*",schema:"public",table:"items_estampillas"},p=>{
+        if((p.new?.updated_by_email||p.old?.updated_by_email)===myEmail) return;
+        const row=p.eventType==="DELETE"?p.old:p.new;
+        if(String(row.proyecto_id)!==pid) return;
+        const est={id:row.id,nombre:row.nombre,pct:Number(row.pct)};
+        if(p.eventType==="DELETE"){
+          updateSaved({activas:(saved.activas||[]).filter(x=>String(x.id)!==String(row.id))});
+        } else {
+          const existe=(saved.activas||[]).find(x=>String(x.id)===String(row.id));
+          updateSaved({activas:existe?(saved.activas||[]).map(x=>String(x.id)===String(row.id)?{...x,...est}:x):[...(saved.activas||[]),est]});
+        }
+      }).subscribe();
+    return()=>_sb.removeChannel(ch);
+  },[proyecto?.id]);
+
   const addEst = (catItem) => {
     const nueva = { id: Date.now(), catalogoId: catItem.id, nombre: catItem.nombre, pct: catItem.pctDef || 0 };
     updateSaved({ activas: [...(saved.activas || []), nueva] });
+    dbSaveEst(nueva);
     setShowAdd(false);
   };
   const removeEst = (idx) => {
+    const est = saved.activas[idx];
+    if(est) dbDelEst(est.id);
     updateSaved({ activas: saved.activas.filter((_, i) => i !== idx) });
   };
 
@@ -7108,6 +7284,109 @@ function ModuloProyectos({
   const [obsMode, setObsMode] = useState(false);
   const [showApuModal, setShowApuModal] = useState(null);
 
+  // ── Sincronización por fila (caps e items) ───────────────────────────────
+  const dbUser = () => ({
+    updated_at:       new Date().toISOString(),
+    updated_by:       session?.user?.id,
+    updated_by_email: session?.user?.email,
+    updated_by_name:  perfil?.nombre || session?.user?.email,
+  });
+
+  const dbSaveCap = (cap, proyId) => {
+    _sb.from("capitulos_presupuesto").upsert({
+      id: String(cap.id), proyecto_id: String(proyId||pActivo?.id),
+      numero: cap.numero, nombre: cap.nombre,
+      tipo: cap.tipo||"obra", orden: cap.orden||0,
+      ...dbUser()
+    }).then(({error})=>{ if(error) console.error("saveCap:",error); });
+  };
+
+  const dbDelCap = (capId, proyId) => {
+    const pid = String(proyId||pActivo?.id);
+    _sb.from("items_presupuesto").delete()
+      .eq("proyecto_id",pid).eq("capitulo_id",String(capId))
+      .then(()=>_sb.from("capitulos_presupuesto").delete()
+        .eq("proyecto_id",pid).eq("id",String(capId))
+        .then(({error})=>{ if(error) console.error("delCap:",error); })
+      );
+  };
+
+  const dbSaveItem = (item, capId, capNumero, proyId) => {
+    _sb.from("items_presupuesto").upsert({
+      id: String(item.id), proyecto_id: String(proyId||pActivo?.id),
+      capitulo_id: String(capId), numero_cap: capNumero,
+      apu_id: item.apuId ? String(item.apuId) : null,
+      descripcion: item.descripcion||"",
+      unidad: item.unidad||"",
+      cantidad: item.cantidad||0,
+      orden_item: item.orden||0,
+      ...dbUser()
+    }).then(({error})=>{ if(error) console.error("saveItem:",error); });
+  };
+
+  const dbDelItem = (itemId, proyId) => {
+    _sb.from("items_presupuesto").delete()
+      .eq("proyecto_id",String(proyId||pActivo?.id))
+      .eq("id",String(itemId))
+      .then(({error})=>{ if(error) console.error("delItem:",error); });
+  };
+
+  // Merge cambio externo de cap/item al estado local
+  const mergeCapExterno = React.useCallback((event, row) => {
+    setPActivo(p => {
+      if(!p || String(p.id)!==String(row.proyecto_id)) return p;
+      if(event==="DELETE") {
+        return {...p, capitulos: p.capitulos.filter(c=>String(c.id)!==String(row.id))};
+      }
+      const existe = p.capitulos.find(c=>String(c.id)===String(row.id));
+      if(existe) {
+        return {...p, capitulos: p.capitulos.map(c=>String(c.id)===String(row.id)
+          ? {...c, numero:row.numero, nombre:row.nombre, tipo:row.tipo} : c)};
+      }
+      return {...p, capitulos: [...p.capitulos,
+        {id:row.id, numero:row.numero, nombre:row.nombre, tipo:row.tipo||"obra", items:[]}]};
+    });
+  },[]);
+
+  const mergeItemExterno = React.useCallback((event, row) => {
+    setPActivo(p => {
+      if(!p || String(p.id)!==String(row.proyecto_id)) return p;
+      return {...p, capitulos: p.capitulos.map(cap => {
+        if(String(cap.id)!==String(row.capitulo_id)) return cap;
+        if(event==="DELETE") {
+          return {...cap, items: cap.items.filter(i=>String(i.id)!==String(row.id))};
+        }
+        const existe = cap.items.find(i=>String(i.id)===String(row.id));
+        const newItem = {
+          id:row.id, apuId:row.apu_id,
+          descripcion:row.descripcion||"",
+          unidad:row.unidad||"",
+          cantidad:Number(row.cantidad)||0,
+        };
+        if(existe) {
+          return {...cap, items: cap.items.map(i=>String(i.id)===String(row.id)?{...i,...newItem}:i)};
+        }
+        return {...cap, items: [...cap.items, newItem]};
+      })};
+    });
+  },[]);
+
+  // Suscripción a cambios de caps e items del proyecto activo
+  useEffect(()=>{
+    if(!pActivo?.id || vista!=="editor") return;
+    const pid = String(pActivo.id);
+    const myEmail = session?.user?.email;
+    const ch = _sb.channel("caps_items_"+pid)
+      .on("postgres_changes",{event:"*",schema:"public",table:"capitulos_presupuesto"},
+        p=>{ if(p.new?.updated_by_email===myEmail||p.old?.updated_by_email===myEmail) return;
+             mergeCapExterno(p.eventType, p.eventType==="DELETE"?p.old:p.new); })
+      .on("postgres_changes",{event:"*",schema:"public",table:"items_presupuesto"},
+        p=>{ if(p.new?.updated_by_email===myEmail||p.old?.updated_by_email===myEmail) return;
+             mergeItemExterno(p.eventType, p.eventType==="DELETE"?p.old:p.new); })
+      .subscribe();
+    return()=>_sb.removeChannel(ch);
+  },[pActivo?.id, vista]);
+
   // ── Auto-guardado por sección ─────────────────────────────────────────────
   const prevPActivoRef = React.useRef(null);
   const secTimers      = React.useRef({});
@@ -7253,84 +7532,44 @@ function ModuloProyectos({
   const addCap = () => {
     const n = pActivo.capitulos.length + 1;
     const comp = pActivo.componentes[0] || "obra";
-    setPActivo(p => ({
-      ...p,
-      capitulos: [...p.capitulos, {
-        id: Date.now(),
-        numero: String(n),
-        nombre: "NUEVO CAPÍTULO",
-        tipo: comp,
-        items: []
-      }]
-    }));
+    const newCap = { id: Date.now(), numero: String(n), nombre: "NUEVO CAPÍTULO", tipo: comp, orden: n, items: [] };
+    setPActivo(p => ({ ...p, capitulos: [...p.capitulos, newCap] }));
+    dbSaveCap(newCap, pActivo.id);
   };
-  const delCap = id => setPActivo(p => ({
-    ...p,
-    capitulos: p.capitulos.filter(c => c.id !== id)
-  }));
-  const updCap = (id, campo, val) => setPActivo(p => ({
-    ...p,
-    capitulos: p.capitulos.map(c => c.id === id ? {
-      ...c,
-      [campo]: val
-    } : c)
-  }));
+  const delCap = id => {
+    setPActivo(p => ({ ...p, capitulos: p.capitulos.filter(c => c.id !== id) }));
+    dbDelCap(id, pActivo.id);
+  };
+  const updCap = (id, campo, val) => {
+    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id === id ? {...c,[campo]:val} : c) }));
+    const cap = pActivo.capitulos.find(c=>c.id===id);
+    if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id);
+  };
   const addItem = capId => {
-    const item = {
-      id: Date.now(),
-      apuId: null,
-      descripcion: "",
-      unidad: "",
-      cantidad: 1
-    };
-    setPActivo(p => ({
-      ...p,
-      capitulos: p.capitulos.map(c => c.id === capId ? {
-        ...c,
-        items: [...c.items, item]
-      } : c)
-    }));
-    setShowApuModal({
-      capId,
-      itemId: item.id
-    });
+    const cap = pActivo.capitulos.find(c=>c.id===capId);
+    const item = { id: Date.now(), apuId: null, descripcion: "", unidad: "", cantidad: 1, orden: (cap?.items?.length||0) };
+    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id === capId ? {...c, items: [...c.items, item]} : c) }));
+    setShowApuModal({ capId, itemId: item.id });
     setBusqApu("");
+    if(cap) dbSaveItem(item, capId, cap.numero, pActivo.id);
   };
-  const delIt = (capId, itemId) => setPActivo(p => ({
-    ...p,
-    capitulos: p.capitulos.map(c => c.id === capId ? {
-      ...c,
-      items: c.items.filter(i => i.id !== itemId)
-    } : c)
-  }));
-  const updIt = (capId, itemId, campo, val) => setPActivo(p => ({
-    ...p,
-    capitulos: p.capitulos.map(c => c.id === capId ? {
-      ...c,
-      items: c.items.map(i => i.id === itemId ? {
-        ...i,
-        [campo]: val
-      } : i)
-    } : c)
-  }));
+  const delIt = (capId, itemId) => {
+    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id===capId ? {...c, items:c.items.filter(i=>i.id!==itemId)} : c) }));
+    dbDelItem(itemId, pActivo.id);
+  };
+  const updIt = (capId, itemId, campo, val) => {
+    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id===capId ? {...c, items:c.items.map(i=>i.id===itemId?{...i,[campo]:val}:i)} : c) }));
+    const cap = pActivo.capitulos.find(c=>c.id===capId);
+    const item = cap?.items?.find(i=>i.id===itemId);
+    if(cap&&item) { clearTimeout(window.__updItTimer__); window.__updItTimer__=setTimeout(()=>dbSaveItem({...item,[campo]:val},capId,cap.numero,pActivo.id),500); }
+  };
   const selApu = apu => {
-    const {
-      capId,
-      itemId
-    } = showApuModal;
-    setPActivo(p => ({
-      ...p,
-      capitulos: p.capitulos.map(c => c.id === capId ? {
-        ...c,
-        items: c.items.map(i => i.id === itemId ? {
-          ...i,
-          apuId: apu.id,
-          descripcion: apu.nombre,
-          unidad: apu.unidad
-        } : i)
-      } : c)
-    }));
+    const { capId, itemId } = showApuModal;
+    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id===capId ? {...c, items:c.items.map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c) }));
     setShowApuModal(null);
+    const cap  = pActivo.capitulos.find(c=>c.id===capId);
+    const item = cap?.items?.find(i=>i.id===itemId);
+    if(cap&&item) dbSaveItem({...item,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad},capId,cap.numero,pActivo.id);
   };
   const apusFiltrados = useMemo(() => {
     if (!busqApu.trim()) return apus;
