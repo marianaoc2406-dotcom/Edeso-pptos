@@ -6639,7 +6639,7 @@ function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, se
         React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
           React.createElement("span",{style:{fontSize:10,color:"#9CA3AF"}},fmtF(msg.created_at)),
           esMio&&React.createElement("button",{
-            onClick:()=>{ if(window.confirm("¿Eliminar esta observación?")) eliminar(msg.id); },
+            onClick:()=>eliminar(msg.id),
             title:"Eliminar",
             style:{background:"none",border:"none",fontSize:12,color:"#EF4444",cursor:"pointer",padding:"0 2px",lineHeight:1}
           },"🗑")
@@ -6785,11 +6785,15 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
   };
 
   const eliminar = async(obsId) => {
-    if(!window.confirm("¿Eliminar esta observación?")) return;
-    // Delete the obs and all its replies
-    await _sb.from("observaciones").delete().eq("parent_id", obsId);
-    await _sb.from("observaciones").delete().eq("id", obsId);
-    cargar();
+    if(!window.confirm("¿Eliminar esta observación? También se eliminarán las respuestas.")) return;
+    const {error:e1} = await _sb.from("observaciones").delete().eq("parent_id", String(obsId));
+    const {error:e2} = await _sb.from("observaciones").delete().eq("id", String(obsId));
+    if(e1) console.error("Del replies:",e1);
+    if(e2) console.error("Del obs:",e2);
+    // Update local state immediately without waiting for cargar
+    setAllObs(prev=>prev.filter(o=>o.id!==obsId&&o.parent_id!==obsId));
+    // Also refresh from server
+    setTimeout(()=>obsViewRef.current&&obsViewRef.current(),500);
   };
 
   const fmtF = iso => {
