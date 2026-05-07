@@ -6879,7 +6879,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
                 React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},apu?fmt(vu):"—"),
                 React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:13,textAlign:"right",fontWeight:700}},apu?fmt(vt):"—")
               ),
-              React.createElement(HiloObs,{cid:cap.id,idx,desc,tabLabel:"Presupuesto Obra",allObs,session,enviar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+              React.createElement(HiloObs,{cid:cap.id,idx,desc,tabLabel:"Presupuesto Obra",allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
             );
           })
         );
@@ -6904,7 +6904,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
               React.createElement("span",{style:{fontWeight:500,fontSize:13}},pol.nombre||"Póliza "+(idx+1)),
               React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},(pol.pct||0)+"% · "+(pol.pctPrima||0)+"% prima")
             ),
-            React.createElement(HiloObs,{cid:tabActiva,idx,desc:pol.nombre||"Póliza "+(idx+1),tabLabel:tabL,allObs,session,enviar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+            React.createElement(HiloObs,{cid:tabActiva,idx,desc:pol.nombre||"Póliza "+(idx+1),tabLabel:tabL,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
           ))
       );
     }
@@ -6924,7 +6924,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
               React.createElement("span",{style:{fontWeight:500,fontSize:13}},est.nombre),
               React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},(est.pct||0)+"%")
             ),
-            React.createElement(HiloObs,{cid:"estampillas",idx,desc:est.nombre,tabLabel:"Estampillas",allObs,session,enviar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+            React.createElement(HiloObs,{cid:"estampillas",idx,desc:est.nombre,tabLabel:"Estampillas",allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
           ))
       );
     }
@@ -6946,7 +6946,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
                 React.createElement("span",{style:{fontSize:13}},item.descripcion||"Ítem "+(idx+1)),
                 React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},fmt(item.valorMesBase||item.valorFijo||0))
               ),
-              React.createElement(HiloObs,{cid:"au_"+sub.id,idx,desc:item.descripcion||"Ítem "+(idx+1),tabLabel:"Cálculo A+U",allObs,session,enviar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+              React.createElement(HiloObs,{cid:"au_"+sub.id,idx,desc:item.descripcion||"Ítem "+(idx+1),tabLabel:"Cálculo A+U",allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
             ))
           );
         }))
@@ -6972,7 +6972,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
                 React.createElement("span",{style:{fontSize:13}},item.descripcion||"Ítem "+(idx+1)),
                 React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},fmt(item.valorMesBase||item.valorFijo||0))
               ),
-              React.createElement(HiloObs,{cid:key+"_"+cap.id,idx,desc:item.descripcion||"Ítem "+(idx+1),tabLabel:lbl,allObs,session,enviar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+              React.createElement(HiloObs,{cid:key+"_"+cap.id,idx,desc:item.descripcion||"Ítem "+(idx+1),tabLabel:lbl,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
             ))
           );
         })
@@ -7023,7 +7023,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
                     React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt(r.precio||0)),
                     React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:13,textAlign:"right",fontWeight:700}},fmt(subL))
                   ),
-                  React.createElement(HiloObs,{cid,idx:lIdx,desc,tabLabel:"APU "+apu.codigo,allObs,session,enviar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+                  React.createElement(HiloObs,{cid,idx:lIdx,desc,tabLabel:"APU "+apu.codigo,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
                 );
               })
             );
