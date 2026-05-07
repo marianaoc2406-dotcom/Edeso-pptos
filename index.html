@@ -6983,6 +6983,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
       apusUsados.map((apu,apuIdx)=>{
         const apuObj=apus.find(x=>x.id===apu.id)||{lineas:[]};
         const lineas=apuObj.lineas||[];
+        const moTotal=calcTotalMO(lineas,recursos);
         const SEC_COLORS={
           material:{bg:"#FEE2E2",fg:"#C81E1E"},mano_obra:{bg:"#FEF3C7",fg:"#B45309"},
           maquinaria:{bg:"#F5F3FF",fg:"#6D28D9"},transporte:{bg:"#EFF6FF",fg:"#1D4ED8"}
@@ -8558,9 +8559,17 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
                       React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:600,fontSize:13}},fmt(subL))
                     );
                   }),
-                  React.createElement("tr",{style:{background:sc.bg,borderTop:"2px solid "+sc.border}},
-                    React.createElement("td",{colSpan:5,style:{padding:"8px 16px",textAlign:"right",fontSize:12,color:sc.fg,fontWeight:600}},"Subtotal "+sec.label),
-                    React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,padding:"8px 16px",color:sc.fg}},fmt(sub))
+                  sec.id==="maquinaria"&&moTotal>0&&React.createElement("tr",{style:{background:"#FFFBEB"}},
+                React.createElement("td",{style:{padding:"8px 16px",fontFamily:"var(--mono)",fontSize:11,color:"#92400E"}},"-"),
+                React.createElement("td",{style:{padding:"8px 16px",fontStyle:"italic",fontSize:13,color:"#92400E",fontWeight:500}},"Herramienta menor (5% M.O.)"),
+                React.createElement("td",{style:{textAlign:"center",fontSize:11,color:"#92400E"}},"%M.O."),
+                React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"#92400E"}},"0.0500"),
+                React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"#92400E"}},fmt(moTotal)),
+                React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,fontSize:13,color:"#92400E"}},fmt(Math.round(moTotal*0.05)))
+              ),
+              React.createElement("tr",{style:{background:sc.bg,borderTop:"2px solid "+sc.border}},
+                    React.createElement("td",{colSpan:5,style:{padding:"8px 16px",textAlign:"right",fontSize:12,color:sc.fg,fontWeight:600}},"Subtotal "+sec.label+(sec.id==="maquinaria"&&moTotal>0?" (incl. herramienta menor)":"")),
+                    React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,padding:"8px 16px",color:sc.fg}},fmt(sub+(sec.id==="maquinaria"?Math.round(moTotal*0.05):0)))
                   )
                 )
               )
