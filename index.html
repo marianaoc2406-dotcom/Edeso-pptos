@@ -883,7 +883,7 @@ const CSS = `
 function Sidebar({
   modulo, setModulo, counts,
   onExportar, onImportar, onLimpiarRecursos, onLimpiarApus,
-  perfil, onLogout, sidebarOpen, setSidebarOpen
+  perfil, onLogout, sidebarOpen, setSidebarOpen, usuariosActivos
 }) {
   const esAdmin = perfil?.rol === 'admin';
   const esVisorOrJefe = perfil?.rol==="visor"||perfil?.rol==="jefe";
@@ -943,6 +943,14 @@ function Sidebar({
                   border:"1px solid #4a2d2d", borderRadius:5, color:"#c87e7e",
                   cursor:"pointer", fontSize:12, textAlign:"left" }
         }, "🚪 Cerrar sesión")
+      ),
+      usuariosActivos&&usuariosActivos.length>0&&React.createElement("div",{style:{padding:"8px 16px",marginBottom:4}},
+        React.createElement("div",{style:{fontSize:10,fontWeight:700,color:"#4B5563",letterSpacing:".06em",marginBottom:6,textTransform:"uppercase"}},"Activos ahora"),
+        usuariosActivos.map((u,i)=>React.createElement("div",{key:u.user_id||i,style:{display:"flex",alignItems:"center",gap:6,marginBottom:4}},
+          React.createElement("div",{style:{width:7,height:7,borderRadius:"50%",background:"#22C55E",flexShrink:0}}),
+          React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+            u.user_nombre||u.user_email||"—")
+        ))
       ),
       !esVisorOrJefe&&React.createElement("div", { className:"sb-section" }, "Datos"),
       !esVisorOrJefe&&React.createElement("button", {
@@ -1185,13 +1193,7 @@ function ModuloRecursos({
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Recursos");
     const nombreR = recursos.length > 0 ? "recursos_exportados.xlsx" : "plantilla_recursos.xlsx";
-    try { XLSX.writeFile(wb, nombreR); } catch(e) {
-      const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      const blob = new Blob([wbout], { type: "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = nombreR;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    }
+    descargarExcel(wb, nombreR);
   };
 
   const CATS_VALIDAS = ["material","mano_obra","maquinaria","transporte"];
@@ -1635,13 +1637,7 @@ function ModuloAPUs({
     XLSX.utils.book_append_sheet(wb, wsApus, "APUs");
     XLSX.utils.book_append_sheet(wb, wsLineas, "Lineas");
     const nombreA = apus.length > 0 ? "apus_exportados.xlsx" : "plantilla_apus.xlsx";
-    try { XLSX.writeFile(wb, nombreA); } catch(e) {
-      const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      const blob = new Blob([wbout], { type: "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = nombreA;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    }
+    descargarExcel(wb, nombreA);
   };
 
   const importarAPU = e => {
@@ -1847,7 +1843,7 @@ function ModuloAPUs({
     }
   }, apus.find(a => a.id === apuActivo.id) ? "Editar APU" : "Nuevo APU"), /*#__PURE__*/React.createElement("div", {
     className: "page-sub"
-  }, "Base global \xB7 reutilizable en cualquier proyecto"))), /*#__PURE__*/React.createElement("div", {
+  }, "Base global · reutilizable en cualquier proyecto"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 10
@@ -1873,34 +1869,32 @@ function ModuloAPUs({
     }
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "C\xF3digo"), /*#__PURE__*/React.createElement("input", {
+  }, "Código"), /*#__PURE__*/React.createElement("input", {
     className: "ifield",
     value: apuActivo.codigo,
-    onChange: e => setApuActivo(p => ({
-      ...p,
-      codigo: e.target.value
-    }))
+    onChange: e => setApuActivo(p => ({...p, codigo: e.target.value}))
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
-  }, "Descripci\xF3n *"), /*#__PURE__*/React.createElement("input", {
+  }, "Descripción *"), /*#__PURE__*/React.createElement("input", {
     className: "ifield",
     value: apuActivo.nombre,
-    onChange: e => setApuActivo(p => ({
-      ...p,
-      nombre: e.target.value
-    }))
+    onChange: e => setApuActivo(p => ({...p, nombre: e.target.value}))
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "lbl"
   }, "Unidad"), /*#__PURE__*/React.createElement("select", {
     className: "ifield",
     value: apuActivo.unidad,
-    onChange: e => setApuActivo(p => ({
-      ...p,
-      unidad: e.target.value
-    }))
-  }, ["m", "m2", "m3", "kg", "gl", "lt", "un", "día", "hr", "ml", "ton"].map(u => /*#__PURE__*/React.createElement("option", {
-    key: u
-  }, u))))))), /*#__PURE__*/React.createElement("div", {
+    onChange: e => setApuActivo(p => ({...p, unidad: e.target.value}))
+  }, ["m", "m2", "m3", "kg", "gl", "lt", "un", "día", "hr", "ml", "ton"].map(u => /*#__PURE__*/React.createElement("option", {key: u}, u)))))),
+  /*#__PURE__*/React.createElement("div", {style:{marginTop:12}},
+    /*#__PURE__*/React.createElement("label", {className:"lbl"}, "Propietario"),
+    /*#__PURE__*/React.createElement("input", {
+      className: "ifield",
+      placeholder: "Ej: EDESO, Alcaldía, Gobernación...",
+      value: apuActivo.propietario||"",
+      onChange: e => setApuActivo(p => ({...p, propietario: e.target.value}))
+    })
+  )), /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       marginBottom: 14,
@@ -2281,7 +2275,7 @@ function ModuloAPUs({
         color: "var(--red)",
         fontWeight: 500
       }
-    }, a.codigo)), /*#__PURE__*/React.createElement("td", null, a.nombre), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
+    }, a.codigo)), /*#__PURE__*/React.createElement("td", null, a.nombre, a.propietario&&React.createElement("span",{style:{marginLeft:6,background:"#EFF6FF",color:"#1D4ED8",borderRadius:4,padding:"1px 7px",fontSize:10,fontWeight:600}},a.propietario)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
       style: {
         fontFamily: "var(--mono)",
         fontSize: 11,
@@ -5639,6 +5633,26 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
 // ═══════════════════════════════════════════════════════
 // EXPORTAR PROYECTO A EXCEL
 // ═══════════════════════════════════════════════════════
+// Helper robusto para descargar Excel
+function descargarExcel(wb, filename) {
+  try {
+    XLSX.writeFile(wb, filename, {cellStyles:true});
+  } catch(e1) {
+    try {
+      const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
+      const blob = new Blob([wbout], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    } catch(e2) {
+      console.error('Download failed:', e2);
+      alert('Error al descargar: ' + e2.message);
+    }
+  }
+}
+
 function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
   const res        = calcProyecto(proyecto, apus, recursos);
   const cd         = res.cd;
@@ -6129,7 +6143,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
     if(tieneInterv2)  XLSX.utils.book_append_sheet(wb,crearPresupInterv('interventoria','presupInterv'),'Presup. Interventoría');
     if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría');
   };
-  const _addAPUs       = ()=>{ if(apusUsados.length) XLSX.utils.book_append_sheet(wb,crearHojaAPUsConsolidada(),'APUs Usados'); };
+  const _addAPUs       = ()=>{ if(apusUsados.length) XLSX.utils.book_append_sheet(wb,crearHojaAPUsConsolidada(),'APUs Proyectos'); };
 
   if(opcion==='todo')           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
   else if(opcion==='presupuesto'){ _addResumen();_addPresup(); }
@@ -6210,15 +6224,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
 
   // ── Descargar ──────────────────────────────────────────
   const fname=`EDESO_${(proyecto.codigo||'proyecto').replace(/[\/\\:*?"<>|]/g,'_')}.xlsx`;
-  const wOpts={bookType:'xlsx',type:'array',cellStyles:true};
-  try{
-    XLSX.writeFile(wb,fname,{cellStyles:true});
-  }catch(e){
-    const blob=new Blob([XLSX.write(wb,wOpts)],{type:'application/octet-stream'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a'); a.href=url; a.download=fname;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-  }
+  descargarExcel(wb, fname);
 }
 
 
@@ -6228,7 +6234,7 @@ const TAB_LABELS_MAP = {
   presupuesto_obra:"Presupuesto Obra",
   polizas_obra:"Pólizas Obra", polizas_interventoria:"Pólizas Interventoría",
   polizas_consultoria:"Pólizas Consultoría", estampillas:"Estampillas",
-  calculo_au:"Cálculo A+U", apus_usados:"APUs Usados",
+  calculo_au:"Cálculo A+U", apus_usados:"APUs Proyectos",
   presupInterv_:"Presup. Interventoría", presupConsult_:"Presup. Consultoría",
 };
 function tabLabelFromId(cid) {
@@ -7039,16 +7045,21 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
     const k = textKey || lk(cid,idx);
     const txt=(textos[k]||"").trim();
     if(!txt) return;
-    await _sb.from("observaciones").insert({
+    const nueva = {
       proyecto_id:proyecto.id, capitulo_id:cid, item_index:idx,
       tab_label:tabLabel, linea_desc:desc,
       parent_id:parentId||null, texto:txt,
       user_id:session?.user?.id, user_email:session?.user?.email,
       user_nombre:perfil?.nombre||session?.user?.email,
-    });
+    };
+    // Optimistic update: add immediately to local state
+    const tempObs = {...nueva, id: Date.now(), created_at: new Date().toISOString()};
+    setAllObs(prev=>[...prev, tempObs]);
     setTextos(t=>({...t,[k]:""}));
     setReplyTo(r=>({...r,[k]:false}));
-    cargar();
+    // Then save to DB and refresh to get real ID
+    await _sb.from("observaciones").insert(nueva);
+    if(obsViewRef.current) obsViewRef.current();
   };
 
   const eliminar = async(obsId) => {
@@ -7084,7 +7095,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
     {id:"polizas_interventoria",label:"Pólizas Interventoría",    show:tieneInterv},
     {id:"presupConsult",        label:"Presup. Consultoría",      show:tieneConsult},
     {id:"polizas_consultoria",  label:"Pólizas Consultoría",      show:tieneConsult},
-    {id:"apus_usados",          label:`APUs Usados (${apusUsados.length})`, show:apusUsados.length>0},
+    {id:"apus_usados",          label:`APUs Proyectos (${apusUsados.length})`, show:apusUsados.length>0},
   ].filter(t=>t.show);
 
   const res = calcProyecto(proyecto, apus, recursos);
@@ -7220,7 +7231,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
         })
       );
     }
-    // APUs Usados
+    // APUs Proyectos
     if(tabActiva==="apus_usados") return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:16}},
       apusUsados.map((apu,apuIdx)=>{
         const apuObj=apus.find(x=>x.id===apu.id)||{lineas:[]};
@@ -7325,7 +7336,7 @@ function ModalExportExcel({proyecto, apus, recursos, onClose}) {
     { id:"estampillas",label:"📌 Estampillas",         desc:"Estampillas del proyecto",            show:tieneObra },
     { id:"interventoria",label:"🔍 Interventoría",     desc:"Presupuesto de interventoría",        show:tieneInterv },
     { id:"consultoria",label:"📐 Consultoría",         desc:"Presupuesto de consultoría",          show:tieneConsult },
-    { id:"apus",      label:"⚙️ APUs Usados",          desc:`${apusUsados.length} APUs en una sola hoja consolidada`, show:apusUsados.length>0 },
+    { id:"apus",      label:"⚙️ APUs Proyectos",          desc:`${apusUsados.length} APUs en una sola hoja consolidada`, show:apusUsados.length>0 },
   ].filter(o=>o.show);
 
   const exportar = (opcion) => {
@@ -8358,7 +8369,7 @@ function ModuloProyectos({
       TABS.push({ id: "polizas_consultoria",     label: "P\xF3lizas Consultor\xEDa" });
     }
     if (TABS.length === 0) TABS.push({ id: "presupuesto_obra", label: "Presupuesto" });
-    TABS.push({ id: "apus_usados", label: "APUs Usados (" + apusUsados.length + ")" });
+    TABS.push({ id: "apus_usados", label: "APUs Proyectos (" + apusUsados.length + ")" });
     return /*#__PURE__*/React.createElement("div", {
       className: "page"
     }, /*#__PURE__*/React.createElement("div", {
@@ -8795,7 +8806,7 @@ function ModuloProyectos({
   return null;
 }
 
-// ── Desglose visual de APUs Usados (read-only con observaciones) ─────────────
+// ── Desglose visual de APUs Proyectos (read-only con observaciones) ─────────────
 function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, session, esLectura}) {
   const [expandidos, setExpandidos] = useState({});
   const [obsCounts, setObsCounts]   = useState({});
@@ -9562,6 +9573,7 @@ function App() {
   // ── Auth ──────────────────────────────────────────────
   const [sidebarOpen,setSidebarOpen] = useState(true);
   const [isOnline,setIsOnline]   = useState(navigator.onLine);
+  const [usuariosActivos, setUsuariosActivos] = useState([]);
   const [session,setSession]   = useState(null);
   const [perfil,setPerfil]     = useState(null);
   const [dataReady,setDataReady] = useState(false);
@@ -9720,6 +9732,33 @@ function App() {
         rtChannel = setupRealtime(session);
       }
     });
+    // Presencia — quién está conectado
+    const presenceSetup = (sess) => {
+      if(!sess) return;
+      const roomCh = _sb.channel("presence_room", {config:{presence:{key:sess.user.id}}});
+      roomCh
+        .on("presence",{event:"sync"},()=>{
+          const state = roomCh.presenceState();
+          const activos = Object.values(state).flat().map(u=>u);
+          setUsuariosActivos(activos);
+        })
+        .subscribe(async(status)=>{
+          if(status==="SUBSCRIBED"){
+            await roomCh.track({
+              user_id: sess.user.id,
+              user_email: sess.user.email,
+              user_nombre: perfil?.nombre||sess.user.email,
+              online_at: new Date().toISOString()
+            });
+          }
+        });
+      return roomCh;
+    };
+    let presenceCh = null;
+    _sb.auth.getSession().then(({data:{session}})=>{
+      if(session) presenceCh = presenceSetup(session);
+    });
+
     const{data:{subscription}}=_sb.auth.onAuthStateChange(async(event,session)=>{
       setSession(session);
       if(session){
@@ -9859,7 +9898,7 @@ function App() {
     React.createElement(Sidebar,{
       modulo,setModulo:m=>{setModulo(m);setSubTitle(null);},
       counts,onExportar,onImportar,onLimpiarRecursos,onLimpiarApus,
-      perfil,onLogout,sidebarOpen,setSidebarOpen
+      perfil,onLogout,sidebarOpen,setSidebarOpen,usuariosActivos
     }),
     React.createElement("div",{className:"main-area",style:{marginLeft:sidebarOpen?232:0,transition:"margin-left .25s"}},
       React.createElement(Topbar,{modulo,sub:subTitle}),
