@@ -6622,31 +6622,56 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
 // ═══════════════════════════════════════════════════════
 // TABOBSVIEW — Presupuesto con 💬 por línea (visor + editor obs mode)
 // ═══════════════════════════════════════════════════════
-// ── Burbuja individual de mensaje (top-level para evitar remount) ─────────
+// ── Burbuja individual de mensaje ────────────────────────────────────────
 function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, setReplyTo, replyTo, textos, setTextos, enviarRespuesta, fmtF}) {
-  const esMio = String(msg.user_id) === String(session?.user?.id);
-  const reps  = allReps.filter(r=>r.parent_id===msg.id);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const esMio = msg.user_id && session?.user?.id && String(msg.user_id) === String(session.user.id);
+  const reps  = allReps.filter(r=>Number(r.parent_id)===Number(msg.id));
   const rKey  = "reply__"+msg.id;
+
+  const handleEliminar = () => {
+    if(confirmDel) {
+      eliminar(msg.id);
+      setConfirmDel(false);
+    } else {
+      setConfirmDel(true);
+    }
+  };
 
   return React.createElement("div",{style:{marginLeft:depth*20}},
     React.createElement("div",{style:{
       background:esMio?(esRespuesta?"#F0FDF4":"#EFF6FF"):(esRespuesta?"#F8FAFC":"#F9FAFB"),
-      border:`1px solid ${esMio?(esRespuesta?"#BBF7D0":"#BFDBFE"):(esRespuesta?"#E5E7EB":"#E5E7EB")}`,
-      borderRadius:8,padding:"10px 14px"
+      border:`1px solid ${esMio?(esRespuesta?"#BBF7D0":"#BFDBFE"):"#E5E7EB"}`,
+      borderRadius:8,padding:"10px 14px",
+      outline:confirmDel?"2px solid #EF4444":"none"
     }},
       React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4,flexWrap:"wrap",gap:4}},
         React.createElement("span",{style:{fontWeight:700,fontSize:esRespuesta?11:12,color:"#374151"}},msg.user_nombre||"—"),
-        React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+        React.createElement("div",{style:{display:"flex",gap:6,alignItems:"center"}},
           React.createElement("span",{style:{fontSize:10,color:"#9CA3AF"}},fmtF(msg.created_at)),
-          esMio&&React.createElement("button",{
-            onClick:()=>eliminar(msg.id),
-            title:"Eliminar",
-            style:{background:"none",border:"none",fontSize:12,color:"#EF4444",cursor:"pointer",padding:"0 2px",lineHeight:1}
-          },"🗑")
+          esMio&&!confirmDel&&React.createElement("button",{
+            onClick:()=>setConfirmDel(true),
+            title:"Eliminar comentario",
+            style:{background:"none",border:"none",fontSize:13,color:"#9CA3AF",
+              cursor:"pointer",padding:"0 2px",lineHeight:1,transition:"color .15s"}
+          },"🗑"),
+          confirmDel&&React.createElement("div",{style:{display:"flex",gap:4,alignItems:"center"}},
+            React.createElement("span",{style:{fontSize:11,color:"#EF4444",fontWeight:600}},"¿Eliminar?"),
+            React.createElement("button",{
+              onClick:handleEliminar,
+              style:{background:"#EF4444",color:"#fff",border:"none",borderRadius:4,
+                padding:"2px 8px",fontSize:11,fontWeight:700,cursor:"pointer"}
+            },"Sí"),
+            React.createElement("button",{
+              onClick:()=>setConfirmDel(false),
+              style:{background:"#F3F4F6",color:"#6B7280",border:"none",borderRadius:4,
+                padding:"2px 8px",fontSize:11,cursor:"pointer"}
+            },"No")
+          )
         )
       ),
       React.createElement("div",{style:{fontSize:esRespuesta?12:13,lineHeight:1.5,marginBottom:6,color:"#111827"}},msg.texto),
-      React.createElement("button",{
+      !confirmDel&&React.createElement("button",{
         onClick:()=>setReplyTo(r=>({...r,[rKey]:!r[rKey]})),
         style:{background:"none",border:"none",fontSize:11,color:"#6B7280",cursor:"pointer",padding:0,fontWeight:600}
       },"↩ Responder"+(reps.length?" · "+reps.length:""))
@@ -6657,7 +6682,7 @@ function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, se
         allReps,session,eliminar,setReplyTo,replyTo,textos,setTextos,enviarRespuesta,fmtF
       }))
     ),
-    replyTo[rKey]&&React.createElement("div",{style:{marginLeft:20,marginTop:6,display:"flex",gap:6}},
+    replyTo[rKey]&&React.createElement("div",{style:{marginLeft:20,marginTop:8,display:"flex",gap:6}},
       React.createElement("textarea",{
         style:{flex:1,padding:"8px 10px",border:"1px solid #FDE68A",borderRadius:6,
           fontSize:12,outline:"none",resize:"vertical",fontFamily:"var(--sans)",minHeight:60},
@@ -6674,7 +6699,7 @@ function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, se
         React.createElement("button",{
           onClick:()=>setReplyTo(r=>({...r,[rKey]:false})),
           style:{background:"#F3F4F6",color:"#6B7280",border:"none",borderRadius:6,
-            padding:"0 14px",fontWeight:700,cursor:"pointer",height:36,fontSize:11}
+            padding:"0 14px",cursor:"pointer",height:36,fontSize:11}
         },"×")
       )
     )
@@ -6685,7 +6710,7 @@ function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, o
   const lk    = (c,i) => c+"__"+i;
   const k     = lk(cid,idx);
   const raices= allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
-  const allReps=allObs.filter(o=>o.parent_id!=null);
+  const allReps=allObs.filter(o=>o.parent_id!=null&&o.parent_id!==undefined);
   const total = allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
   const isOpen= openKey===k;
 
@@ -6785,14 +6810,21 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
   };
 
   const eliminar = async(obsId) => {
-    if(!window.confirm("¿Eliminar esta observación? También se eliminarán las respuestas.")) return;
     const id = Number(obsId);
-    const {error:e1} = await _sb.from("observaciones").delete().eq("parent_id", id);
-    const {error:e2} = await _sb.from("observaciones").delete().eq("id", id);
-    if(e1) console.error("Del replies:",e1);
-    if(e2) console.error("Del obs:",e2);
+    if(!id) return;
+    // Optimistic update: remove from UI immediately
     setAllObs(prev=>prev.filter(o=>Number(o.id)!==id && Number(o.parent_id)!==id));
-    setTimeout(()=>obsViewRef.current&&obsViewRef.current(), 600);
+    // Delete replies first, then the observation
+    await _sb.from("observaciones")
+      .delete()
+      .eq("proyecto_id", proyecto.id)
+      .eq("parent_id", id);
+    await _sb.from("observaciones")
+      .delete()
+      .eq("proyecto_id", proyecto.id)
+      .eq("id", id);
+    // Refresh from server after a short delay
+    setTimeout(()=>{ if(obsViewRef.current) obsViewRef.current(); }, 800);
   };
 
   const fmtF = iso => {
