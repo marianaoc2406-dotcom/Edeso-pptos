@@ -5639,7 +5639,7 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
 // ═══════════════════════════════════════════════════════
 // EXPORTAR PROYECTO A EXCEL
 // ═══════════════════════════════════════════════════════
-function exportarProyectoExcel(proyecto, apus, recursos) {
+function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
   const res        = calcProyecto(proyecto, apus, recursos);
   const cd         = res.cd;
   const comps      = proyecto.componentes || [];
@@ -6109,38 +6109,104 @@ function exportarProyectoExcel(proyecto, apus, recursos) {
   };
 
   // ═══════════════════════════════════════════════════════
-  // ARMAR WORKBOOK — en el mismo orden que las pestañas
+  // ARMAR WORKBOOK según opción
   // ═══════════════════════════════════════════════════════
-  XLSX.utils.book_append_sheet(wb,crearResumen(),'Resumen');
+  const tieneObra2   = comps.includes('obra')||comps.length===0;
+  const tieneInterv2 = comps.includes('interventoria');
+  const tieneConsult2= comps.includes('consultoria');
+  const totObraBase  = calcTotalConvergido(proyecto,apus,recursos);
 
-  if(comps.includes('obra')){
-    XLSX.utils.book_append_sheet(wb,crearPresupuesto(),'Presupuesto Obra');
-    XLSX.utils.book_append_sheet(wb,crearHojaAU(),'Cálculo A+U');
-    const totObraBase=calcTotalConvergido(proyecto,apus,recursos);
-    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('obra',totObraBase),'Pólizas Obra');
-    XLSX.utils.book_append_sheet(wb,crearHojaEstampillas(totObraBase),'Estampillas');
-  } else if(!comps.length){
-    // sin componentes definidos, igual exporta presupuesto
-    XLSX.utils.book_append_sheet(wb,crearPresupuesto(),'Presupuesto');
-    XLSX.utils.book_append_sheet(wb,crearHojaAU(),'Cálculo A+U');
-  }
+  const _addResumen    = ()=>XLSX.utils.book_append_sheet(wb,crearResumen(),'Resumen');
+  const _addPresup     = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearPresupuesto(),'Presupuesto Obra'); };
+  const _addAU         = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaAU(),'Cálculo A+U'); };
+  const _addPolizas    = ()=>{
+    if(tieneObra2)    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('obra',totObraBase),'Pólizas Obra');
+    if(tieneInterv2)  { const t=calcTotalPresupInterv(proyecto.presupInterv);  XLSX.utils.book_append_sheet(wb,crearHojaPolizas('interventoria',t),'Pólizas Interventoría'); }
+    if(tieneConsult2) { const t=calcTotalPresupInterv(proyecto.presupConsult); XLSX.utils.book_append_sheet(wb,crearHojaPolizas('consultoria',t),'Pólizas Consultoría'); }
+  };
+  const _addEst        = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaEstampillas(totObraBase),'Estampillas'); };
+  const _addInterv     = ()=>{
+    if(tieneInterv2)  XLSX.utils.book_append_sheet(wb,crearPresupInterv('interventoria','presupInterv'),'Presup. Interventoría');
+    if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría');
+  };
+  const _addAPUs       = ()=>{ if(apusUsados.length) XLSX.utils.book_append_sheet(wb,crearHojaAPUsConsolidada(),'APUs Usados'); };
 
-  if(comps.includes('interventoria')){
-    XLSX.utils.book_append_sheet(wb,crearPresupInterv('interventoria','presupInterv'),'Presup. Interventoría');
-    const totInterv=calcTotalPresupInterv(proyecto.presupInterv);
-    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('interventoria',totInterv),'Pólizas Interventoría');
-  }
+  if(opcion==='todo')           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
+  else if(opcion==='presupuesto'){ _addResumen();_addPresup(); }
+  else if(opcion==='au')         { _addAU(); }
+  else if(opcion==='polizas')    { _addPolizas(); }
+  else if(opcion==='estampillas'){ _addEst(); }
+  else if(opcion==='interventoria'){ _addInterv(); }
+  else if(opcion==='consultoria'){ if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría'); }
+  else if(opcion==='apus')       { _addAPUs(); }
+  else                           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
 
-  if(comps.includes('consultoria')){
-    XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría');
-    const totConsult=calcTotalPresupInterv(proyecto.presupConsult);
-    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('consultoria',totConsult),'Pólizas Consultoría');
-  }
+  // Hoja consolidada de APUs (todos en una sola hoja)
+  const crearHojaAPUsConsolidada = () => {
+    const ws={},M=[],NC=5; let r=0;
+    s(ws,r,0,'APUs USADOS — DESGLOSE COMPLETO',ST.titleDark(13));
+    fillR(ws,r,1,NC,ST.titleDark(13)); mrg(M,r,0,r,NC); r++;
+    s(ws,r,0,`Proyecto: ${proyecto.nombre}`,ST.lbl()); fillR(ws,r,1,NC,ST.val()); mrg(M,r,0,r,NC); r++; r++;
 
-  apusUsados.forEach(apu=>{
-    const sn=`APU_${(apu.codigo||apu.id)}`.substring(0,28).replace(/[\/\\:*?"<>\[\]|]/g,'_');
-    try{XLSX.utils.book_append_sheet(wb,crearHojaAPU(apu),sn);}catch(e){console.warn('APU sheet:',e);}
-  });
+    apusUsados.forEach((apu,ai)=>{
+      // Header APU
+      const hdSt={fill:fill(C.dark2),font:fnt(C.white,11,true),border:box(C.dark),alignment:aln()};
+      s(ws,r,0,`${apu.codigo}`,hdSt);
+      s(ws,r,1,apu.nombre,{...hdSt,alignment:aln()});
+      fillR(ws,r,2,4,hdSt);
+      s(ws,r,3,`Unidad: ${apu.unidad}`,{...hdSt,alignment:aln('right')});
+      s(ws,r,4,`Valor: ${fmt(apu.valorUnitario)} / ${apu.unidad}`,{...hdSt,alignment:aln('right')});
+      mrg(M,r,1,r,2); r++;
+
+      // Column headers
+      ['Sección','Recurso','Und.','Cant./Rend.','P. Unitario','Subtotal'].forEach((h,c)=>s(ws,r,c,h,ST.colHdr())); r++;
+
+      const apuObj=apus.find(x=>x.id===apu.id)||{lineas:[]};
+      const secTots=[]; let moCell=null; let iRow=0;
+
+      SECCIONES_APU.forEach(sec=>{
+        const ls=(apuObj.lineas||[]).filter(l=>{const rec=recursos.find(x=>x.id===l.recursoId);return rec&&rec.categoria===sec.id;});
+        if(!ls.length) return;
+        const sc=APU_SC[sec.id]||{bg:C.dark3,fg:C.white};
+        s(ws,r,0,sec.label.toUpperCase(),ST.apuSecH(sc.bg,C.white));
+        fillR(ws,r,1,NC,ST.apuSecH(sc.bg,C.white)); mrg(M,r,0,r,NC); r++;
+        const sS=r;
+        ls.forEach(l=>{
+          const rec=recursos.find(x=>x.id===l.recursoId); if(!rec) return;
+          const val=sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0),sub=val*(rec.precio||0);
+          const stD=iRow%2===0?{fill:fill(C.white),font:fnt(C.dark,10),border:box(),alignment:aln()}:{fill:fill(sc.bg),font:fnt(C.dark,10),border:box(),alignment:aln()};
+          s(ws,r,0,sec.label,stD); s(ws,r,1,rec.nombre,stD); s(ws,r,2,rec.unidad||'',Cn(stD));
+          n(ws,r,3,val,R(stD),'#,##0.0000'); n(ws,r,4,rec.precio||0,R(stD));
+          f(ws,r,5,`${EC(r,3)}*${EC(r,4)}`,Math.round(sub),R(stD)); iRow++; r++;
+        });
+        const sE=r-1;
+        const sVal=ls.reduce((ss,l)=>{const rec=recursos.find(x=>x.id===l.recursoId);if(!rec)return ss;return ss+(sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0))*(rec.precio||0);},0);
+        const sSt=ST.apuSubt(sc.bg,sc.fg);
+        fillR(ws,r,0,4,sSt); s(ws,r,1,`Subtotal ${sec.label}`,L(sSt));
+        sS<=sE?f(ws,r,5,`SUM(${EC(sS,5)}:${EC(sE,5)})`,Math.round(sVal),R(sSt)):n(ws,r,5,0,R(sSt));
+        if(sec.id==='mano_obra') moCell=EC(r,5);
+        secTots.push({cell:EC(r,5),val:Math.round(sVal)}); r++; r++;
+      });
+
+      const tlVal=secTots.reduce((ss,x)=>ss+x.val,0); const sv=ST.subtot();
+      fillR(ws,r,0,4,sv); s(ws,r,1,'Total líneas',L(sv));
+      f(ws,r,5,secTots.map(x=>x.cell).join('+')||'0',tlVal,R(sv)); const tlCell=EC(r,5); r++;
+      const moTotal=calcTotalMO(apuObj.lineas,recursos); let prCell=null;
+      if(moTotal>0&&moCell){
+        const prVal=Math.round(moTotal*0.05);
+        const prSt={fill:fill(C.amb),font:fnt(C.ambH,10,true),border:box(C.ambH),alignment:aln('right')};
+        fillR(ws,r,0,4,prSt); s(ws,r,1,'Prestaciones sobre M.O. (5%)',L(prSt));
+        f(ws,r,5,`${moCell}*0.05`,prVal,R(prSt)); prCell=EC(r,5); r++;
+      }
+      const vuVal=Math.round(calcAPUTotal(apu,recursos)); const vuSt=ST.apuTot();
+      fillR(ws,r,0,4,vuSt); s(ws,r,1,'VALOR UNITARIO APU',L(vuSt)); mrg(M,r,0,r,4);
+      if(prCell) f(ws,r,5,`${tlCell}+${prCell}`,vuVal,R(vuSt));
+      else ws[EC(r,5)]={t:'n',f:tlCell,v:tlVal,s:R(vuSt),z:'#,##0'};
+      r++; r++; // Space between APUs
+    });
+
+    return fin(ws,r,NC,[{wch:22},{wch:46},{wch:7},{wch:14},{wch:16},{wch:18}],M);
+  };
 
   // ── Descargar ──────────────────────────────────────────
   const fname=`EDESO_${(proyecto.codigo||'proyecto').replace(/[\/\\:*?"<>|]/g,'_')}.xlsx`;
@@ -7243,6 +7309,70 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
 }
 
 
+// ── Modal de exportación Excel ────────────────────────────────────────────
+function ModalExportExcel({proyecto, apus, recursos, onClose}) {
+  const comps = proyecto.componentes||[];
+  const tieneObra  = comps.includes("obra")||comps.length===0;
+  const tieneInterv= comps.includes("interventoria");
+  const tieneConsult=comps.includes("consultoria");
+  const apusUsados = getApusUsados(proyecto, apus, recursos);
+
+  const OPCIONES = [
+    { id:"todo",      label:"📦 Todo el proyecto",     desc:"Todas las hojas",                    show:true },
+    { id:"presupuesto",label:"📋 Presupuesto Obra",    desc:"Capítulos, ítems y totales",          show:tieneObra },
+    { id:"au",        label:"🧮 Cálculo A+U",          desc:"Administración y utilidad",           show:tieneObra },
+    { id:"polizas",   label:"🛡 Pólizas",              desc:"Pólizas de todos los componentes",    show:tieneObra||tieneInterv||tieneConsult },
+    { id:"estampillas",label:"📌 Estampillas",         desc:"Estampillas del proyecto",            show:tieneObra },
+    { id:"interventoria",label:"🔍 Interventoría",     desc:"Presupuesto de interventoría",        show:tieneInterv },
+    { id:"consultoria",label:"📐 Consultoría",         desc:"Presupuesto de consultoría",          show:tieneConsult },
+    { id:"apus",      label:"⚙️ APUs Usados",          desc:`${apusUsados.length} APUs en una sola hoja consolidada`, show:apusUsados.length>0 },
+  ].filter(o=>o.show);
+
+  const exportar = (opcion) => {
+    exportarProyectoExcel(proyecto, apus, recursos, opcion);
+    onClose();
+  };
+
+  return React.createElement("div",{
+    className:"modal-bg",
+    onClick:e=>e.target===e.currentTarget&&onClose()
+  },
+    React.createElement("div",{className:"modal",style:{maxWidth:480}},
+      React.createElement("div",{className:"modal-title"},"📊 Exportar a Excel"),
+      React.createElement("div",{style:{color:"var(--ink3)",fontSize:13,marginBottom:16}},
+        "¿Qué deseas exportar del proyecto ",
+        React.createElement("strong",null,proyecto.nombre),"?"
+      ),
+      React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        OPCIONES.map(op=>React.createElement("button",{
+          key:op.id,
+          onClick:()=>exportar(op.id),
+          style:{
+            display:"flex",alignItems:"center",gap:14,
+            padding:"12px 16px",
+            background:op.id==="todo"?"#F0FDF4":"#F9FAFB",
+            border:`1.5px solid ${op.id==="todo"?"#86EFAC":"#E5E7EB"}`,
+            borderRadius:10,cursor:"pointer",textAlign:"left",
+            transition:"all .15s"
+          }
+        },
+          React.createElement("span",{style:{fontSize:20}},op.label.split(" ")[0]),
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontWeight:600,fontSize:13,color:"#111827"}},
+              op.label.slice(op.label.indexOf(" ")+1)
+            ),
+            React.createElement("div",{style:{fontSize:11,color:"#6B7280",marginTop:2}},op.desc)
+          )
+        ))
+      ),
+      React.createElement("div",{style:{display:"flex",justifyContent:"flex-end",marginTop:16}},
+        React.createElement("button",{className:"btn-s",onClick:onClose},"Cancelar")
+      )
+    )
+  );
+}
+
+
 function ModuloProyectos({
   recursos,
   apus,
@@ -7282,6 +7412,7 @@ function ModuloProyectos({
   const [busq, setBusq] = useState("");
   const [showNuevo, setShowNuevo] = useState(false);
   const [obsMode, setObsMode] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [showApuModal, setShowApuModal] = useState(null);
 
   // ── Sincronización por fila (caps e items) ───────────────────────────────
@@ -8275,8 +8406,8 @@ function ModuloProyectos({
     }, "💬 Observaciones"), /*#__PURE__*/React.createElement("button", {
       className: "btn-s",
       style: { background:"#166534", color:"#fff", border:"none" },
-      onClick: () => exportarProyectoExcel(pActivo, apus, recursos),
-      title: "Exportar presupuesto a Excel con f\xF3rmulas, desglose de APUs y hoja A+U"
+      onClick: () => setShowExportModal(true),
+      title: "Exportar a Excel"
     }, "\uD83D\uDCCA Exportar Excel"), /*#__PURE__*/React.createElement("button", {
       className: "btn-p",
       onClick: () => window.print()
