@@ -2826,7 +2826,7 @@ function TabAU({
   };
   const dbSaveAUItem = (item, subsecId) => {
     if(!proyectoId||!session) return;
-    _sb.from("items_au").upsert({
+    safeUpsert("items_au", {
       id:String(item.id), proyecto_id:String(proyectoId),
       subseccion_id:subsecId,
       descripcion:item.descripcion||"", tipo:item.tipo||"",
@@ -2837,12 +2837,11 @@ function TabAU({
       updated_at:new Date().toISOString(),
       updated_by:session.user.id, updated_by_email:session.user.email,
       updated_by_name:perfil?.nombre||session.user.email
-    }).then(({error})=>{if(error)console.error("saveAUItem:",error);});
+    }, "au_"+proyectoId+"_"+item.id);
   };
   const dbDelAUItem = (itemId) => {
     if(!proyectoId) return;
-    _sb.from("items_au").delete().eq("id",String(itemId)).eq("proyecto_id",String(proyectoId))
-      .then(({error})=>{if(error)console.error("delAUItem:",error);});
+    safeDelete("items_au", {id:String(itemId), proyecto_id:String(proyectoId)}, "au_del_"+itemId);
   };
 
   const guardarItem = () => {
@@ -3808,7 +3807,7 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
   const dbIntervUser=()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
   const dbSaveInterv=(item,capId,tipo)=>{
     if(!proyecto?.id||!session) return;
-    _sb.from("items_interv").upsert({
+    safeUpsert("items_interv", {
       id:String(item.id),proyecto_id:String(proyecto.id),
       storage_key:storageKey,capitulo_id:String(capId),
       descripcion:item.descripcion||"",unidad:item.unidad||"",tipo:tipo||"",
@@ -3820,8 +3819,7 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
   };
   const dbDelInterv=(itemId)=>{
     if(!proyecto?.id) return;
-    _sb.from("items_interv").delete().eq("id",String(itemId)).eq("proyecto_id",String(proyecto.id))
-      .then(({error})=>{if(error)console.error("delInterv:",error);});
+    safeDelete("items_interv", {id:String(itemId), proyecto_id:String(proyecto.id)}, "interv_del_"+itemId);
   };
 
   useEffect(()=>{
@@ -4837,7 +4835,7 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
   const dbPolUser = ()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
   const dbSavePol = (pol,plazo) => {
     if(!proyecto?.id||!session) return;
-    _sb.from("items_polizas").upsert({
+    safeUpsert("items_polizas", {
       id:String(pol.id),proyecto_id:String(proyecto.id),componente_id:cid,
       nombre:pol.nombre||"",pct:Number(pol.pct)||0,pct_prima:Number(pol.pctPrima)||0,
       meses_extra:Number(pol.mesesExtra)||0,plazo_contractual:Number(plazo||saved.plazoContractual)||0,
@@ -4846,8 +4844,7 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
   };
   const dbDelPol = (polId) => {
     if(!proyecto?.id) return;
-    _sb.from("items_polizas").delete().eq("id",String(polId)).eq("proyecto_id",String(proyecto.id))
-      .then(({error})=>{if(error)console.error("delPol:",error);});
+    safeDelete("items_polizas", {id:String(polId), proyecto_id:String(proyecto.id)}, "pol_del_"+polId);
   };
 
   useEffect(()=>{
@@ -5360,15 +5357,14 @@ function TabEstampillas({ proyecto, setEstampillas, setAU, totalProyecto, readOn
   const dbEstUser=()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
   const dbSaveEst=(est)=>{
     if(!proyecto?.id||!session) return;
-    _sb.from("items_estampillas").upsert({
+    safeUpsert("items_estampillas", {
       id:String(est.id),proyecto_id:String(proyecto.id),
       nombre:est.nombre||"",pct:Number(est.pct)||0,...dbEstUser()
     }).then(({error})=>{if(error)console.error("saveEst:",error);});
   };
   const dbDelEst=(estId)=>{
     if(!proyecto?.id) return;
-    _sb.from("items_estampillas").delete().eq("id",String(estId)).eq("proyecto_id",String(proyecto.id))
-      .then(({error})=>{if(error)console.error("delEst:",error);});
+    safeDelete("items_estampillas", {id:String(estId), proyecto_id:String(proyecto.id)}, "est_del_"+estId);
   };
 
   useEffect(()=>{
@@ -7297,26 +7293,22 @@ function ModuloProyectos({
   });
 
   const dbSaveCap = (cap, proyId) => {
-    _sb.from("capitulos_presupuesto").upsert({
+    safeUpsert("capitulos_presupuesto", {
       id: String(cap.id), proyecto_id: String(proyId||pActivo?.id),
       numero: cap.numero, nombre: cap.nombre,
       tipo: cap.tipo||"obra", orden: cap.orden||0,
       ...dbUser()
-    }).then(({error})=>{ if(error) console.error("saveCap:",error); });
+    }, "cap_"+(proyId||pActivo?.id)+"_"+cap.id);
   };
 
   const dbDelCap = (capId, proyId) => {
     const pid = String(proyId||pActivo?.id);
-    _sb.from("items_presupuesto").delete()
-      .eq("proyecto_id",pid).eq("capitulo_id",String(capId))
-      .then(()=>_sb.from("capitulos_presupuesto").delete()
-        .eq("proyecto_id",pid).eq("id",String(capId))
-        .then(({error})=>{ if(error) console.error("delCap:",error); })
-      );
+    safeDelete("items_presupuesto", {proyecto_id:pid, capitulo_id:String(capId)}, "items_cap_"+capId);
+    safeDelete("capitulos_presupuesto", {proyecto_id:pid, id:String(capId)}, "cap_"+capId);
   };
 
   const dbSaveItem = (item, capId, capNumero, proyId) => {
-    _sb.from("items_presupuesto").upsert({
+    safeUpsert("items_presupuesto", {
       id: String(item.id), proyecto_id: String(proyId||pActivo?.id),
       capitulo_id: String(capId), numero_cap: capNumero,
       apu_id: item.apuId ? String(item.apuId) : null,
@@ -7325,14 +7317,11 @@ function ModuloProyectos({
       cantidad: item.cantidad||0,
       orden_item: item.orden||0,
       ...dbUser()
-    }).then(({error})=>{ if(error) console.error("saveItem:",error); });
+    }, "item_"+(proyId||pActivo?.id)+"_"+item.id);
   };
 
   const dbDelItem = (itemId, proyId) => {
-    _sb.from("items_presupuesto").delete()
-      .eq("proyecto_id",String(proyId||pActivo?.id))
-      .eq("id",String(itemId))
-      .then(({error})=>{ if(error) console.error("delItem:",error); });
+    safeDelete("items_presupuesto", {proyecto_id:String(proyId||pActivo?.id), id:String(itemId)}, "item_del_"+itemId);
   };
 
   // Merge cambio externo de cap/item al estado local
@@ -9348,6 +9337,96 @@ function ModuloObservaciones({proyectos}) {
   );
 }
 
+// ═══════════════════════════════════════════════════════
+// OFFLINE SYNC MANAGER
+// ═══════════════════════════════════════════════════════
+const OFFLINE_QUEUE_KEY = 'edeso_offline_queue';
+
+const offlineQueue = {
+  get: () => { try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY)||'[]'); } catch(e){ return []; } },
+  add: (op) => {
+    try {
+      const q = offlineQueue.get();
+      // Replace existing op for same key (last write wins per key)
+      const idx = q.findIndex(x=>x.key===op.key);
+      if(idx>=0) q[idx]=op; else q.push(op);
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q));
+    } catch(e){ console.warn('Queue add failed:', e); }
+  },
+  clear: () => { try { localStorage.removeItem(OFFLINE_QUEUE_KEY); } catch(e){} },
+  remove: (key) => {
+    try {
+      const q = offlineQueue.get().filter(x=>x.key!==key);
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q));
+    } catch(e){}
+  }
+};
+
+// Safe Supabase upsert — queues if offline
+async function safeUpsert(table, data, queueKey) {
+  if(!_sb) return;
+  if(!navigator.onLine) {
+    offlineQueue.add({ table, data, key: queueKey, ts: Date.now() });
+    console.log('Queued offline:', queueKey);
+    return;
+  }
+  const {error} = await _sb.from(table).upsert(data);
+  if(error) {
+    // Network error — queue it
+    if(error.message?.includes('network')||error.message?.includes('fetch')) {
+      offlineQueue.add({ table, data, key: queueKey, ts: Date.now() });
+    } else {
+      console.error('upsert error:', table, error);
+    }
+  }
+}
+
+// Safe Supabase delete — queues if offline  
+async function safeDelete(table, filters, queueKey) {
+  if(!_sb) return;
+  if(!navigator.onLine) {
+    offlineQueue.add({ table, filters, isDelete:true, key: queueKey+'_del', ts: Date.now() });
+    return;
+  }
+  let q = _sb.from(table).delete();
+  Object.entries(filters).forEach(([k,v])=>{ q = q.eq(k,v); });
+  const {error} = await q;
+  if(error && (error.message?.includes('network')||error.message?.includes('fetch'))) {
+    offlineQueue.add({ table, filters, isDelete:true, key: queueKey+'_del', ts: Date.now() });
+  }
+}
+
+// Flush queued operations when back online
+async function flushOfflineQueue(setSyncMsg) {
+  const q = offlineQueue.get();
+  if(!q.length) return;
+  console.log(`Flushing ${q.length} offline operations...`);
+  setSyncMsg && setSyncMsg(`🔄 Sincronizando ${q.length} cambios pendientes...`);
+  let success = 0;
+  for(const op of q) {
+    try {
+      if(op.isDelete) {
+        let query = _sb.from(op.table).delete();
+        Object.entries(op.filters).forEach(([k,v])=>{ query = query.eq(k,v); });
+        const {error} = await query;
+        if(!error) { offlineQueue.remove(op.key); success++; }
+      } else {
+        const {error} = await _sb.from(op.table).upsert(op.data);
+        if(!error) { offlineQueue.remove(op.key); success++; }
+      }
+    } catch(e) { console.warn('Flush error:', e); }
+  }
+  const remaining = offlineQueue.get().length;
+  if(remaining===0) {
+    setSyncMsg && setSyncMsg('✅ Todo sincronizado');
+    setTimeout(()=>setSyncMsg&&setSyncMsg(''), 3000);
+  } else {
+    setSyncMsg && setSyncMsg(`⚠️ ${remaining} cambios pendientes`);
+  }
+  console.log(`Flushed ${success}/${q.length} operations`);
+}
+
+
 function App() {
   // ── Auth ──────────────────────────────────────────────
   const [sidebarOpen,setSidebarOpen] = useState(true);
@@ -9478,6 +9557,26 @@ function App() {
     return ch;
   };
 
+  // Online/offline detection + flush queue on reconnect
+  useEffect(()=>{
+    const handleOnline = () => {
+      setIsOnline(true);
+      if(_sb) flushOfflineQueue(setSyncMsg);
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setSyncMsg('📴 Sin conexión — los cambios se guardarán al reconectarse');
+    };
+    window.addEventListener('online',  handleOnline);
+    window.addEventListener('offline', handleOffline);
+    // Flush any pending ops on mount (in case page was reloaded while offline)
+    if(navigator.onLine && _sb) {
+      const q = offlineQueue.get();
+      if(q.length > 0) flushOfflineQueue(setSyncMsg);
+    }
+    return()=>{ window.removeEventListener('online',handleOnline); window.removeEventListener('offline',handleOffline); };
+  },[]);
+
   useEffect(()=>{
     if(!_sb){console.warn("Supabase no configurado");return;}
     let rtChannel = null;
@@ -9507,13 +9606,13 @@ function App() {
 
   // ── Supabase save + audit ─────────────────────────────
   const guardar = (key,data,modLabel,accion) => {
-    _sb.from("app_data").upsert({
+    safeUpsert("app_data", {
       key, value:data,
       updated_at:new Date().toISOString(),
       updated_by:session?.user?.id,
       updated_by_email:session?.user?.email,
       updated_by_name:perfil?.nombre||session?.user?.email,
-    }).then(({error})=>{if(error)console.error("Save:",key,error);});
+    }, "appdata_"+key);
     if(session&&accion){
       _sb.from("audit_log").insert({
         user_id:session.user.id,
@@ -9632,6 +9731,12 @@ function App() {
     }),
     React.createElement("div",{className:"main-area",style:{marginLeft:sidebarOpen?232:0,transition:"margin-left .25s"}},
       React.createElement(Topbar,{modulo,sub:subTitle}),
+      !isOnline&&React.createElement("div",{style:{
+        position:"fixed",top:0,left:0,right:0,zIndex:1000,
+        background:"#F59E0B",color:"#fff",
+        padding:"8px 16px",textAlign:"center",
+        fontSize:13,fontWeight:600,fontFamily:"var(--sans)"
+      }},"📴 Sin conexión a internet — los cambios se guardarán localmente y se sincronizarán al reconectarse"),
       syncMsg&&React.createElement("div",{style:{
         position:"fixed",bottom:24,right:24,zIndex:999,
         background:"#0D1117",border:"1px solid #21262D",
