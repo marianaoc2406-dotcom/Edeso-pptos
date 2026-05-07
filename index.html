@@ -6786,14 +6786,13 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
 
   const eliminar = async(obsId) => {
     if(!window.confirm("¿Eliminar esta observación? También se eliminarán las respuestas.")) return;
-    const {error:e1} = await _sb.from("observaciones").delete().eq("parent_id", String(obsId));
-    const {error:e2} = await _sb.from("observaciones").delete().eq("id", String(obsId));
+    const id = Number(obsId);
+    const {error:e1} = await _sb.from("observaciones").delete().eq("parent_id", id);
+    const {error:e2} = await _sb.from("observaciones").delete().eq("id", id);
     if(e1) console.error("Del replies:",e1);
     if(e2) console.error("Del obs:",e2);
-    // Update local state immediately without waiting for cargar
-    setAllObs(prev=>prev.filter(o=>o.id!==obsId&&o.parent_id!==obsId));
-    // Also refresh from server
-    setTimeout(()=>obsViewRef.current&&obsViewRef.current(),500);
+    setAllObs(prev=>prev.filter(o=>Number(o.id)!==id && Number(o.parent_id)!==id));
+    setTimeout(()=>obsViewRef.current&&obsViewRef.current(), 600);
   };
 
   const fmtF = iso => {
