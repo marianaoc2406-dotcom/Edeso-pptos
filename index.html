@@ -9561,6 +9561,7 @@ async function flushOfflineQueue(setSyncMsg) {
 function App() {
   // ── Auth ──────────────────────────────────────────────
   const [sidebarOpen,setSidebarOpen] = useState(true);
+  const [isOnline,setIsOnline]   = useState(navigator.onLine);
   const [session,setSession]   = useState(null);
   const [perfil,setPerfil]     = useState(null);
   const [dataReady,setDataReady] = useState(false);
