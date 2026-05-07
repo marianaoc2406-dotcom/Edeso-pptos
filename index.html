@@ -5635,21 +5635,21 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
 // ═══════════════════════════════════════════════════════
 // Helper robusto para descargar Excel
 function descargarExcel(wb, filename) {
+  // Always use Blob method — works in file://, GitHub Pages, and all browsers
   try {
-    XLSX.writeFile(wb, filename, {cellStyles:true});
-  } catch(e1) {
-    try {
-      const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
-      const blob = new Blob([wbout], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a); URL.revokeObjectURL(url);
-    } catch(e2) {
-      console.error('Download failed:', e2);
-      alert('Error al descargar: ' + e2.message);
-    }
+    const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
+    const blob = new Blob([wbout], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  } catch(e) {
+    console.error('Download failed:', e);
+    alert('Error al descargar el archivo: ' + e.message);
   }
 }
 
