@@ -366,17 +366,24 @@ function calcAUSubseccion(sub, cd, total) {
   return (sub.items || []).reduce((s, i) => s + calcAUItem(i, sub.tipo, cd, total), 0);
 }
 function calcAUTotal(au, cd) {
+  // IMPORTANTE: sección s1_1 (Personal Prof. y Técnico) se multiplica ×1.45
+  // para incluir prestaciones sociales — igual que calcProyecto
   if (!au || !au.secciones) return 0;
-  let sub1 = 0;
-  au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => (sub.items || []).forEach(item => {
-    if (sub.tipo !== "otros" || !item.porcentaje || item.baseCalculo !== "total") sub1 += calcAUItem(item, sub.tipo, cd, 0);
-  })));
-  const totalAprox = cd + sub1;
-  let total = 0;
-  au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => (sub.items || []).forEach(item => {
-    total += calcAUItem(item, sub.tipo, cd, totalAprox);
-  })));
-  return total;
+  let personal11 = 0, personal13 = 0, resto = 0, pctI = 0, pctU = 0;
+  au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
+    if (sub.id === 's1_9') {
+      pctI = (sub.items[0] && sub.items[0].porcentaje) || 0;
+    } else if (sub.id === 's1_10') {
+      pctU = (sub.items[0] && sub.items[0].porcentaje) || 0;
+    } else if (sub.id === 's1_1') {
+      (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+    } else if (sub.id === 's1_3') {
+      (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
+    } else {
+      (sub.items || []).forEach(item => { resto += calcAUItem(item, sub.tipo, cd, 0); });
+    }
+  }));
+  return personal11 * 1.45 + personal13 * 1.70 + resto + cd * pctU / 100;
 }
 // AU total excluyendo el ítem pólizas (para iteración)
 function calcAUSinPoliza(au, cd) {
@@ -464,6 +471,7 @@ function calcProyecto(p, apus, recursos) {
   // CI          = gastosAdmin + I + U
   // Total       = CD + CI
   let personal11 = 0,
+    personal13 = 0,
     resto = 0,
     pctI = 0,
     pctU = 0;
@@ -479,6 +487,10 @@ function calcProyecto(p, apus, recursos) {
         sub.items.forEach(item => {
           personal11 += calcAUItem(item, sub.tipo, cd, 0);
         });
+      } else if (sub.id === "s1_3") {
+        sub.items.forEach(item => {
+          personal13 += calcAUItem(item, sub.tipo, cd, 0);
+        });
       } else {
         sub.items.forEach(item => {
           resto += calcAUItem(item, sub.tipo, cd, 0);
@@ -487,7 +499,8 @@ function calcProyecto(p, apus, recursos) {
     }));
   }
   const prestaciones11 = personal11 * 1.45;
-  const gastosAdmin = prestaciones11 + resto;
+  const prestaciones13 = personal13 * 1.70;
+  const gastosAdmin = prestaciones11 + prestaciones13 + resto;
   const valU = cd * pctU / 100;
   const valorAIU = gastosAdmin + valU;
   const pctA = cd > 0 ? gastosAdmin / cd * 100 : 0;
@@ -505,6 +518,8 @@ function calcProyecto(p, apus, recursos) {
     auGastos: gastosAdmin,
     personal11,
     prestaciones11,
+    personal13,
+    prestaciones13,
     resto
   };
 }
@@ -535,7 +550,7 @@ function calcTotalSinPolizas(p, apus, recursos) {
       }
     }));
   }
-  const gastosAdmin = personal11 * 1.45 + resto;
+  const gastosAdmin = personal11 * 1.45 + personal13 * 1.70 + resto;
   const valorAIU = gastosAdmin + cd * pctU / 100;
   return cd + valorAIU;
 }
@@ -550,13 +565,15 @@ function calcTotalConvergido(proyecto, apus, recursos) {
   const polizasActivas = polData.polizasActivas || [];
 
   // Calcular CI base (sin polizas) para arrancar
-  let personal11 = 0, resto = 0, pctU = 0;
+  let personal11 = 0, personal13 = 0, resto = 0, pctU = 0;
   if (au && au.secciones) {
     au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
       if (sub.id === "s1_10") {
         pctU = (sub.items[0]?.porcentaje) || 0;
       } else if (sub.id === "s1_1") {
         sub.items.forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+      } else if (sub.id === "s1_3") {
+        sub.items.forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
       } else if (sub.id !== "s1_9") {
         sub.items.forEach(item => {
           const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
@@ -568,7 +585,7 @@ function calcTotalConvergido(proyecto, apus, recursos) {
       }
     }));
   }
-  const ciBase = personal11 * 1.45 + resto + cd * pctU / 100;
+  const ciBase = personal11 * 1.45 + personal13 * 1.70 + resto + cd * pctU / 100;
 
   // Función que calcula total de polizas dado un valor base
   const calcPolTotal = (base) => polizasActivas.reduce((s, p) => {
@@ -2960,12 +2977,11 @@ function TabAU({
 
   const totalAU = calcAUTotal(au, cd);
   const pctAU = cd > 0 ? totalAU / cd * 100 : 0;
-  // Calcular personal11 para la fila ×1.45 \u2014 disponible en todo el render
-  let personal11 = 0;
+  // Calcular personal11 (×1.45) y personal13 (×1.70) para filas de prestaciones
+  let personal11 = 0, personal13 = 0;
   if (au && au.secciones) au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
-    if (sub.id === "s1_1") (sub.items || []).forEach(i => {
-      personal11 += calcAUItem(i, sub.tipo, cd, 0);
-    });
+    if (sub.id === "s1_1") (sub.items || []).forEach(i => { personal11 += calcAUItem(i, sub.tipo, cd, 0); });
+    if (sub.id === "s1_3") (sub.items || []).forEach(i => { personal13 += calcAUItem(i, sub.tipo, cd, 0); });
   }));
   return /*#__PURE__*/React.createElement("div", null,
     !readOnly && React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
@@ -2979,7 +2995,23 @@ function TabAU({
             placeholder:"0",
             onChange: function(e) {
               var v = parseInt(e.target.value)||0;
-              setAu(function(prev){ return Object.assign({}, prev, { plazo: v }); });
+              var oldPlazo = au.plazo || 0;
+              setAu(function(prev) {
+                var secciones = (prev.secciones||[]).map(function(sec) {
+                  return Object.assign({}, sec, {
+                    subsecciones: (sec.subsecciones||[]).map(function(sub) {
+                      if (sub.tipo !== 'personal' && sub.tipo !== 'desplazamiento') return sub;
+                      return Object.assign({}, sub, {
+                        items: (sub.items||[]).map(function(item) {
+                          if (Number(item.meses) === oldPlazo) return Object.assign({}, item, { meses: v });
+                          return item;
+                        })
+                      });
+                    })
+                  });
+                });
+                return Object.assign({}, prev, { plazo: v, secciones: secciones });
+              });
             }
           }),
           React.createElement("span", { style:{fontSize:12,color:"var(--ink4)"} }, "meses"),
@@ -3166,29 +3198,20 @@ function TabAU({
           onClick: () => removeItem(sub.id, item.id)
         }, "\xD7")))));
       }), sub.id === "s1_1" && personal11 > 0 && /*#__PURE__*/React.createElement("tr", {
-        style: {
-          background: "#F0FDF4",
-          borderTop: "1px solid #BBF7D0"
-        }
+        style: { background: "#F0FDF4", borderTop: "1px solid #BBF7D0" }
       }, /*#__PURE__*/React.createElement("td", {
-        colSpan: 7,
-        style: {
-          padding: "8px 16px",
-          paddingLeft: 36,
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#15803D"
-        }
+        colSpan: 7, style: { padding:"8px 16px", paddingLeft:36, fontSize:12, fontWeight:700, color:"#15803D" }
       }, "Personal Profesional y T\xE9cnico + Prestaciones (\xD71.45)"), /*#__PURE__*/React.createElement("td", {
-        style: {
-          padding: "8px 16px",
-          textAlign: "right",
-          fontFamily: "var(--mono)",
-          fontWeight: 800,
-          color: "#15803D",
-          fontSize: 13
-        }
-      }, fmt(personal11 * 1.45)), /*#__PURE__*/React.createElement("td", null)), /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+        style: { padding:"8px 16px", textAlign:"right", fontFamily:"var(--mono)", fontWeight:800, color:"#15803D", fontSize:13 }
+      }, fmt(personal11 * 1.45)), /*#__PURE__*/React.createElement("td", null)),
+      sub.id === "s1_3" && personal13 > 0 && /*#__PURE__*/React.createElement("tr", {
+        style: { background: "#EFF6FF", borderTop: "1px solid #BFDBFE" }
+      }, /*#__PURE__*/React.createElement("td", {
+        colSpan: 7, style: { padding:"8px 16px", paddingLeft:36, fontSize:12, fontWeight:700, color:"#1D4ED8" }
+      }, "Personal Administrativo y Operativo + Prestaciones (\xD71.70)"), /*#__PURE__*/React.createElement("td", {
+        style: { padding:"8px 16px", textAlign:"right", fontFamily:"var(--mono)", fontWeight:800, color:"#1D4ED8", fontSize:13 }
+      }, fmt(personal13 * 1.70)), /*#__PURE__*/React.createElement("td", null)),
+      /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
         colSpan: 9,
         style: {
           padding: "5px 16px",
@@ -3202,17 +3225,21 @@ function TabAU({
     }));
   }), ((_subI$items$, _subU$items$) => {
     let personal11 = 0,
+      personal13 = 0,
       resto = 0;
     (au.secciones || []).forEach(sec => (sec.subsecciones || []).forEach(sub => {
       if (sub.esSeparado) return;
       if (sub.id === "s1_1") (sub.items || []).forEach(i => {
         personal11 += calcAUItem(i, sub.tipo, cd, 0);
+      });else if (sub.id === "s1_3") (sub.items || []).forEach(i => {
+        personal13 += calcAUItem(i, sub.tipo, cd, 0);
       });else (sub.items || []).forEach(i => {
         resto += calcAUItem(i, sub.tipo, cd, 0);
       });
     }));
     const prestaciones11 = personal11 * 1.45;
-    const auGastos = prestaciones11 + resto;
+    const prestaciones13 = personal13 * 1.70;
+    const auGastos = prestaciones11 + prestaciones13 + resto;
     const pctA = cd > 0 ? auGastos / cd * 100 : 0;
     const subI = au.secciones[0].subsecciones.find(s => s.id === "s1_9");
     const subU = au.secciones[0].subsecciones.find(s => s.id === "s1_10");
@@ -5596,228 +5623,129 @@ const CATALOGO_ESTAMPILLAS_INIT = [
 
 // ── TAB ESTAMPILLAS ──────────────────────────────────────
 function TabEstampillas({ proyecto, setEstampillas, setAU, totalProyecto, readOnly, catalogoEstampillas, perfil, session }) {
-  const catEst  = catalogoEstampillas || [];
-  const saved   = proyecto.estampillas || { activas: [] };
+  const catEst = catalogoEstampillas || [];
+  const vc     = totalProyecto || 0;
+  const COLOR  = "#D97706";
+  const munGrp = catEst.find(function(g){ return g.id === proyecto.municipioId; }) || null;
+  const activas = munGrp ? (munGrp.items || []) : [];
+  const total  = activas.reduce(function(s,e){ return s + Math.round(vc*(Number(e.pctDef)||0)/100); }, 0);
 
-  const updateSaved = (patch) => {
-    if (readOnly) return;
-    const next = { ...saved, ...patch };
-    setEstampillas(next);
-    // Sincronizar total al AU 1.8
-    if (setAU && proyecto.au) {
-      const tot = (next.activas || []).reduce((s, e) => {
-        const pct = Number(e.pct) || 0;
-        return s + Math.round((totalProyecto || 0) * pct / 100);
-      }, 0);
-      const au   = JSON.parse(JSON.stringify(proyecto.au));
-      const sec0 = (au.secciones || [])[0];
-      const sub  = sec0 ? (sec0.subsecciones || []).find(s => s.id === "s1_8") : null;
-      if (sub) {
-        const existIdx = sub.items.findIndex(i =>
-          (i.descripcion || "").toLowerCase().includes("estampilla")
-        );
-        const nuevoItem = {
-          id:          existIdx >= 0 ? sub.items[existIdx].id : ("est_au_" + Date.now()),
-          descripcion: "Estampillas",
-          unidad:      "un",
-          valorFijo:   tot,
-          porcentaje:  null,
-          baseCalculo: "cd"
-        };
-        if (existIdx >= 0) sub.items[existIdx] = nuevoItem;
-        else sub.items.push(nuevoItem);
-        // Upsert Transacciones Bancarias: (vBase × 0.004) × 0.5
-        const vBase = totalProyecto || 0;
-        const totTB = Math.round(vBase * 0.004 * 0.5);
-        const tbIdx = sub.items.findIndex(i => (i.descripcion || "").toLowerCase().includes("transacci"));
-        const tbItem = { id: tbIdx >= 0 ? sub.items[tbIdx].id : ("tb_au_" + Date.now()), descripcion:"Transacciones Bancarias", unidad:"un", valorFijo:totTB, porcentaje:null, baseCalculo:"cd" };
-        if (tbIdx >= 0) sub.items[tbIdx] = tbItem; else sub.items.push(tbItem);
-        setAU(au);
-      }
-    }
-  };
-  const updateEst   = (idx, patch) => {
-    const act = saved.activas.map((e, i) => i === idx ? { ...e, ...patch } : e);
-    updateSaved({ activas: act });
-  };
-  const dbEstUser=()=>({updated_at:new Date().toISOString(),updated_by:session?.user?.id,updated_by_email:session?.user?.email,updated_by_name:perfil?.nombre||session?.user?.email});
-  const dbSaveEst=(est)=>{
-    if(!proyecto?.id||!session) return;
-    safeUpsert("items_estampillas", {
-      id:String(est.id),proyecto_id:String(proyecto.id),
-      nombre:est.nombre||"",pct:Number(est.pct)||0,...dbEstUser()
-    }).then(({error})=>{if(error)console.error("saveEst:",error);});
-  };
-  const dbDelEst=(estId)=>{
-    if(!proyecto?.id) return;
-    safeDelete("items_estampillas", {id:String(estId), proyecto_id:String(proyecto.id)}, "est_del_"+estId);
-  };
+  React.useEffect(function() {
+    if (!setAU || !proyecto.au) return;
+    var au = JSON.parse(JSON.stringify(proyecto.au));
+    var sec0 = (au.secciones||[])[0];
+    var sub  = sec0 ? (sec0.subsecciones||[]).find(function(s){ return s.id==="s1_8"; }) : null;
+    if (!sub) return;
+    var idx = sub.items.findIndex(function(i){ return (i.descripcion||"").toLowerCase().includes("estampilla"); });
+    var item = { id: idx>=0?sub.items[idx].id:"est_au_"+Date.now(), descripcion:"Estampillas", unidad:"un", valorFijo:total, porcentaje:null, baseCalculo:"cd" };
+    if (idx>=0) sub.items[idx]=item; else sub.items.push(item);
+    var totTB = Math.round(vc*0.004*0.5);
+    var tbIdx = sub.items.findIndex(function(i){ return (i.descripcion||"").toLowerCase().includes("transacci"); });
+    var tbItem = { id:tbIdx>=0?sub.items[tbIdx].id:"tb_au_"+Date.now(), descripcion:"Transacciones Bancarias", unidad:"un", valorFijo:totTB, porcentaje:null, baseCalculo:"cd" };
+    if (tbIdx>=0) sub.items[tbIdx]=tbItem; else sub.items.push(tbItem);
+    setAU(au);
+  }, [total, proyecto.municipioId]);
 
-  useEffect(()=>{
-    if(!proyecto?.id||!session) return;
-    const pid=String(proyecto.id), myEmail=session.user.email;
-    const ch=_sb.channel("est_items_"+pid)
-      .on("postgres_changes",{event:"*",schema:"public",table:"items_estampillas"},p=>{
-        if((p.new?.updated_by_email||p.old?.updated_by_email)===myEmail) return;
-        const row=p.eventType==="DELETE"?p.old:p.new;
-        if(String(row.proyecto_id)!==pid) return;
-        const est={id:row.id,nombre:row.nombre,pct:Number(row.pct)};
-        if(p.eventType==="DELETE"){
-          updateSaved({activas:(saved.activas||[]).filter(x=>String(x.id)!==String(row.id))});
-        } else {
-          const existe=(saved.activas||[]).find(x=>String(x.id)===String(row.id));
-          updateSaved({activas:existe?(saved.activas||[]).map(x=>String(x.id)===String(row.id)?{...x,...est}:x):[...(saved.activas||[]),est]});
-        }
-      }).subscribe();
-    return()=>_sb.removeChannel(ch);
-  },[proyecto?.id]);
-
-  const addEst = (catItem) => {
-    const nueva = { id: Date.now(), catalogoId: catItem.id, nombre: catItem.nombre, pct: catItem.pctDef || 0 };
-    updateSaved({ activas: [...(saved.activas || []), nueva] });
-    dbSaveEst(nueva);
-    setShowAdd(false);
-  };
-  const removeEst = (idx) => {
-    const est = saved.activas[idx];
-    if(est) dbDelEst(est.id);
-    updateSaved({ activas: saved.activas.filter((_, i) => i !== idx) });
-  };
-
-  const [showAdd, setShowAdd] = React.useState(false);
-  const activas   = saved.activas || [];
-  const vc        = totalProyecto || 0;
-  const usados    = activas.map(e => e.catalogoId);
-  const disponibles = catEst.filter(c => !usados.includes(c.id));
-  const total     = activas.reduce((s, e) => s + Math.round(vc * (Number(e.pct) || 0) / 100), 0);
-
-  const S = {
+  var S = {
     th:  { padding:"10px 14px", fontWeight:700, fontSize:11, letterSpacing:".06em", color:"var(--ink3)", borderBottom:"2px solid var(--line)", background:"var(--line2)", textAlign:"right", whiteSpace:"nowrap" },
-    thL: { padding:"10px 14px", fontWeight:700, fontSize:11, letterSpacing:".06em", color:"var(--ink3)", borderBottom:"2px solid var(--line)", background:"var(--line2)", textAlign:"left",  whiteSpace:"nowrap" },
-    td:  { padding:"10px 14px", borderBottom:"1px solid var(--line)", textAlign:"right",  fontSize:13, fontFamily:"var(--mono)", color:"var(--ink2)" },
-    tdL: { padding:"10px 14px", borderBottom:"1px solid var(--line)", textAlign:"left",   fontSize:13, color:"var(--ink)" },
-    inp: { fontFamily:"var(--mono)", fontSize:13, border:"1.5px solid var(--line)", borderRadius:6, padding:"5px 8px", width:"80px", textAlign:"right", outline:"none", background:"var(--card)", color:"var(--ink)" }
+    thL: { padding:"10px 14px", fontWeight:700, fontSize:11, letterSpacing:".06em", color:"var(--ink3)", borderBottom:"2px solid var(--line)", background:"var(--line2)", textAlign:"left", whiteSpace:"nowrap" },
+    td:  { padding:"10px 14px", borderBottom:"1px solid var(--line)", textAlign:"right", fontSize:13, fontFamily:"var(--mono)", color:"var(--ink2)" },
+    tdL: { padding:"10px 14px", borderBottom:"1px solid var(--line)", textAlign:"left", fontSize:13, color:"var(--ink)" },
   };
-  const COLOR = "#D97706";
 
-  return React.createElement("div", { style:{ display:"flex", flexDirection:"column", gap:20 } },
-
-    // Badge
-    React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:10, paddingTop:4 } },
-      React.createElement("span", { style:{ background:COLOR, color:"#fff", padding:"3px 16px", borderRadius:20, fontSize:12, fontWeight:700 } }, "Estampillas · Obra")
+  return React.createElement("div", { style:{display:"flex",flexDirection:"column",gap:20} },
+    React.createElement("div", { style:{display:"flex",alignItems:"center",gap:10,paddingTop:4} },
+      React.createElement("span", { style:{background:COLOR,color:"#fff",padding:"3px 16px",borderRadius:20,fontSize:12,fontWeight:700} }, "Estampillas \xB7 Obra")
     ),
-
-    // Card parámetros
     React.createElement("div", { className:"card" },
       React.createElement("div", { className:"card-header" },
-        React.createElement("span", { className:"card-header-title" }, "Base de Cálculo")
+        React.createElement("span", { className:"card-header-title" }, "Municipio del Contrato")
       ),
       React.createElement("div", { className:"card-body" },
-        React.createElement("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:20 } },
+        React.createElement("div", { style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20} },
+          React.createElement("div", null,
+            React.createElement("label", { className:"lbl" }, "Municipio (estampillas)"),
+            catEst.length === 0
+              ? React.createElement("div", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic",padding:"8px 0"} }, "Sin municipios \xB7 agregalos en Cat\xE1logo Estampillas")
+              : React.createElement("select", {
+                  className:"ifield",
+                  value: proyecto.municipioId || "",
+                  disabled: readOnly,
+                  onChange: function(e) {
+                    if (readOnly) return;
+                    setEstampillas({ _setMunicipioId: e.target.value });
+                  }
+                },
+                React.createElement("option", { value:"" }, "\u2014 Sin municipio"),
+                catEst.map(function(g){ return React.createElement("option", { key:g.id, value:g.id }, g.nombre+" ("+(g.items||[]).length+" estampillas)"); })
+              )
+          ),
           React.createElement("div", null,
             React.createElement("label", { className:"lbl" }, "Valor base (Obra)"),
-            React.createElement("div", { style:{ background:"var(--line2)", border:"1.5px solid var(--line)", borderRadius:7, padding:"10px 12px" } },
-              React.createElement("span", { style:{ fontFamily:"var(--mono)", fontWeight:700, fontSize:15 } }, vc > 0 ? fmt(vc) : "—")
+            React.createElement("div", { style:{background:"var(--line2)",border:"1.5px solid var(--line)",borderRadius:7,padding:"10px 12px"} },
+              React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:700,fontSize:15} }, vc>0?fmt(vc):"\u2014")
             )
           ),
           React.createElement("div", null,
             React.createElement("label", { className:"lbl" }, "Total estampillas"),
-            React.createElement("div", { style:{ background:"var(--line2)", border:"1.5px solid var(--line)", borderRadius:7, padding:"10px 12px" } },
-              React.createElement("span", { style:{ fontFamily:"var(--mono)", fontWeight:700, fontSize:15, color:COLOR } }, total > 0 ? fmt(total) : "—")
-            )
-          ),
-          React.createElement("div", null,
-            React.createElement("label", { className:"lbl" }, "Nota"),
-            React.createElement("div", { style:{ background:"var(--line2)", border:"1.5px solid var(--line)", borderRadius:7, padding:"10px 14px", fontSize:11, color:"var(--ink3)", lineHeight:1.5 } },
-              "Cada estampilla se calcula como % sobre el valor base de la Obra."
+            React.createElement("div", { style:{background:"var(--line2)",border:"1.5px solid var(--line)",borderRadius:7,padding:"10px 12px"} },
+              React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:700,fontSize:15,color:COLOR} }, total>0?fmt(total):"\u2014")
             )
           )
         )
       )
     ),
-
-    // Tabla estampillas
-    React.createElement("div", { className:"card", style:{ overflow:"hidden" } },
+    React.createElement("div", { className:"card", style:{overflow:"hidden"} },
       React.createElement("div", { className:"card-header" },
         React.createElement("span", { className:"card-header-title" }, "Estampillas del Contrato"),
-        React.createElement("span", { style:{ fontSize:12, color:"var(--ink4)" } }, total > 0 ? ("Total: " + fmt(total)) : "")
+        munGrp && React.createElement("span", { style:{fontSize:12,color:"var(--ink4)"} }, "\uD83C\uDFD9 "+munGrp.nombre+" \xB7 "+activas.length+" estampillas")
       ),
-      React.createElement("div", { style:{ overflowX:"auto" } },
-        React.createElement("table", { className:"tbl", style:{ minWidth:700 } },
-          React.createElement("thead", null,
-            React.createElement("tr", null,
-              React.createElement("th", { style:S.thL }, "Estampilla"),
-              React.createElement("th", { style:S.th  }, "% sobre contrato"),
-              React.createElement("th", { style:S.th  }, "Valor"),
-              React.createElement("th", { style:{ ...S.th, width:32 } }, "")
-            )
-          ),
-          React.createElement("tbody", null,
-            activas.length === 0
-              ? React.createElement("tr", null,
-                  React.createElement("td", { colSpan:4 },
-                    React.createElement("div", { className:"empty", style:{ padding:"28px 0" } },
-                      React.createElement("div", { className:"empty-icon" }, "📋"),
-                      React.createElement("div", { className:"empty-title" }, "Sin estampillas"),
-                      React.createElement("div", { className:"empty-desc" }, "Agrega estampillas desde el catálogo")
-                    )
-                  )
-                )
-              : activas.map((e, idx) =>
-                  React.createElement("tr", { key: e.id },
-                    React.createElement("td", { style:S.tdL },
-                      React.createElement("span", { style:{ background:COLOR+"18", color:COLOR, padding:"3px 10px", borderRadius:20, fontSize:12, fontWeight:600 } }, e.nombre)
-                    ),
-                    React.createElement("td", { style:S.td },
-                      React.createElement("div", { style:{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:2 } },
-                        React.createElement("input", {
-                          style:S.inp, type:"number", min:0, max:100, step:0.01,
-                          value: e.pct,
-                          onChange: ev => updateEst(idx, { pct: ev.target.value }),
-                          disabled: readOnly
-                        }),
-                        React.createElement("span", { style:{ fontSize:10, color:"var(--ink4)" } }, "%")
-                      )
-                    ),
-                    React.createElement("td", { style:{ ...S.td, fontWeight:700, color:COLOR } }, fmt(Math.round(vc * (Number(e.pct)||0) / 100))),
-                    React.createElement("td", { style:{ ...S.td, textAlign:"center", padding:"10px 8px" } },
-                      !readOnly && React.createElement("button", {
-                        onClick: () => removeEst(idx),
-                        style:{ background:"none", border:"none", cursor:"pointer", color:"var(--ink4)", fontSize:16, lineHeight:1, padding:"2px 6px", borderRadius:4 },
-                        title:"Eliminar estampilla"
-                      }, "×")
-                    )
-                  )
-                )
-          ),
-          activas.length > 0 && React.createElement("tfoot", null,
-            React.createElement("tr", null,
-              React.createElement("td", { colSpan:2, style:{ padding:"12px 14px", fontWeight:700, fontSize:12, letterSpacing:".04em", color:"var(--ink3)", borderTop:"2px solid var(--line)", textAlign:"right" } }, "TOTAL ESTAMPILLAS"),
-              React.createElement("td", { colSpan:2, style:{ padding:"12px 14px", fontWeight:800, fontSize:15, fontFamily:"var(--mono)", color:COLOR, borderTop:"2px solid var(--line)", textAlign:"right" } }, fmt(total))
-            )
+      React.createElement("table", { className:"tbl" },
+        React.createElement("thead", null,
+          React.createElement("tr", null,
+            React.createElement("th", { style:S.thL }, "Estampilla"),
+            React.createElement("th", { style:S.th  }, "% Contrato"),
+            React.createElement("th", { style:S.th  }, "Valor")
+          )
+        ),
+        React.createElement("tbody", null,
+          !munGrp
+            ? React.createElement("tr", null, React.createElement("td", { colSpan:3 },
+                React.createElement("div", { className:"empty", style:{padding:"28px 0"} },
+                  React.createElement("div", { className:"empty-icon" }, "\uD83C\uDFD9"),
+                  React.createElement("div", { className:"empty-title" }, "Sin municipio seleccionado"),
+                  React.createElement("div", { className:"empty-desc" }, "Selecciona el municipio arriba para ver sus estampillas")
+                )))
+            : activas.length === 0
+              ? React.createElement("tr", null, React.createElement("td", { colSpan:3 },
+                  React.createElement("div", { className:"empty", style:{padding:"24px 0"} },
+                    React.createElement("div", { className:"empty-icon" }, "\uD83D\uDCCB"),
+                    React.createElement("div", { className:"empty-title" }, "El municipio no tiene estampillas"),
+                    React.createElement("div", { className:"empty-desc" }, "Agr\xE9galas en Cat\xE1logo Estampillas")
+                  )))
+              : activas.map(function(e){ return React.createElement("tr", { key:e.id },
+                  React.createElement("td", { style:S.tdL },
+                    React.createElement("span", { style:{background:COLOR+"18",color:COLOR,padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600} }, e.nombre)
+                  ),
+                  React.createElement("td", { style:S.td }, (Number(e.pctDef)||0).toFixed(2)+"%"),
+                  React.createElement("td", { style:{...S.td,fontWeight:700,color:COLOR} }, fmt(Math.round(vc*(Number(e.pctDef)||0)/100)))
+                ); })
+        ),
+        activas.length > 0 && React.createElement("tfoot", null,
+          React.createElement("tr", null,
+            React.createElement("td", { colSpan:2, style:{padding:"12px 14px",fontWeight:700,fontSize:12,letterSpacing:".04em",color:"var(--ink3)",borderTop:"2px solid var(--line)",textAlign:"right"} }, "TOTAL ESTAMPILLAS"),
+            React.createElement("td", { style:{padding:"12px 14px",fontWeight:800,fontSize:15,fontFamily:"var(--mono)",color:COLOR,borderTop:"2px solid var(--line)",textAlign:"right"} }, fmt(total))
           )
         )
-      ),
-      React.createElement("div", { style:{ padding:"12px 16px", borderTop:"1px solid var(--line2)" } },
-        !showAdd
-          ? (readOnly ? null : React.createElement("button", { className:"btn-dashed", onClick:() => setShowAdd(true) }, "+ Agregar estampilla del catálogo"))
-          : React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" } },
-              disponibles.length === 0
-                ? React.createElement("span", { style:{ fontSize:13, color:"var(--ink4)" } }, "Todas las estampillas del catálogo ya están agregadas")
-                : disponibles.map(c =>
-                    React.createElement("button", { key:c.id, className:"btn-o", style:{ fontSize:12 }, onClick:() => addEst(c) }, c.nombre)
-                  ),
-              React.createElement("button", { className:"btn-s", style:{ fontSize:12 }, onClick:() => setShowAdd(false) }, "Cancelar")
-            )
       )
     ),
-
-    React.createElement("div", { style:{ background:"var(--line2)", borderRadius:8, padding:"12px 16px", fontSize:12, color:"var(--ink3)", lineHeight:1.7 } },
-      React.createElement("strong", null, "Fórmula: "),
-      "Valor estampilla = Valor base Obra × % estampilla"
+    React.createElement("div", { style:{background:"var(--line2)",borderRadius:8,padding:"12px 16px",fontSize:12,color:"var(--ink3)",lineHeight:1.7} },
+      React.createElement("strong", null, "F\xF3rmula: "),
+      "Valor = Valor base Obra \xD7 % estampilla del municipio"
     )
   );
 }
+
 
 // ── MÓDULO CATÁLOGO ESTAMPILLAS ──────────────────────────
 function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas }) {
@@ -6506,7 +6434,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
   const tieneObra2   = comps.includes('obra')||comps.length===0;
   const tieneInterv2 = comps.includes('interventoria');
   const tieneConsult2= comps.includes('consultoria');
-  const totObraBase  = calcTotalConvergido(proyecto,apus,recursos);
+  const totObraBase  = calcProyecto(proyecto,apus,recursos).total;
 
   const _addResumen    = ()=>XLSX.utils.book_append_sheet(wb,crearResumen(),'Resumen');
   const _addPresup     = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearPresupuesto(),'Presupuesto Obra'); };
@@ -8092,8 +8020,8 @@ function ModuloProyectos({
   const sincronizarPolizasAU = (proyecto) => {
     // Recalcula polizas y estampillas de obra y los inyecta en s1_8 del AU
     const polData = ((proyecto.polizasPorComp || {})["obra"]) || {};
-    const plazo   = Number(polData.plazoContractual) || 0;
-    const vBase   = calcTotalConvergido(proyecto, apus, recursos);
+    const plazo   = Number(polData.plazoContractual) || Number((proyecto.au||{}).plazo) || 0;
+    const vBase   = calcProyecto(proyecto, apus, recursos).total;
     // Total pólizas
     const totPol = (polData.polizasActivas || []).reduce((s, p) => {
       const pct      = Number(p.pct) || 0;
@@ -8105,11 +8033,10 @@ function ModuloProyectos({
       const siva     = dias > 0 ? Math.round(valor * dias / 365) : 0;
       return s + Math.round(siva * 1.19);
     }, 0);
-    // Total estampillas
-    const estData = proyecto.estampillas || { activas: [] };
-    const totEst  = (estData.activas || []).reduce((s, e) => {
-      return s + Math.round(vBase * (Number(e.pct) || 0) / 100);
-    }, 0);
+    // Total estampillas — usa municipioId + catálogo
+    const munGrp = (catalogoEstampillas||[]).find(g => g.id === proyecto.municipioId) || null;
+    const estItems = munGrp ? (munGrp.items||[]) : [];
+    const totEst = estItems.reduce((s,e) => s + Math.round(vBase*(Number(e.pctDef)||0)/100), 0);
     if (!proyecto.au) return proyecto;
     const au   = JSON.parse(JSON.stringify(proyecto.au));
     const sec0 = (au.secciones || [])[0];
@@ -8137,8 +8064,21 @@ function ModuloProyectos({
     if (tbIdx >= 0) sub.items[tbIdx] = tbItem; else sub.items.push(tbItem);
     return { ...proyecto, au };
   };
+  const sincronizarIterativo = (p, maxN) => {
+    var proj = JSON.parse(JSON.stringify(p));
+    var MAX = maxN || 100;
+    var prevTotal = 0;
+    for (var i = 0; i < MAX; i++) {
+      proj = sincronizarPolizasAU(proj);
+      var newTotal = calcProyecto(proj, apus, recursos).total;
+      if (Math.abs(newTotal - prevTotal) < 1) break; // converged
+      prevTotal = newTotal;
+    }
+    return proj;
+  };
+
   const abrirEditor = p => {
-    const pSync = sincronizarPolizasAU(JSON.parse(JSON.stringify(p)));
+    const pSync = sincronizarIterativo(p);
     setPActivo(pSync);
     setTabEditor("presupuesto");
     setVista("editor");
@@ -8158,7 +8098,7 @@ function ModuloProyectos({
   const guardar = () => {
     if (!pActivo.nombre.trim()) return;
     // Iteración completa: converge pólizas → AU → presupuesto antes de guardar
-    const pSinc = sincronizarPolizasAU(JSON.parse(JSON.stringify(pActivo)));
+    const pSinc = sincronizarIterativo(pActivo);
     setPActivo(pSinc);
     setProyectos(prev => prev.find(p => p.id === pSinc.id) ? prev.map(p => p.id === pSinc.id ? pSinc : p) : [...prev, pSinc]);
     setVista("lista");
@@ -8402,6 +8342,11 @@ function ModuloProyectos({
     className: "btn-s",
     onClick: () => setVista("lista")
   }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-s",
+    style: { background:"#FEF3C7", color:"#92400E", border:"1.5px solid #FCD34D", fontWeight:700 },
+    title: "Recalcula pólizas, estampillas y AU hasta convergencia",
+    onClick: () => setPActivo(p => sincronizarIterativo(p))
+  }, "\u21BB Recalcular"), /*#__PURE__*/React.createElement("button", {
     className: "btn-p",
     onClick: guardar
   }, "Guardar"))), /*#__PURE__*/React.createElement("div", {
@@ -8748,13 +8693,14 @@ function ModuloProyectos({
     plantillasAU: plantillasAU
   }), tabEditor.startsWith("polizas_") && (() => {
     const cid = tabEditor.slice(8);
-    // Base para polizas: CD+CI sin el item de polizas (evita referencia circular)
+    // Base = total convergido del proyecto (fuente única de verdad)
+    // Usar Recalcular para que converja antes de ver pólizas
     const total = cid === "obra"
-      ? calcTotalConvergido(pActivo, apus, recursos)
+      ? calcProyecto(pActivo, apus, recursos).total
       : cid === "interventoria"
         ? calcTotalPresupInterv(pActivo.presupInterv)
         : cid === "consultoria"
-          ? calcTotalPresupInterv(pActivo.presupConsult)
+          ? calcTotalPresupConsult(pActivo.presupConsult)
           : (cdPorComp[cid] || 0);
     return /*#__PURE__*/React.createElement(TabPolizas, {
       proyecto: pActivo,
@@ -8767,12 +8713,14 @@ function ModuloProyectos({
       setAU: au => setPActivo(p => ({ ...p, au }))
     });
   })(), tabEditor === "estampillas" && pActivo && (pActivo.componentes || []).includes("obra") && (() => {
-    const total = calcTotalConvergido(pActivo, apus, recursos);
+    const total = calcProyecto(pActivo, apus, recursos).total;
     return React.createElement(TabEstampillas, {
       proyecto: pActivo,
       totalProyecto: total,
       catalogoEstampillas: catalogoEstampillas || [],
-      setEstampillas: (est) => setPActivo(p => ({ ...p, estampillas: est })),
+      setEstampillas: (est) => setPActivo(p => est && est._setMunicipioId !== undefined
+        ? { ...p, municipioId: est._setMunicipioId }
+        : { ...p, estampillas: est }),
       setAU: au => setPActivo(p => ({ ...p, au }))
     });
   })(), showApuModal && /*#__PURE__*/React.createElement("div", {
@@ -9274,15 +9222,12 @@ function ModuloProyectos({
     }, fmtN(res.pctAIU + 100), "%"))))));
     })(), tabDetalle.startsWith("polizas_") && (() => {
       const cid = tabDetalle.slice(8);
-      const totalBase = cid === "obra"
-        ? calcTotalSinPolizas(pActivo, apus, recursos)
-        : (calcCDPorComp(pActivo, apus, recursos)[cid] || 0);
       const totalDisplay = cid === "obra"
-        ? calcTotalConvergido(pActivo, apus, recursos)
+        ? calcProyecto(pActivo, apus, recursos).total
         : cid === "interventoria"
           ? calcTotalPresupInterv(pActivo.presupInterv)
           : cid === "consultoria"
-            ? calcTotalPresupInterv(pActivo.presupConsult)
+            ? calcTotalPresupConsult(pActivo.presupConsult)
             : (calcCDPorComp(pActivo, apus, recursos)[cid] || 0);
       return React.createElement(TabPolizas, {
         proyecto: pActivo,
@@ -9296,7 +9241,7 @@ function ModuloProyectos({
         perfil, session
       });
     })(), tabDetalle === "estampillas" && pActivo && (pActivo.componentes || []).includes("obra") && (() => {
-      const total = calcTotalConvergido(pActivo, apus, recursos);
+      const total = calcProyecto(pActivo, apus, recursos).total;
       return React.createElement(TabEstampillas, {
         proyecto: pActivo,
         totalProyecto: total,
@@ -10176,6 +10121,11 @@ function App() {
     est:"estampillas",interv:"presup. interventoría",consult:"presup. consultoría",meta:"datos generales"};
 
   const setupRealtime = sess => {
+    // Eliminar canal existente antes de crear uno nuevo (evita doble suscripción)
+    if (window.__edeso_rt_channel__) {
+      try { _sb.removeChannel(window.__edeso_rt_channel__); } catch(e) {}
+      window.__edeso_rt_channel__ = null;
+    }
     const myEmail = sess?.user?.email;
     const ch = _sb.channel("edeso_sync")
       .on("postgres_changes",{event:"*",schema:"public",table:"app_data"},
@@ -10216,6 +10166,7 @@ function App() {
           if(key==="plantillasInt")       setPlantillasIntRaw(value||[]);
         }
       ).subscribe();
+    window.__edeso_rt_channel__ = ch;
     return ch;
   };
 
@@ -10282,7 +10233,7 @@ function App() {
       if(session){
         if(!dataReady) cargarDatos();
         cargarPerfil(session.user.id);
-        if(!rtChannel) rtChannel=setupRealtime(session);
+        if(!window.__edeso_rt_channel__) rtChannel=setupRealtime(session);
       } else {
         setDataReady(false);setPerfil(null);
       }
