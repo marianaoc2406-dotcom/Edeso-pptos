@@ -257,6 +257,14 @@ const fmtN = (n, d = 2) => Number(n || 0).toLocaleString("es-CO", {
   maximumFractionDigits: d
 });
 
+// ─── Estampillas por municipio ───────────────────────────────────────────────
+// catalogoEstampillas = [{ id, nombre, items:[{ id, nombre, pctDef, obs }] }]
+function getEstampillasMunicipio(catalogoEstampillas, municipioId) {
+  if (!municipioId) return [];
+  var grp = (catalogoEstampillas || []).find(function(g){ return g.id === municipioId; });
+  return grp ? (grp.items || []) : [];
+}
+
 // ═══════════════════════════════════════════════════════
 // DATOS INICIALES
 // ═══════════════════════════════════════════════════════
@@ -267,6 +275,7 @@ const PLANTILLAS_AU_INIT = {
   s1_5: [], s1_6: [], s1_7: [], s1_8: []
 };
 const auVacio = () => ({
+  plazo: 0,
   secciones: [{
     id: "s1",
     numero: "1",
@@ -389,7 +398,8 @@ function calcAUSinPoliza(au, cd) {
 }
 function calcTotalPresupInterv(data) {
   if (!data || !data.capitulos) return 0;
-  const fm = Number(data.fm) || 2;
+  const fmData = data.fmData || Object.assign({}, FM_DEFAULTS);
+  const fm = calcFMdesdeData(fmData);
   const calcIt = (item, tipo) => {
     if (tipo === "personal") return (Number(item.valorMesBase)||0) * (Number(item.cantidad)||0) * (Number(item.dedicacion)||1) * (Number(item.meses)||0);
     return Number(item.valorFijo) || 0;
@@ -399,6 +409,48 @@ function calcTotalPresupInterv(data) {
     return s + (cap.tipo === "personal" ? sub * fm : sub);
   }, 0);
 }
+function calcTotalPresupConsult(data) {
+  return Number(data && data.valorDiseno) || 0;
+}
+
+function calcPolizasIntervTotal(polizasActivas, valorBase, plazoMeses) {
+  return (polizasActivas || []).reduce(function(s, p) {
+    var pct = Number(p.pct) || 0;
+    var pctPrima = Number(p.pctPrima) || 0;
+    var mesesExtra = Number(p.mesesExtra) || 0;
+    var valorAsegurar = Math.round(valorBase * pct / 100);
+    var valor = Math.round(valorAsegurar * pctPrima / 100);
+    var dias = Math.round((plazoMeses + mesesExtra) * 365 / 12);
+    var prima = dias > 0 ? Math.round(valor * dias / 365) : 0;
+    return s + Math.round(prima * 1.19);
+  }, 0);
+}
+
+function calcResumenInterv(subtotal12, estampillasSeleccionadas, polizasActivas, plazoMeses, maxIter) {
+  if (maxIter === undefined) maxIter = 25;
+  var tasaTotal = (estampillasSeleccionadas || []).reduce(function(s, e) {
+    return s + (Number(e.pctDef) || 0) / 100;
+  }, 0);
+  var iva = Math.round(subtotal12 * 0.19);
+  var subtotalGeneral = subtotal12;
+  var valorTotal = subtotalGeneral + iva;
+  for (var i = 0; i < maxIter; i++) {
+    var polizasTotal = calcPolizasIntervTotal(polizasActivas, valorTotal, plazoMeses);
+    var impuestos = Math.round(subtotalGeneral * tasaTotal);
+    var newG = subtotal12 + impuestos + polizasTotal;
+    var newV = newG + iva;
+    if (Math.abs(newG - subtotalGeneral) < 1) {
+      return { subtotal12: subtotal12, tasaTotal: tasaTotal, impuestos: impuestos, polizasTotal: polizasTotal, subtotalGeneral: newG, iva: iva, valorTotal: newV };
+    }
+    subtotalGeneral = newG;
+    valorTotal = newV;
+  }
+  var pt2 = calcPolizasIntervTotal(polizasActivas, valorTotal, plazoMeses);
+  var imp2 = Math.round(subtotalGeneral * tasaTotal);
+  return { subtotal12: subtotal12, tasaTotal: tasaTotal, impuestos: imp2, polizasTotal: pt2, subtotalGeneral: subtotalGeneral, iva: iva, valorTotal: valorTotal };
+}
+
+
 function calcProyecto(p, apus, recursos) {
   const cd = calcCD(p, apus, recursos);
   const au = p.au;
@@ -2752,13 +2804,13 @@ function TabAU({
       dedicacion: 0,
       cantidad: 0,
       valorMesBase: 0,
-      meses: 0
+      meses: au.plazo || 0
     };else if (sub.tipo === "desplazamiento") base = {
       descripcion: plantilla.descripcion,
       unidad: plantilla.unidad || "un",
       cantidad: 0,
       valorUnitario: 0,
-      meses: 0
+      meses: au.plazo || 0
     };else base = {
       descripcion: plantilla.descripcion,
       unidad: plantilla.unidad || "un",
@@ -2784,7 +2836,7 @@ function TabAU({
       dedicacion: 1,
       cantidad: 1,
       valorMesBase: 0,
-      meses: 1
+      meses: au.plazo || 1
     } : sub.tipo === "otros" ? {
       descripcion: "",
       unidad: "un",
@@ -2796,7 +2848,7 @@ function TabAU({
       unidad: "un",
       cantidad: 1,
       valorUnitario: 0,
-      meses: 1
+      meses: au.plazo || 1
     };
     setFormItem({
       ...base,
@@ -2915,7 +2967,28 @@ function TabAU({
       personal11 += calcAUItem(i, sub.tipo, cd, 0);
     });
   }));
-  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", null,
+    !readOnly && React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
+      React.createElement("div", { style:{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"} },
+        React.createElement("div", { style:{fontSize:13,fontWeight:700,color:"var(--ink2)"} }, "\uD83D\uDCC5 Plazo del proyecto"),
+        React.createElement("div", { style:{display:"flex",alignItems:"center",gap:8} },
+          React.createElement("input", {
+            className:"ifield", type:"number", min:0, step:1,
+            style:{width:90,fontFamily:"var(--mono)",fontWeight:700,fontSize:14},
+            value: au.plazo || "",
+            placeholder:"0",
+            onChange: function(e) {
+              var v = parseInt(e.target.value)||0;
+              setAu(function(prev){ return Object.assign({}, prev, { plazo: v }); });
+            }
+          }),
+          React.createElement("span", { style:{fontSize:12,color:"var(--ink4)"} }, "meses"),
+          au.plazo > 0 && React.createElement("span", { style:{fontSize:11,color:"#15803D",background:"#DCFCE7",padding:"2px 10px",borderRadius:20,fontWeight:600} },
+            Math.round((au.plazo||0)*365/12) + " d\xEDas \xB7 se propaga a P\xF3lizas Obra e Interventor\xEDa")
+        )
+      )
+    ),
+    /*#__PURE__*/React.createElement("div", {
     className: "metric-grid",
     style: {
       marginBottom: 20
@@ -3706,10 +3779,142 @@ function ModuloPlantillasInterventoria({ plantillasInt, setPlantillasInt }) {
 // ═══════════════════════════════════════════════════════
 // TAB PRESUPUESTO INTERVENTORÍA
 // ═══════════════════════════════════════════════════════
-function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantillasInt, storageKey, perfil, session }) {
+// ═══════════════════════════════════════════════════════
+// CALCULADORA FACTOR MULTIPLICADOR
+// ═══════════════════════════════════════════════════════
+var FM_GRUPOS = [
+  { id:"b", titulo:"B. Prestaciones Sociales, Seguridad Social y Otros", color:"#1D4ED8", bg:"#EFF6FF",
+    items:[
+      { key:"prima",            label:"Prima anual" },
+      { key:"cesantias",        label:"Cesant\xEDas anual" },
+      { key:"intCesantias",     label:"Inter\xE9s a las cesant\xEDas" },
+      { key:"vacaciones",       label:"Vacaciones" },
+      { key:"salud",            label:"Salud (exonerado si aplica)" },
+      { key:"pension",          label:"Pensi\xF3n" },
+      { key:"subsidioFamiliar", label:"Subsidio familiar" },
+      { key:"sena",             label:"SENA (exonerado si aplica)" },
+      { key:"icbf",             label:"ICBF (exonerado si aplica)" },
+      { key:"arl",              label:"ARL" }
+    ]
+  },
+  { id:"c", titulo:"C. Costos Oficina Consultor", color:"#15803D", bg:"#F0FDF4",
+    items:[
+      { key:"arriendoAdmin",    label:"Arriendo, administraci\xF3n, serv. p\xFAblicos" },
+      { key:"utiles",           label:"\xDAtiles, papeler\xEDa y oficina" },
+      { key:"personalAdmin",    label:"Personal administrativo no facturado" },
+      { key:"asesLegal",        label:"Asesor\xEDa legal" },
+      { key:"saludOcupacional", label:"Salud ocupacional y m\xE9dica" },
+      { key:"equipos",          label:"Equipos y mantenimiento de oficina" }
+    ]
+  },
+  { id:"e", titulo:"E. Costos de Personal de Obra", color:"#7C3AED", bg:"#F5F3FF",
+    items:[
+      { key:"telecomunicaciones", label:"Telecomunicaciones" },
+      { key:"transporte",         label:"Transporte" },
+      { key:"dotacion",           label:"Dotaci\xF3n con emblemas institucionales" }
+    ]
+  },
+  { id:"f", titulo:"F. Honorarios / Utilidad", color:"#B45309", bg:"#FEF3C7",
+    items:[
+      { key:"honorarios", label:"Honorarios / Utilidad" }
+    ]
+  }
+];
+
+function FMCalculadora({ fmData, fm, setFMField, readOnly }) {
+  var [open, setOpen] = React.useState(false);
+  var d = Object.assign({}, FM_DEFAULTS, fmData || {});
+  return React.createElement("div", { className:"card", style:{marginTop:14,overflow:"hidden"} },
+    React.createElement("div", { className:"card-header", style:{cursor:"pointer"}, onClick:function(){ setOpen(function(v){ return !v; }); } },
+      React.createElement("span", { style:{fontWeight:700,color:"#374151"} }, "\u2699\uFE0F Factor Multiplicador"),
+      React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:800,fontSize:15,color:"#1D4ED8",marginLeft:12} }, fm.toFixed(4)),
+      React.createElement("span", { style:{fontSize:11,color:"var(--ink4)",marginLeft:8} }, "(1.00 salario base + " + (fm-1).toFixed(4) + " cargas)"),
+      React.createElement("span", { style:{marginLeft:"auto",fontSize:12,color:"var(--ink4)"} }, open ? "\u25B2 ocultar" : "\u25BC editar desglose")
+    ),
+    open && React.createElement("div", { className:"card-body", style:{padding:0} },
+      React.createElement("div", { style:{padding:"10px 20px",background:"#FFFBEB",borderBottom:"1px solid var(--line)",fontSize:12,color:"#92400E"} },
+        "A.1 Salario Mensual = 1.00 (base fija) \xB7 Ingresa los dem\xE1s como % sobre el salario"
+      ),
+      FM_GRUPOS.map(function(grp) {
+        var subtotal = grp.items.reduce(function(s,it){ return s + (Number(d[it.key])||0); }, 0);
+        return React.createElement("div", { key:grp.id, style:{borderBottom:"1px solid var(--line)"} },
+          React.createElement("div", { style:{padding:"8px 20px",background:grp.bg,display:"flex",justifyContent:"space-between",alignItems:"center"} },
+            React.createElement("span", { style:{fontWeight:700,fontSize:12,color:grp.color} }, grp.titulo),
+            React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:700,fontSize:12,color:grp.color} }, "Subtotal: " + subtotal.toFixed(2) + "%  =  " + (subtotal/100).toFixed(4))
+          ),
+          React.createElement("table", { className:"tbl", style:{margin:0} },
+            React.createElement("tbody", null,
+              grp.items.map(function(item) {
+                return React.createElement("tr", { key:item.key },
+                  React.createElement("td", { style:{padding:"6px 20px 6px 28px",fontSize:12,color:"var(--ink2)"} }, item.label),
+                  React.createElement("td", { style:{padding:"6px 20px",textAlign:"right",width:140} },
+                    React.createElement("div", { style:{display:"flex",alignItems:"center",gap:6,justifyContent:"flex-end"} },
+                      readOnly
+                        ? React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:600} }, (Number(d[item.key])||0).toFixed(2) + "%")
+                        : React.createElement("input", {
+                            type:"number", min:0, max:100, step:0.01,
+                            style:{fontFamily:"var(--mono)",fontSize:12,width:72,textAlign:"right",
+                                   border:"1.5px solid var(--line)",borderRadius:5,padding:"3px 6px",background:"var(--card)"},
+                            value: d[item.key] !== undefined ? d[item.key] : FM_DEFAULTS[item.key],
+                            onChange: function(e){ setFMField(item.key, parseFloat(e.target.value)||0); }
+                          }),
+                      React.createElement("span", { style:{fontSize:11,color:"var(--ink4)",width:14} }, "%")
+                    )
+                  )
+                );
+              })
+            )
+          )
+        );
+      }),
+      React.createElement("div", { style:{padding:"12px 20px",background:"#1D4ED8",display:"flex",justifyContent:"space-between",alignItems:"center"} },
+        React.createElement("span", { style:{fontWeight:800,color:"#fff",fontSize:13,letterSpacing:".03em"} }, "FACTOR MULTIPLICADOR FINAL"),
+        React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:800,color:"#fff",fontSize:18} }, fm.toFixed(4))
+      )
+    )
+  );
+}
+
+
+// ─── Factor Multiplicador — valores por defecto ──────────────────────────────
+const FM_DEFAULTS = {
+  // B. Prestaciones Sociales
+  prima:            8.33,
+  cesantias:        8.33,
+  intCesantias:     1.00,
+  vacaciones:       4.17,
+  salud:            0.00,
+  pension:         12.00,
+  subsidioFamiliar: 4.00,
+  sena:             0.00,
+  icbf:             0.00,
+  arl:              6.96,
+  // C. Costos Oficina Consultor
+  arriendoAdmin:    8.00,
+  utiles:           1.00,
+  personalAdmin:    4.30,
+  asesLegal:        2.80,
+  saludOcupacional: 0.10,
+  equipos:          1.00,
+  // E. Costos Personal Obra
+  telecomunicaciones: 9.00,
+  transporte:         9.00,
+  dotacion:           0.00,
+  // F. Honorarios
+  honorarios:        20.00
+};
+function calcFMdesdeData(fmData) {
+  var d = fmData || FM_DEFAULTS;
+  var keys = Object.keys(FM_DEFAULTS);
+  var suma = keys.reduce(function(s,k){ return s + (Number(d[k]) || 0); }, 0);
+  return parseFloat((1 + suma/100).toFixed(4));
+}
+
+
+function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantillasInt, storageKey, perfil, session, catalogoEstampillas }) {
   const SK = storageKey || "presupInterv";
   const defaultData = () => ({
-    fm: 2,
+    fmData: Object.assign({}, FM_DEFAULTS),
     capitulos: [
       { id: "pic_1", numero: 1, titulo: "Personal Profesional, Técnico y Administrativo", tipo: "personal", items: [] },
       { id: "pic_2", numero: 2, titulo: "Otros Gastos (Se paga a necesidad previa aprobación del supervisor)", tipo: "otros", items: [] }
@@ -3725,7 +3930,8 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
     setPActivo(p => ({ ...p, [SK]: typeof next === "function" ? next(p[SK] && p[SK].capitulos ? p[SK] : defaultData()) : next }));
   };
 
-  const fm = Number(data.fm) || 2;
+  const fmData = data.fmData || Object.assign({}, FM_DEFAULTS);
+  const fm = calcFMdesdeData(fmData);
   const capitulos = data.capitulos || [];
 
   const calcItem = (item, tipo) => {
@@ -3746,6 +3952,24 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
   const [showPlant,  setShowPlant]  = React.useState(false); // selector plantillas
   const [busqPlant,  setBusqPlant]  = React.useState("");
   const [delCapConf, setDelCapConf] = React.useState(null);
+
+  // Resumen perfeccionamiento (después de hooks)
+  const catEst = catalogoEstampillas || [];
+  const estampillasSeleccionadas = getEstampillasMunicipio(catEst, proyecto.municipioId);
+  const polizasSaved = (proyecto.polizasPorComp || {})[SK === "presupInterv" ? "interventoria" : "consultoria"] || {};
+  const polizasActivas = polizasSaved.polizasActivas || [];
+  const auPlazo = Number((proyecto.au || {}).plazo) || 0;
+  const plazoMeses = Number(polizasSaved.plazoContractual) || auPlazo;
+  const resumen = calcResumenInterv(totalGeneral, estampillasSeleccionadas, polizasActivas, plazoMeses);
+
+  const setFMField = (key, val) => {
+    if (readOnly) return;
+    setData(prev => {
+      var fd = Object.assign({}, FM_DEFAULTS, prev.fmData || {});
+      fd[key] = val;
+      return Object.assign({}, prev, { fmData: fd });
+    });
+  };
 
   const addCapitulo = () => {
     const n = capitulos.length + 1;
@@ -3879,17 +4103,13 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
         React.createElement("div", { style:{display:"flex", alignItems:"center", gap:24, flexWrap:"wrap"} },
           React.createElement("div", { style:{flex:1, fontSize:13, fontWeight:700, color:"#1D4ED8"} }, "Presupuesto Interventoría"),
           React.createElement("div", { style:{display:"flex", gap:20, alignItems:"center"} },
-            React.createElement("div", null,
-              React.createElement("label", { className:"lbl" }, "Factor Multiplicador (FM)"),
-              React.createElement("input", {
-                className:"inum", type:"number", min:"1", step:"0.1",
-                style:{width:80}, value:data.fm??2, disabled:readOnly,
-                onChange:e => setData(prev => ({...prev, fm:parseFloat(e.target.value)||2}))
-              })
+            React.createElement("div", { style:{textAlign:"center"} },
+              React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "FM calculado"),
+              React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:15,fontWeight:800,color:"#374151"} }, fm.toFixed(4))
             ),
             React.createElement("div", { style:{textAlign:"right"} },
-              React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "Total Interventoría"),
-              React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:16,fontWeight:800,color:"#1D4ED8"} }, fmt(totalGeneral))
+              React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "Valor Total Interventoría"),
+              React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:16,fontWeight:800,color:"#1D4ED8"} }, fmt(resumen.valorTotal))
             )
           )
         )
@@ -3992,9 +4212,76 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
           )),
           // Total general
           React.createElement("tr", { className:"au-total" },
-            React.createElement("td", { colSpan:7, style:{padding:"12px 16px",textAlign:"right",letterSpacing:".03em"} }, "TOTAL PRESUPUESTO INTERVENTORÍA"),
+            React.createElement("td", { colSpan:7, style:{padding:"12px 16px",textAlign:"right",letterSpacing:".03em"} }, "SUBTOTAL (1+2) — BASE PRESUPUESTO"),
             React.createElement("td", { style:{padding:"12px 16px",textAlign:"right",fontFamily:"var(--mono)",fontSize:15} }, fmt(totalGeneral)),
             React.createElement("td")
+          )
+        )
+      )
+    ),
+
+    // ── CALCULADORA FACTOR MULTIPLICADOR ────────────────────────────────────
+    React.createElement(FMCalculadora, { fmData: fmData, fm: fm, setFMField: setFMField, readOnly: readOnly }),
+
+
+    // ── PANEL RESUMEN PERFECCIONAMIENTO ─────────────────────────────────────
+    React.createElement("div", { className:"card", style:{marginTop:14,overflow:"hidden"} },
+      React.createElement("div", { className:"card-header" },
+        React.createElement("span", { style:{fontWeight:700,color:"#1D4ED8"} }, "Costos de Perfeccionamiento \xB7 Resumen Final"),
+        resumen.tasaTotal > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
+          "Tasa estampillas: " + (resumen.tasaTotal*100).toFixed(2) + "%")
+      ),
+      React.createElement("div", { className:"card-body", style:{padding:0} },
+        React.createElement("div", { style:{padding:"12px 20px",borderBottom:"1px solid var(--line)",background:"#F8FAFF",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"} },
+          React.createElement("div", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)"} }, "Estampillas · Municipio:"),
+          proyecto.municipioId
+            ? React.createElement("span", { style:{padding:"3px 12px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DBEAFE",color:"#1D4ED8",border:"1px solid #93C5FD"} },
+                "\uD83C\uDFD9 " + (catEst.find(function(g){ return g.id === proyecto.municipioId; }) || {}).nombre + " (" + estampillasSeleccionadas.length + " estampillas)")
+            : React.createElement("span", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin municipio seleccionado · configura en los datos del proyecto"),
+          estampillasSeleccionadas.length > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
+            estampillasSeleccionadas.map(function(e){ return e.nombre+" "+e.pctDef+"%"; }).join(" · "))
+        ),
+        React.createElement("table", { className:"tbl" },
+          React.createElement("tbody", null,
+            React.createElement("tr", { style:{background:"var(--line2)"} },
+              React.createElement("td", { style:{padding:"10px 20px",fontWeight:700,color:"var(--ink2)"} }, "SUBTOTAL (1+2)"),
+              React.createElement("td", { style:{padding:"10px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700} }, fmt(resumen.subtotal12))
+            ),
+            estampillasSeleccionadas.length > 0
+              ? estampillasSeleccionadas.map(e => React.createElement("tr", { key:e.id },
+                  React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} }, "Estampilla " + e.nombre + " (" + e.pctDef + "%)"),
+                  React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} },
+                    fmt(Math.round(resumen.subtotalGeneral * (Number(e.pctDef)||0) / 100)))
+                ))
+              : React.createElement("tr", null,
+                  React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin estampillas seleccionadas"),
+                  React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink4)"} }, fmt(0))
+                ),
+            React.createElement("tr", { style:{background:"#FFF7ED"} },
+              React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (IMPUESTOS)"),
+              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"} }, fmt(resumen.impuestos))
+            ),
+            React.createElement("tr", null,
+              React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} },
+                "P\xF3lizas y garant\xEDas (" + polizasActivas.length + " p\xF3liza" + (polizasActivas.length!==1?"s":"") + " \xB7 plazo " + plazoMeses + " meses)"),
+              React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.polizasTotal))
+            ),
+            React.createElement("tr", { style:{background:"#FFF7ED"} },
+              React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (P\xD3LIZAS Y TRANSACCIONES BANCARIAS)"),
+              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"} }, fmt(resumen.polizasTotal))
+            ),
+            React.createElement("tr", { style:{background:"#EFF6FF",borderTop:"2px solid #93C5FD"} },
+              React.createElement("td", { style:{padding:"11px 20px",fontWeight:800,color:"#1D4ED8"} }, "SUBTOTAL GENERAL"),
+              React.createElement("td", { style:{padding:"11px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#1D4ED8",fontSize:14} }, fmt(resumen.subtotalGeneral))
+            ),
+            React.createElement("tr", null,
+              React.createElement("td", { style:{padding:"9px 20px",fontSize:12,color:"var(--ink3)"} }, "IVA \u2014 Base antes de impuestos y p\xF3lizas (19%)"),
+              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.iva))
+            ),
+            React.createElement("tr", { style:{background:"#1D4ED8"} },
+              React.createElement("td", { style:{padding:"14px 20px",fontWeight:800,color:"#fff",fontSize:14,letterSpacing:".03em"} }, "VALOR TOTAL INTERVENTOR\xCDA"),
+              React.createElement("td", { style:{padding:"14px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#fff",fontSize:17} }, fmt(resumen.valorTotal))
+            )
           )
         )
       )
@@ -4117,6 +4404,7 @@ function ModalNuevoProyecto({
     contratante: "",
     descripcion: "",
     componentes: [],
+    municipioId: "",
     aiu: {}
   });
   const toggleComp = id => setForm(f => ({
@@ -4768,7 +5056,7 @@ function TabAPUsUsados({
 // ═══════════════════════════════════════════════════════
 // TAB PÓLIZAS
 // ═══════════════════════════════════════════════════════
-function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, componenteId, catalogoPolizas, readOnly, perfil, session }) {
+function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, componenteId, catalogoPolizas, readOnly, perfil, session, plazoProyecto }) {
   const cid     = componenteId || "obra";
   const catPol  = catalogoPolizas || [];
   const CCOLOR  = { obra:"#B91C1C", interventoria:"#1D4ED8", consultoria:"#15803D", otros:"#6B7280" };
@@ -4887,7 +5175,9 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
 
   const [showAdd, setShowAdd] = React.useState(false);
 
-  const plazoContractual = Number(saved.plazoContractual) || 0;
+  const auPlazoSug = (componenteId === "obra" || componenteId === "interventoria") ? (Number(plazoProyecto) || 0) : 0;
+  const plazoContractual = Number(saved.plazoContractual) || auPlazoSug;
+  const plazoDesdeAU = auPlazoSug > 0 && !saved.plazoContractual;
   const vc = totalProyecto || 0;
   const polizas = saved.polizasActivas || [];
 
@@ -4965,11 +5255,13 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
           // Plazo contractual (editable)
           React.createElement("div", null,
             React.createElement("label", { className:"lbl" }, "Plazo contractual (meses)"),
+            plazoDesdeAU && React.createElement("div", { style:{fontSize:11,color:"#15803D",background:"#DCFCE7",padding:"3px 10px",borderRadius:20,fontWeight:600,marginBottom:6,display:"inline-block"} },
+              "\uD83D\uDD17 Sugerido desde AU (" + auPlazoSug + " meses) \xB7 edita para personalizar"),
             React.createElement("input", {
               className:"ifield",
               type:"number", min:0,
               value: saved.plazoContractual || "",
-              placeholder:"0",
+              placeholder: auPlazoSug > 0 ? String(auPlazoSug) : "0",
               onChange: e => updateSaved({ plazoContractual: Number(e.target.value) || 0 }),
               style:{ fontFamily:"var(--mono)", fontWeight:700 },
               readOnly: readOnly,
@@ -5529,106 +5821,186 @@ function TabEstampillas({ proyecto, setEstampillas, setAU, totalProyecto, readOn
 
 // ── MÓDULO CATÁLOGO ESTAMPILLAS ──────────────────────────
 function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas }) {
-  const [modal,      setModal]      = React.useState(false);
-  const [editId,     setEditId]     = React.useState(null);
-  const [form,       setForm]       = React.useState({ nombre:"", pctDef:"1", obs:"" });
-  const [delConfirm, setDelConfirm] = React.useState(null);
-  const [busq,       setBusq]       = React.useState("");
-  const COLS = ["#D97706","#B91C1C","#7C3AED","#15803D","#1D4ED8","#0891B2","#9D174D","#065F46"];
-  const gc = i => COLS[i % COLS.length];
-  const lista = React.useMemo(() => {
-    if (!busq.trim()) return catalogoEstampillas;
-    const q = busq.toLowerCase();
-    return catalogoEstampillas.filter(e => e.nombre.toLowerCase().includes(q));
-  }, [catalogoEstampillas, busq]);
-  function abrirNuevo()  { setEditId(null); setForm({ nombre:"", pctDef:"1", obs:"" }); setModal(true); }
-  function abrirEditar(e){ setEditId(e.id); setForm({ nombre:e.nombre, pctDef:String(e.pctDef), obs:e.obs||"" }); setModal(true); }
-  function guardar() {
-    if (!form.nombre.trim()) return;
-    const data = { nombre:form.nombre.trim(), pctDef:parseFloat(form.pctDef)||0, obs:form.obs };
-    setCatalogoEstampillas(prev => editId
-      ? prev.map(e => e.id === editId ? { ...e, ...data } : e)
-      : [...prev, { id:"ce_"+Date.now(), ...data }]
-    );
-    setModal(false);
-  }
-  return /*#__PURE__*/React.createElement("div", { className:"page" },
-    /*#__PURE__*/React.createElement("div", { className:"page-hdr" },
-      /*#__PURE__*/React.createElement("div", null,
-        /*#__PURE__*/React.createElement("div", { className:"page-title" }, "Catálogo de Estampillas"),
-        /*#__PURE__*/React.createElement("div", { className:"page-sub" }, catalogoEstampillas.length + " tipos definidos · disponibles en todos los proyectos")
+  // catalogoEstampillas = [{ id, nombre, items:[{ id, nombre, pctDef, obs }] }]
+  const [busq,       setBusq]       = useState("");
+  const [modalGrp,   setModalGrp]   = useState(false); // nuevo/editar grupo
+  const [modalItem,  setModalItem]  = useState(null);  // { grpId, itemId? }
+  const [editGrpId,  setEditGrpId]  = useState(null);
+  const [formGrp,    setFormGrp]    = useState({ nombre:"" });
+  const [formItem,   setFormItem]   = useState({ nombre:"", pctDef:"", obs:"" });
+  const [delGrp,     setDelGrp]     = useState(null);
+  const [delItem,    setDelItem]     = useState(null);
+  const [openGrp,    setOpenGrp]    = useState({});
+
+  const grupos = catalogoEstampillas || [];
+  const lista = busq.trim()
+    ? grupos.filter(g => g.nombre.toLowerCase().includes(busq.toLowerCase()) ||
+        (g.items||[]).some(e => e.nombre.toLowerCase().includes(busq.toLowerCase())))
+    : grupos;
+
+  const abrirNuevoGrp = () => { setEditGrpId(null); setFormGrp({ nombre:"" }); setModalGrp(true); };
+  const abrirEditGrp  = (g) => { setEditGrpId(g.id); setFormGrp({ nombre:g.nombre }); setModalGrp(true); };
+  const guardarGrp = () => {
+    if (!formGrp.nombre.trim()) return;
+    if (editGrpId) {
+      setCatalogoEstampillas(prev => prev.map(g => g.id===editGrpId ? {...g,nombre:formGrp.nombre.trim()} : g));
+    } else {
+      setCatalogoEstampillas(prev => [...prev, { id:"mun_"+Date.now(), nombre:formGrp.nombre.trim(), items:[] }]);
+    }
+    setModalGrp(false);
+  };
+
+  const abrirNuevoItem = (grpId) => { setModalItem({ grpId, itemId:null }); setFormItem({ nombre:"", pctDef:"", obs:"" }); };
+  const abrirEditItem  = (grpId, item) => { setModalItem({ grpId, itemId:item.id }); setFormItem({ nombre:item.nombre, pctDef:item.pctDef, obs:item.obs||"" }); };
+  const guardarItem = () => {
+    if (!formItem.nombre.trim()) return;
+    const { grpId, itemId } = modalItem;
+    const data = { nombre:formItem.nombre.trim(), pctDef:parseFloat(formItem.pctDef)||0, obs:formItem.obs };
+    setCatalogoEstampillas(prev => prev.map(g => {
+      if (g.id !== grpId) return g;
+      const items = itemId
+        ? (g.items||[]).map(e => e.id===itemId ? {...e,...data} : e)
+        : [...(g.items||[]), { id:"e_"+Date.now(), ...data }];
+      return { ...g, items };
+    }));
+    setModalItem(null);
+  };
+
+  const totalEst = grupos.reduce((s,g)=>(s+(g.items||[]).length),0);
+  const gc = i => ["#1D4ED8","#15803D","#B91C1C","#7C3AED","#B45309","#0F766E"][i%6];
+
+  return React.createElement("div", { className:"page" },
+    React.createElement("div", { className:"page-hdr" },
+      React.createElement("div", null,
+        React.createElement("div", { className:"page-title" }, "Cat\xE1logo de Estampillas"),
+        React.createElement("div", { className:"page-sub" }, grupos.length + " municipios \xB7 " + totalEst + " estampillas")
       ),
-      /*#__PURE__*/React.createElement("button", { className:"btn-p", onClick:abrirNuevo }, "+ Nueva estampilla")
+      React.createElement("button", { className:"btn-p", onClick:abrirNuevoGrp }, "+ Nuevo municipio")
     ),
-    /*#__PURE__*/React.createElement("div", { className:"card", style:{ marginBottom:14 } },
-      /*#__PURE__*/React.createElement("div", { className:"card-body" },
-        /*#__PURE__*/React.createElement("input", { className:"ifield", placeholder:"🔍  Buscar...", value:busq, onChange:e=>setBusq(e.target.value), style:{ maxWidth:320 } })
+    React.createElement("div", { className:"card", style:{marginBottom:14} },
+      React.createElement("div", { className:"card-body" },
+        React.createElement("input", { className:"ifield", placeholder:"\uD83D\uDD0D  Buscar municipio o estampilla...", value:busq, onChange:e=>setBusq(e.target.value), style:{maxWidth:360} })
       )
     ),
     lista.length === 0
-      ? /*#__PURE__*/React.createElement("div", { className:"empty" },
-          /*#__PURE__*/React.createElement("div", { className:"empty-icon" }, "📋"),
-          /*#__PURE__*/React.createElement("div", { className:"empty-title" }, busq ? "Sin resultados" : "Sin estampillas en el catálogo"),
-          /*#__PURE__*/React.createElement("div", { className:"empty-desc" }, "Agrega el primer tipo de estampilla")
+      ? React.createElement("div", { className:"empty" },
+          React.createElement("div", { className:"empty-icon" }, "\uD83C\uDFD9"),
+          React.createElement("div", { className:"empty-title" }, busq ? "Sin resultados" : "Sin municipios en el cat\xE1logo"),
+          React.createElement("div", { className:"empty-desc" }, "Crea el primer municipio con sus estampillas")
         )
-      : /*#__PURE__*/React.createElement("div", { className:"card", style:{ overflow:"hidden" } },
-          /*#__PURE__*/React.createElement("table", { className:"tbl" },
-            /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
-              /*#__PURE__*/React.createElement("th", null, "Nombre"),
-              /*#__PURE__*/React.createElement("th", { style:{ textAlign:"right", width:110 } }, "% Defecto"),
-              /*#__PURE__*/React.createElement("th", null, "Descripción / base legal"),
-              /*#__PURE__*/React.createElement("th", { style:{ width:80 } })
-            )),
-            /*#__PURE__*/React.createElement("tbody", null,
-              lista.map((est, idx) => /*#__PURE__*/React.createElement("tr", { key:est.id },
-                /*#__PURE__*/React.createElement("td", null,
-                  /*#__PURE__*/React.createElement("span", { style:{ display:"inline-block", padding:"2px 12px", borderRadius:20, fontSize:12, fontWeight:600, background:gc(idx)+"22", color:gc(idx) } }, est.nombre)
-                ),
-                /*#__PURE__*/React.createElement("td", { style:{ textAlign:"right", fontFamily:"var(--mono)", fontWeight:600 } }, est.pctDef + "%"),
-                /*#__PURE__*/React.createElement("td", { style:{ fontSize:11, color:"var(--ink4)" } }, est.obs || "—"),
-                /*#__PURE__*/React.createElement("td", { style:{ textAlign:"right", paddingRight:12 } },
-                  /*#__PURE__*/React.createElement("button", { className:"btn-ghost", style:{ marginRight:4, fontSize:11 }, onClick:()=>abrirEditar(est) }, "✏️"),
-                  /*#__PURE__*/React.createElement("button", { className:"btn-ghost", style:{ color:"#F5C6C2", fontSize:14 }, onClick:()=>setDelConfirm(est) }, "×")
-                )
-              ))
+      : React.createElement("div", { style:{display:"flex",flexDirection:"column",gap:10} },
+          lista.map((grp,gi) => React.createElement("div", { key:grp.id, className:"card", style:{overflow:"hidden"} },
+            React.createElement("div", { className:"card-header", style:{cursor:"pointer",userSelect:"none"} },
+              React.createElement("div", { style:{display:"flex",alignItems:"center",gap:10,flex:1},
+                onClick:()=>setOpenGrp(p=>({...p,[grp.id]:!p[grp.id]})) },
+                React.createElement("span", { style:{fontSize:18} }, "\uD83C\uDFD9"),
+                React.createElement("span", { style:{fontWeight:700,fontSize:14,color:gc(gi)} }, grp.nombre),
+                React.createElement("span", { style:{fontSize:11,color:"var(--ink4)",marginLeft:4} }, (grp.items||[]).length + " estampillas"),
+                React.createElement("span", { style:{fontSize:11,color:"var(--ink4)",marginLeft:"auto",marginRight:8} }, openGrp[grp.id] ? "\u25B2" : "\u25BC")
+              ),
+              React.createElement("div", { style:{display:"flex",gap:6} },
+                React.createElement("button", { className:"btn-s", style:{fontSize:11}, onClick:()=>abrirNuevoItem(grp.id) }, "+ Estampilla"),
+                React.createElement("button", { className:"btn-ghost", style:{fontSize:11}, onClick:()=>abrirEditGrp(grp) }, "\u270F\uFE0F"),
+                React.createElement("button", { className:"btn-ghost", style:{color:"#F5C6C2",fontSize:14}, onClick:()=>setDelGrp(grp) }, "\xD7")
+              )
+            ),
+            openGrp[grp.id] && React.createElement("table", { className:"tbl" },
+              React.createElement("thead", null, React.createElement("tr", null,
+                React.createElement("th", null, "Estampilla"),
+                React.createElement("th", { style:{textAlign:"right",width:110} }, "% Defecto"),
+                React.createElement("th", null, "Descripci\xF3n / base legal"),
+                React.createElement("th", { style:{width:80} })
+              )),
+              React.createElement("tbody", null,
+                (grp.items||[]).length === 0
+                  ? React.createElement("tr", null,
+                      React.createElement("td", { colSpan:4, style:{padding:"12px 20px",color:"var(--ink4)",fontStyle:"italic",fontSize:12} }, "Sin estampillas \xB7 haz clic en '+ Estampilla'")
+                    )
+                  : (grp.items||[]).map((est,ei) => React.createElement("tr", { key:est.id },
+                      React.createElement("td", null,
+                        React.createElement("span", { style:{display:"inline-block",padding:"2px 12px",borderRadius:20,fontSize:12,fontWeight:600,background:gc(gi)+"22",color:gc(gi)} }, est.nombre)
+                      ),
+                      React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:600} }, est.pctDef + "%"),
+                      React.createElement("td", { style:{fontSize:11,color:"var(--ink4)"} }, est.obs||"\u2014"),
+                      React.createElement("td", { style:{textAlign:"right",paddingRight:12} },
+                        React.createElement("button", { className:"btn-ghost", style:{marginRight:4,fontSize:11}, onClick:()=>abrirEditItem(grp.id,est) }, "\u270F\uFE0F"),
+                        React.createElement("button", { className:"btn-ghost", style:{color:"#F5C6C2",fontSize:14}, onClick:()=>setDelItem({grpId:grp.id,itemId:est.id}) }, "\xD7")
+                      )
+                    ))
+              )
             )
-          )
+          ))
         ),
-    modal && /*#__PURE__*/React.createElement("div", { className:"modal-bg", onClick:e=>e.target===e.currentTarget&&setModal(false) },
-      /*#__PURE__*/React.createElement("div", { className:"modal" },
-        /*#__PURE__*/React.createElement("div", { className:"modal-title" }, editId ? "Editar Estampilla" : "Nueva Estampilla"),
-        /*#__PURE__*/React.createElement("div", { style:{ display:"flex", flexDirection:"column", gap:14, marginTop:12 } },
-          /*#__PURE__*/React.createElement("div", null,
-            /*#__PURE__*/React.createElement("label", { className:"lbl" }, "Nombre *"),
-            /*#__PURE__*/React.createElement("input", { className:"ifield", value:form.nombre, placeholder:"Ej: Estampilla Pro Universidad", onChange:e=>setForm(f=>({...f,nombre:e.target.value})) })
-          ),
-          /*#__PURE__*/React.createElement("div", null,
-            /*#__PURE__*/React.createElement("label", { className:"lbl" }, "% Defecto sobre contrato"),
-            /*#__PURE__*/React.createElement("input", { className:"ifield", type:"number", min:0, max:100, step:0.01, value:form.pctDef, onChange:e=>setForm(f=>({...f,pctDef:e.target.value})) })
-          ),
-          /*#__PURE__*/React.createElement("div", null,
-            /*#__PURE__*/React.createElement("label", { className:"lbl" }, "Descripción / base legal"),
-            /*#__PURE__*/React.createElement("textarea", { className:"ifield", rows:2, style:{ resize:"vertical" }, value:form.obs, onChange:e=>setForm(f=>({...f,obs:e.target.value})) })
-          )
+
+    // Modal grupo
+    modalGrp && React.createElement("div", { className:"modal-bg", onClick:e=>e.target===e.currentTarget&&setModalGrp(false) },
+      React.createElement("div", { className:"modal" },
+        React.createElement("div", { className:"modal-title" }, editGrpId ? "Editar municipio" : "Nuevo municipio"),
+        React.createElement("div", { style:{marginTop:12} },
+          React.createElement("label", { className:"lbl" }, "Nombre del municipio *"),
+          React.createElement("input", { className:"ifield", value:formGrp.nombre, placeholder:"Ej: Rionegro, Medell\xEDn, Bogot\xE1...", onChange:e=>setFormGrp(f=>({...f,nombre:e.target.value})), autoFocus:true })
         ),
-        /*#__PURE__*/React.createElement("div", { style:{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:18 } },
-          /*#__PURE__*/React.createElement("button", { className:"btn-s", onClick:()=>setModal(false) }, "Cancelar"),
-          /*#__PURE__*/React.createElement("button", { className:"btn-p", onClick:guardar, disabled:!form.nombre.trim() }, editId ? "Guardar" : "Crear")
+        React.createElement("div", { style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18} },
+          React.createElement("button", { className:"btn-s", onClick:()=>setModalGrp(false) }, "Cancelar"),
+          React.createElement("button", { className:"btn-p", onClick:guardarGrp, disabled:!formGrp.nombre.trim() }, editGrpId ? "Guardar" : "Crear")
         )
       )
     ),
-    delConfirm && /*#__PURE__*/React.createElement("div", { className:"modal-bg" },
-      /*#__PURE__*/React.createElement("div", { className:"modal", style:{ maxWidth:400 } },
-        /*#__PURE__*/React.createElement("div", { className:"modal-title" }, "¿Eliminar estampilla?"),
-        /*#__PURE__*/React.createElement("div", { style:{ color:"var(--ink3)", fontSize:13, marginTop:8 } }, "Se eliminará del catálogo. Los proyectos existentes no se ven afectados."),
-        /*#__PURE__*/React.createElement("div", { style:{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:18 } },
-          /*#__PURE__*/React.createElement("button", { className:"btn-s", onClick:()=>setDelConfirm(null) }, "Cancelar"),
-          /*#__PURE__*/React.createElement("button", { className:"btn-p", style:{ background:"var(--red)" }, onClick:()=>{ setCatalogoEstampillas(prev=>prev.filter(e=>e.id!==delConfirm.id)); setDelConfirm(null); } }, "Eliminar")
+
+    // Modal estampilla
+    modalItem && React.createElement("div", { className:"modal-bg", onClick:e=>e.target===e.currentTarget&&setModalItem(null) },
+      React.createElement("div", { className:"modal" },
+        React.createElement("div", { className:"modal-title" }, modalItem.itemId ? "Editar estampilla" : "Nueva estampilla"),
+        React.createElement("div", { style:{display:"flex",flexDirection:"column",gap:14,marginTop:12} },
+          React.createElement("div", null,
+            React.createElement("label", { className:"lbl" }, "Nombre *"),
+            React.createElement("input", { className:"ifield", value:formItem.nombre, placeholder:"Ej: Estampilla Pro Universidad", onChange:e=>setFormItem(f=>({...f,nombre:e.target.value})) })
+          ),
+          React.createElement("div", null,
+            React.createElement("label", { className:"lbl" }, "% sobre contrato"),
+            React.createElement("input", { className:"ifield", type:"number", min:0, max:100, step:0.01, value:formItem.pctDef, onChange:e=>setFormItem(f=>({...f,pctDef:e.target.value})) })
+          ),
+          React.createElement("div", null,
+            React.createElement("label", { className:"lbl" }, "Descripci\xF3n / base legal"),
+            React.createElement("textarea", { className:"ifield", rows:2, style:{resize:"vertical"}, value:formItem.obs, onChange:e=>setFormItem(f=>({...f,obs:e.target.value})) })
+          )
+        ),
+        React.createElement("div", { style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18} },
+          React.createElement("button", { className:"btn-s", onClick:()=>setModalItem(null) }, "Cancelar"),
+          React.createElement("button", { className:"btn-p", onClick:guardarItem, disabled:!formItem.nombre.trim() }, modalItem.itemId ? "Guardar" : "Crear")
+        )
+      )
+    ),
+
+    // Confirm delete grupo
+    delGrp && React.createElement("div", { className:"modal-bg" },
+      React.createElement("div", { className:"modal", style:{maxWidth:400} },
+        React.createElement("div", { className:"modal-title" }, "\xBFEliminar municipio?"),
+        React.createElement("div", { style:{color:"var(--ink3)",fontSize:13,marginTop:8} }, "Se eliminar\xE1n el municipio y todas sus estampillas del cat\xE1logo."),
+        React.createElement("div", { style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18} },
+          React.createElement("button", { className:"btn-s", onClick:()=>setDelGrp(null) }, "Cancelar"),
+          React.createElement("button", { className:"btn-p", style:{background:"var(--red)"}, onClick:()=>{ setCatalogoEstampillas(prev=>prev.filter(g=>g.id!==delGrp.id)); setDelGrp(null); } }, "Eliminar")
+        )
+      )
+    ),
+
+    // Confirm delete estampilla
+    delItem && React.createElement("div", { className:"modal-bg" },
+      React.createElement("div", { className:"modal", style:{maxWidth:400} },
+        React.createElement("div", { className:"modal-title" }, "\xBFEliminar estampilla?"),
+        React.createElement("div", { style:{color:"var(--ink3)",fontSize:13,marginTop:8} }, "Se eliminar\xE1 esta estampilla del municipio."),
+        React.createElement("div", { style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18} },
+          React.createElement("button", { className:"btn-s", onClick:()=>setDelItem(null) }, "Cancelar"),
+          React.createElement("button", { className:"btn-p", style:{background:"var(--red)"}, onClick:()=>{
+            setCatalogoEstampillas(prev=>prev.map(g=>g.id===delItem.grpId?{...g,items:(g.items||[]).filter(e=>e.id!==delItem.itemId)}:g));
+            setDelItem(null);
+          } }, "Eliminar")
         )
       )
     )
   );
 }
+
 
 // ═══════════════════════════════════════════════════════
 // EXPORTAR PROYECTO A EXCEL
@@ -5653,7 +6025,9 @@ function descargarExcel(wb, filename) {
   }
 }
 
-function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
+function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) {
+  // Attach catalog for estampillas export
+  proyecto = Object.assign({}, proyecto, { _catalogoEst: catEst || [] });
   const res        = calcProyecto(proyecto, apus, recursos);
   const cd         = res.cd;
   const comps      = proyecto.componentes || [];
@@ -5958,8 +6332,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
   // HOJA ESTAMPILLAS
   // ═══════════════════════════════════════════════════════
   const crearHojaEstampillas=(totalBase)=>{
-    const saved=proyecto.estampillas||{activas:[]};
-    const activas=saved.activas||[];
+    const munId = proyecto.municipioId || "";
+    const allCatEst = typeof catalogoEstampillas !== 'undefined' ? [] : []; // passed via closure if available
+    // Build activas from municipioId group in catalog (stored in proyecto for export)
+    const munGrp = (proyecto._catalogoEst||[]).find(function(g){ return g.id===munId; });
+    const activas = munGrp ? (munGrp.items||[]).map(function(e){ return {nombre:e.nombre,pct:e.pctDef}; }) : (proyecto.estampillas&&proyecto.estampillas.activas||[]);
     const vc=totalBase||0;
     const ws={},M=[],NC=3; let r=0;
     s(ws,r,0,'ESTAMPILLAS — OBRA',ST.estHdr()); fillR(ws,r,1,NC,ST.estHdr()); mrg(M,r,0,r,NC); r++;
@@ -6001,7 +6378,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
       {id:'pic_2',numero:2,titulo:'Otros Gastos',tipo:'otros',items:[]}
     ]};
     const data=(proyecto[storageKey]&&proyecto[storageKey].capitulos)?proyecto[storageKey]:defaultData;
-    const fm=Number(data.fm)||2;
+    const fmRaw = data.fmData ? calcFMdesdeData(data.fmData) : (Number(data.fm)||2);
+    const fm=fmRaw;
     const capitulos=data.capitulos||[];
     const calcIt=(item,tipo)=>{
       if(tipo==='personal') return (Number(item.valorMesBase)||0)*(Number(item.cantidad)||0)*(Number(item.dedicacion)||1)*(Number(item.meses)||0);
@@ -6145,15 +6523,6 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
   };
   const _addAPUs       = ()=>{ if(apusUsados.length) XLSX.utils.book_append_sheet(wb,crearHojaAPUsConsolidada(),'APUs Proyectos'); };
 
-  if(opcion==='todo')           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
-  else if(opcion==='presupuesto'){ _addResumen();_addPresup(); }
-  else if(opcion==='au')         { _addAU(); }
-  else if(opcion==='polizas')    { _addPolizas(); }
-  else if(opcion==='estampillas'){ _addEst(); }
-  else if(opcion==='interventoria'){ _addInterv(); }
-  else if(opcion==='consultoria'){ if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría'); }
-  else if(opcion==='apus')       { _addAPUs(); }
-  else                           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
 
   // Hoja consolidada de APUs (todos en una sola hoja)
   const crearHojaAPUsConsolidada = () => {
@@ -6224,6 +6593,17 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo") {
 
   // ── Descargar ──────────────────────────────────────────
   const fname=`EDESO_${(proyecto.codigo||'proyecto').replace(/[\/\\:*?"<>|]/g,'_')}.xlsx`;
+
+  if(opcion==='todo')           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
+  else if(opcion==='presupuesto'){ _addResumen();_addPresup(); }
+  else if(opcion==='au')         { _addAU(); }
+  else if(opcion==='polizas')    { _addPolizas(); }
+  else if(opcion==='estampillas'){ _addEst(); }
+  else if(opcion==='interventoria'){ _addInterv(); }
+  else if(opcion==='consultoria'){ if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría'); }
+  else if(opcion==='apus')       { _addAPUs(); }
+  else                           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
+
   descargarExcel(wb, fname);
 }
 
@@ -7321,7 +7701,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
 
 
 // ── Modal de exportación Excel ────────────────────────────────────────────
-function ModalExportExcel({proyecto, apus, recursos, onClose}) {
+function ModalExportExcel({proyecto, apus, recursos, onClose, catalogoEstampillas}) {
   const comps = proyecto.componentes||[];
   const tieneObra  = comps.includes("obra")||comps.length===0;
   const tieneInterv= comps.includes("interventoria");
@@ -7340,7 +7720,7 @@ function ModalExportExcel({proyecto, apus, recursos, onClose}) {
   ].filter(o=>o.show);
 
   const exportar = (opcion) => {
-    exportarProyectoExcel(proyecto, apus, recursos, opcion);
+    exportarProyectoExcel(proyecto, apus, recursos, opcion, catalogoEstampillas);
     onClose();
   };
 
@@ -7378,6 +7758,125 @@ function ModalExportExcel({proyecto, apus, recursos, onClose}) {
       ),
       React.createElement("div",{style:{display:"flex",justifyContent:"flex-end",marginTop:16}},
         React.createElement("button",{className:"btn-s",onClick:onClose},"Cancelar")
+      )
+    )
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════
+// TAB PRESUPUESTO CONSULTORÍA
+// ═══════════════════════════════════════════════════════
+function TabPresupuestoConsultoria({ proyecto, setPActivo, readOnly, perfil, session, catalogoEstampillas }) {
+  var SK = "presupConsult";
+  var getData = function() {
+    return (proyecto[SK] && typeof proyecto[SK].valorDiseno !== "undefined")
+      ? proyecto[SK] : { valorDiseno: 0, estampillasActivas: [] };
+  };
+  var data = getData();
+  var setData = function(next) {
+    if (readOnly) return;
+    setPActivo(function(p) { return Object.assign({}, p, { [SK]: typeof next === "function" ? next(getData()) : next }); });
+  };
+  var catEst = catalogoEstampillas || [];
+  var estampillasSeleccionadas = getEstampillasMunicipio(catEst, proyecto.municipioId);
+  var polizasSaved = ((proyecto.polizasPorComp || {})["consultoria"]) || {};
+  var polizasActivas = polizasSaved.polizasActivas || [];
+  var auPlazo = Number(((proyecto.au) || {}).plazo) || 0;
+  var plazoMeses = Number(polizasSaved.plazoContractual) || 0;
+  var valorDiseno = Number(data.valorDiseno) || 0;
+  var resumen = calcResumenInterv(valorDiseno, estampillasSeleccionadas, polizasActivas, plazoMeses);
+
+  return React.createElement(React.Fragment, null,
+    React.createElement("div", { className:"card", style:{marginBottom:14} },
+      React.createElement("div", { className:"card-body" },
+        React.createElement("div", { style:{display:"flex",alignItems:"center",gap:24,flexWrap:"wrap"} },
+          React.createElement("div", { style:{flex:1,fontSize:13,fontWeight:700,color:"#15803D"} }, "Presupuesto Consultor\xEDa"),
+          React.createElement("div", { style:{textAlign:"right"} },
+            React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "Valor Total Consultor\xEDa"),
+            React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:16,fontWeight:800,color:"#15803D"} }, fmt(resumen.valorTotal))
+          )
+        )
+      )
+    ),
+    React.createElement("div", { className:"card", style:{marginBottom:14} },
+      React.createElement("div", { className:"card-header" },
+        React.createElement("span", { style:{fontWeight:600} }, "Valor del Dise\xF1o / Consultor\xEDa")
+      ),
+      React.createElement("div", { className:"card-body" },
+        React.createElement("div", { style:{maxWidth:380} },
+          React.createElement("label", { className:"lbl" }, "Valor directo de la consultor\xEDa (COP)"),
+          React.createElement("input", {
+            className:"ifield", type:"number", min:"0", step:"1000", disabled:readOnly,
+            value: data.valorDiseno || "",
+            placeholder:"0",
+            onChange: function(e) { setData(function(prev) { return Object.assign({}, prev, { valorDiseno: parseFloat(e.target.value) || 0 }); }); },
+            style:{fontFamily:"var(--mono)",fontWeight:700,fontSize:15}
+          }),
+          React.createElement("div", { style:{marginTop:6,fontSize:11,color:"var(--ink4)"} },
+            "Este valor es la base sobre la que se aplican estampillas, p\xF3lizas e IVA.")
+        )
+      )
+    ),
+    React.createElement("div", { className:"card", style:{overflow:"hidden"} },
+      React.createElement("div", { className:"card-header" },
+        React.createElement("span", { style:{fontWeight:700,color:"#15803D"} }, "Costos de Perfeccionamiento \xB7 Resumen Final"),
+        resumen.tasaTotal > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
+          "Tasa estampillas: " + (resumen.tasaTotal*100).toFixed(2) + "%")
+      ),
+      React.createElement("div", { className:"card-body", style:{padding:0} },
+        React.createElement("div", { style:{padding:"12px 20px",borderBottom:"1px solid var(--line)",background:"#F0FDF4",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"} },
+          React.createElement("div", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)"} }, "Estampillas \xB7 Municipio:"),
+          proyecto.municipioId
+            ? React.createElement("span", { style:{padding:"3px 12px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DCFCE7",color:"#15803D",border:"1px solid #86EFAC"} },
+                "\uD83C\uDFD9 " + (catEst.find(function(g){ return g.id === proyecto.municipioId; }) || {}).nombre + " (" + estampillasSeleccionadas.length + " estampillas)")
+            : React.createElement("span", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin municipio seleccionado \xB7 configura en los datos del proyecto"),
+          estampillasSeleccionadas.length > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
+            estampillasSeleccionadas.map(function(e){ return e.nombre+" "+e.pctDef+"%"; }).join(" \xB7 "))
+        ),
+        React.createElement("table", { className:"tbl" },
+          React.createElement("tbody", null,
+            React.createElement("tr", { style:{background:"var(--line2)"} },
+              React.createElement("td", { style:{padding:"10px 20px",fontWeight:700,color:"var(--ink2)"} }, "VALOR BASE CONSULTOR\xCDA"),
+              React.createElement("td", { style:{padding:"10px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700} }, fmt(resumen.subtotal12))
+            ),
+            estampillasSeleccionadas.length > 0
+              ? estampillasSeleccionadas.map(function(e) { return React.createElement("tr", { key:e.id },
+                  React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} }, "Estampilla " + e.nombre + " (" + e.pctDef + "%)"),
+                  React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} },
+                    fmt(Math.round(resumen.subtotalGeneral * (Number(e.pctDef)||0) / 100)))
+                ); })
+              : React.createElement("tr", null,
+                  React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin estampillas seleccionadas"),
+                  React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink4)"} }, fmt(0))
+                ),
+            React.createElement("tr", { style:{background:"#FFF7ED"} },
+              React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (IMPUESTOS)"),
+              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"} }, fmt(resumen.impuestos))
+            ),
+            React.createElement("tr", null,
+              React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} },
+                "P\xF3lizas y garant\xEDas (" + polizasActivas.length + " p\xF3liza" + (polizasActivas.length!==1?"s":"") + " \xB7 plazo " + plazoMeses + " meses)"),
+              React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.polizasTotal))
+            ),
+            React.createElement("tr", { style:{background:"#FFF7ED"} },
+              React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (P\xD3LIZAS Y TRANSACCIONES BANCARIAS)"),
+              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"} }, fmt(resumen.polizasTotal))
+            ),
+            React.createElement("tr", { style:{background:"#DCFCE7",borderTop:"2px solid #86EFAC"} },
+              React.createElement("td", { style:{padding:"11px 20px",fontWeight:800,color:"#15803D"} }, "SUBTOTAL GENERAL"),
+              React.createElement("td", { style:{padding:"11px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#15803D",fontSize:14} }, fmt(resumen.subtotalGeneral))
+            ),
+            React.createElement("tr", null,
+              React.createElement("td", { style:{padding:"9px 20px",fontSize:12,color:"var(--ink3)"} }, "IVA \u2014 Base antes de impuestos y p\xF3lizas (19%)"),
+              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.iva))
+            ),
+            React.createElement("tr", { style:{background:"#15803D"} },
+              React.createElement("td", { style:{padding:"14px 20px",fontWeight:800,color:"#fff",fontSize:14,letterSpacing:".03em"} }, "VALOR TOTAL CONSULTOR\xCDA"),
+              React.createElement("td", { style:{padding:"14px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#fff",fontSize:17} }, fmt(resumen.valorTotal))
+            )
+          )
+        )
       )
     )
   );
@@ -7851,7 +8350,8 @@ function ModuloProyectos({
     }, "\u2715"))));
   })))), !esLectura && showNuevo && /*#__PURE__*/React.createElement(ModalNuevoProyecto, {
     onGuardar: crearProyecto,
-    onCancel: () => setShowNuevo(false)
+    onCancel: () => setShowNuevo(false),
+    catalogoEstampillas: catalogoEstampillas || []
   }), delItem && /*#__PURE__*/React.createElement(ConfirmModal, {
     item: delItem.nombre,
     msg: "Se eliminar\xE1n todos los cap\xEDtulos e \xEDtems.",
@@ -7935,10 +8435,10 @@ function ModuloProyectos({
     const presupLabel = presupComp === "obra" ? "Obra" : presupComp === "interventoria" ? "Interventor\xEDa" : presupComp === "consultoria" ? "Consultor\xEDa" : presupComp;
     const presupColor = presupComp === "obra" ? "var(--red)" : "#1D4ED8";
     if (presupComp === "interventoria") {
-      return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo, readOnly: false, plantillasInt: plantillasInt || [], storageKey: "presupInterv" });
+      return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo, readOnly: false, plantillasInt: plantillasInt || [], storageKey: "presupInterv", catalogoEstampillas: catalogoEstampillas || [] });
     }
     if (presupComp === "consultoria") {
-      return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo, readOnly: false, plantillasInt: plantillasInt || [], storageKey: "presupConsult" });
+      return React.createElement(TabPresupuestoConsultoria, { proyecto: pActivo, setPActivo, readOnly: false, perfil, session, catalogoEstampillas: catalogoEstampillas || [] });
     }
     return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "card",
@@ -7994,7 +8494,15 @@ function ModuloProyectos({
       ...p,
       descripcion: e.target.value
     }))
-  })))), /*#__PURE__*/React.createElement("div", {
+  })),
+  (catalogoEstampillas||[]).length > 0 && React.createElement("div", { style:{marginTop:8} },
+    React.createElement("label", { className:"lbl" }, "Municipio (estampillas)"),
+    React.createElement("select", { className:"ifield", value: pActivo.municipioId || "", onChange: e => setPActivo(p => ({...p, municipioId: e.target.value})) },
+      React.createElement("option", { value:"" }, "\u2014 Sin municipio"),
+      (catalogoEstampillas||[]).map(g => React.createElement("option", { key:g.id, value:g.id }, g.nombre + " (" + (g.items||[]).length + " estampillas)"))
+    )
+  )
+  )), /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       overflow: "hidden"
@@ -8254,6 +8762,7 @@ function ModuloProyectos({
       totalProyecto: total,
       totalBase: total,
       catalogoPolizas: catalogoPolizas || [],
+      plazoProyecto: (pActivo.au || {}).plazo || 0,
       setPolizas: (key, pol) => setPActivo(p => ({ ...p, polizasPorComp: { ...(p.polizasPorComp || {}), [key]: pol } })),
       setAU: au => setPActivo(p => ({ ...p, au }))
     });
@@ -8348,6 +8857,7 @@ function ModuloProyectos({
     if (showExportModal) return React.createElement(React.Fragment, null,
       React.createElement(ModalExportExcel, {
         proyecto: pActivo, apus, recursos,
+        catalogoEstampillas: catalogoEstampillas || [],
         onClose: () => setShowExportModal(false)
       })
     );
@@ -8437,10 +8947,10 @@ function ModuloProyectos({
     }, t.label))), (tabDetalle === "presupuesto_obra" || tabDetalle === "presupuesto_interventoria" || tabDetalle === "presupuesto_consultoria") && (() => {
       const presupComp = tabDetalle.slice(12);
       if (presupComp === "interventoria") {
-        return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, storageKey: "presupInterv", perfil, session });
+        return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, storageKey: "presupInterv", perfil, session, catalogoEstampillas: catalogoEstampillas || [] });
       }
       if (presupComp === "consultoria") {
-        return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, storageKey: "presupConsult", perfil, session });
+        return React.createElement(TabPresupuestoConsultoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, perfil, session, catalogoEstampillas: catalogoEstampillas || [] });
       }
       return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       className: "card",
@@ -8777,6 +9287,7 @@ function ModuloProyectos({
       return React.createElement(TabPolizas, {
         proyecto: pActivo,
         componenteId: cid,
+        plazoProyecto: (pActivo.au || {}).plazo || 0,
         totalProyecto: totalDisplay,
         catalogoPolizas: catalogoPolizas || [],
         setPolizas: () => {},
