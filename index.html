@@ -259,10 +259,17 @@ const fmtN = (n, d = 2) => Number(n || 0).toLocaleString("es-CO", {
 
 // ─── Estampillas por municipio ───────────────────────────────────────────────
 // catalogoEstampillas = [{ id, nombre, items:[{ id, nombre, pctDef, obs }] }]
-function getEstampillasMunicipio(catalogoEstampillas, municipioId) {
+function getEstampillasMunicipio(catalogoEstampillas, municipioId, tipo) {
+  // tipo: "obra" | "interv" | undefined (all)
   if (!municipioId) return [];
   var grp = (catalogoEstampillas || []).find(function(g){ return g.id === municipioId; });
-  return grp ? (grp.items || []) : [];
+  var items = grp ? (grp.items || []) : [];
+  if (!tipo) return items;
+  return items.filter(function(e) {
+    if (tipo === "obra")  return e.aplicaObra  !== false;
+    if (tipo === "interv") return e.aplicaInterv !== false;
+    return true;
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -409,7 +416,8 @@ function calcTotalPresupInterv(data) {
   const fm = calcFMdesdeData(fmData);
   const calcIt = (item, tipo) => {
     if (tipo === "personal") return (Number(item.valorMesBase)||0) * (Number(item.cantidad)||0) * (Number(item.dedicacion)||1) * (Number(item.meses)||0);
-    return Number(item.valorFijo) || 0;
+    // otros: misma lógica que el componente TabPresupuestoInterventoria
+    return (Number(item.cantidad)||0) * (Number(item.valorUnitario)||0) * (Number(item.meses)||1);
   };
   return data.capitulos.reduce((s, cap) => {
     const sub = (cap.items||[]).reduce((ss, i) => ss + calcIt(i, cap.tipo), 0);
@@ -442,19 +450,23 @@ function calcResumenInterv(subtotal12, estampillasSeleccionadas, polizasActivas,
   var subtotalGeneral = subtotal12;
   var valorTotal = subtotalGeneral + iva;
   for (var i = 0; i < maxIter; i++) {
-    var polizasTotal = calcPolizasIntervTotal(polizasActivas, valorTotal, plazoMeses);
+    var primasTotal = calcPolizasIntervTotal(polizasActivas, valorTotal, plazoMeses);
+    var tb          = Math.round(valorTotal * 0.002);  // 50% impuesto 4/1000 sobre valorTotal
+    var polizasTotal = primasTotal + tb;
     var impuestos = Math.round(subtotalGeneral * tasaTotal);
     var newG = subtotal12 + impuestos + polizasTotal;
     var newV = newG + iva;
     if (Math.abs(newG - subtotalGeneral) < 1) {
-      return { subtotal12: subtotal12, tasaTotal: tasaTotal, impuestos: impuestos, polizasTotal: polizasTotal, subtotalGeneral: newG, iva: iva, valorTotal: newV };
+      return { subtotal12: subtotal12, tasaTotal: tasaTotal, impuestos: impuestos, primasTotal: primasTotal, tb: tb, polizasTotal: polizasTotal, subtotalGeneral: newG, iva: iva, valorTotal: newV };
     }
     subtotalGeneral = newG;
     valorTotal = newV;
   }
-  var pt2 = calcPolizasIntervTotal(polizasActivas, valorTotal, plazoMeses);
+  var primasTotal = calcPolizasIntervTotal(polizasActivas, valorTotal, plazoMeses);
+  var tb = Math.round(valorTotal * 0.002);
+  var pt2 = primasTotal + tb;
   var imp2 = Math.round(subtotalGeneral * tasaTotal);
-  return { subtotal12: subtotal12, tasaTotal: tasaTotal, impuestos: imp2, polizasTotal: pt2, subtotalGeneral: subtotalGeneral, iva: iva, valorTotal: valorTotal };
+  return { subtotal12: subtotal12, tasaTotal: tasaTotal, impuestos: imp2, primasTotal: primasTotal, tb: tb, polizasTotal: pt2, subtotalGeneral: subtotalGeneral, iva: iva, valorTotal: valorTotal };
 }
 
 
@@ -2984,11 +2996,11 @@ function TabAU({
     if (sub.id === "s1_3") (sub.items || []).forEach(i => { personal13 += calcAUItem(i, sub.tipo, cd, 0); });
   }));
   return /*#__PURE__*/React.createElement("div", null,
-    !readOnly && React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
+    au.plazo > 0 && React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
       React.createElement("div", { style:{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"} },
         React.createElement("div", { style:{fontSize:13,fontWeight:700,color:"var(--ink2)"} }, "\uD83D\uDCC5 Plazo del proyecto"),
         React.createElement("div", { style:{display:"flex",alignItems:"center",gap:8} },
-          React.createElement("input", {
+          !readOnly ? React.createElement("input", {
             className:"ifield", type:"number", min:0, step:1,
             style:{width:90,fontFamily:"var(--mono)",fontWeight:700,fontSize:14},
             value: au.plazo || "",
@@ -3013,7 +3025,7 @@ function TabAU({
                 return Object.assign({}, prev, { plazo: v, secciones: secciones });
               });
             }
-          }),
+          }) : React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:800,fontSize:15,color:"var(--ink)"} }, au.plazo || 0),
           React.createElement("span", { style:{fontSize:12,color:"var(--ink4)"} }, "meses"),
           au.plazo > 0 && React.createElement("span", { style:{fontSize:11,color:"#15803D",background:"#DCFCE7",padding:"2px 10px",borderRadius:20,fontWeight:600} },
             Math.round((au.plazo||0)*365/12) + " d\xEDas \xB7 se propaga a P\xF3lizas Obra e Interventor\xEDa")
@@ -3322,7 +3334,7 @@ function TabAU({
         fontSize: 12,
         color: "var(--ink4)"
       }
-    }, "Porcentaje sobre C.D. \xB7 ingresa manualmente"), /*#__PURE__*/React.createElement("td", {
+    }, "Porcentaje sobre C.D."), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "8px 16px",
         textAlign: "right"
@@ -3942,6 +3954,8 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
   const SK = storageKey || "presupInterv";
   const defaultData = () => ({
     fmData: Object.assign({}, FM_DEFAULTS),
+    plazo: 0,
+    estampillasActivas: null,  // null = usar defaults del catálogo
     capitulos: [
       { id: "pic_1", numero: 1, titulo: "Personal Profesional, Técnico y Administrativo", tipo: "personal", items: [] },
       { id: "pic_2", numero: 2, titulo: "Otros Gastos (Se paga a necesidad previa aprobación del supervisor)", tipo: "otros", items: [] }
@@ -3965,7 +3979,7 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
     if (tipo === "personal") {
       return (Number(item.valorMesBase)||0) * (Number(item.cantidad)||0) * (Number(item.dedicacion)||1) * (Number(item.meses)||0);
     }
-    return Number(item.valorFijo) || 0;
+    return (Number(item.cantidad)||0) * (Number(item.valorUnitario)||0) * (Number(item.meses)||1);
   };
 
   const subtotalCap = (cap) => (cap.items||[]).reduce((s,i) => s + calcItem(i, cap.tipo), 0);
@@ -3982,12 +3996,29 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
 
   // Resumen perfeccionamiento (después de hooks)
   const catEst = catalogoEstampillas || [];
-  const estampillasSeleccionadas = getEstampillasMunicipio(catEst, proyecto.municipioId);
+  // Todas las estampillas del municipio (sin filtro de tipo)
+  const todasEstMunicipio = getEstampillasMunicipio(catEst, proyecto.municipioId);
+  // Si no hay selección guardada, usar defaults del catálogo (aplicaInterv !== false)
+  const estampillasActivasIds = data.estampillasActivas !== null && data.estampillasActivas !== undefined
+    ? data.estampillasActivas
+    : todasEstMunicipio.filter(e => e.aplicaInterv !== false).map(e => e.id);
+  const estampillasSeleccionadas = todasEstMunicipio.filter(e => estampillasActivasIds.includes(e.id));
   const polizasSaved = (proyecto.polizasPorComp || {})[SK === "presupInterv" ? "interventoria" : "consultoria"] || {};
   const polizasActivas = polizasSaved.polizasActivas || [];
   const auPlazo = Number((proyecto.au || {}).plazo) || 0;
   const plazoMeses = Number(polizasSaved.plazoContractual) || auPlazo;
   const resumen = calcResumenInterv(totalGeneral, estampillasSeleccionadas, polizasActivas, plazoMeses);
+
+  const toggleEstampilla = (id) => {
+    if (readOnly) return;
+    setData(prev => {
+      const curr = prev.estampillasActivas !== null && prev.estampillasActivas !== undefined
+        ? prev.estampillasActivas
+        : todasEstMunicipio.filter(e => e.aplicaInterv !== false).map(e => e.id);
+      const next = curr.includes(id) ? curr.filter(x => x !== id) : [...curr, id];
+      return Object.assign({}, prev, { estampillasActivas: next });
+    });
+  };
 
   const setFMField = (key, val) => {
     if (readOnly) return;
@@ -4134,6 +4165,13 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
               React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "FM calculado"),
               React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:15,fontWeight:800,color:"#374151"} }, fm.toFixed(4))
             ),
+            React.createElement("div", { style:{display:"flex",alignItems:"center",gap:8} },
+              React.createElement("span", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)",whiteSpace:"nowrap"} }, "Plazo interv."),
+              React.createElement("input", { className:"ifield", type:"number", min:0, step:1, style:{width:76,fontFamily:"var(--mono)",fontWeight:700,fontSize:13,marginBottom:0}, value: data.plazo||"", placeholder:"0", disabled:readOnly,
+                onChange: function(e) { var v=parseInt(e.target.value)||0; var oldP=data.plazo||0; setData(function(prev){ var caps=(prev.capitulos||[]).map(function(cap){ if(cap.tipo!=="otros") return cap; return Object.assign({},cap,{items:(cap.items||[]).map(function(item){ return Number(item.meses)===oldP?Object.assign({},item,{meses:v}):item; })}); }); return Object.assign({},prev,{plazo:v,capitulos:caps}); }); }
+              }),
+              React.createElement("span", { style:{fontSize:11,color:"var(--ink4)"} }, "meses")
+            ),
             React.createElement("div", { style:{textAlign:"right"} },
               React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "Valor Total Interventoría"),
               React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:16,fontWeight:800,color:"#1D4ED8"} }, fmt(resumen.valorTotal))
@@ -4193,13 +4231,13 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
                 React.createElement("td", { style:{fontSize:12} }, item.descripcion),
                 React.createElement("td", null, item.unidad||""),
                 React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12} },
-                  cap.tipo==="personal" ? fmtN(item.meses,2) : "—"),
+                  cap.tipo==="personal" ? fmtN(item.meses,2) : fmtN(item.meses||1,0)),
                 React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12} },
-                  cap.tipo==="personal" ? fmt(item.valorMesBase) : "—"),
+                  cap.tipo==="personal" ? fmt(item.valorMesBase) : fmt(item.valorUnitario||0)),
                 React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12} },
-                  cap.tipo==="personal" ? fmtN(item.cantidad,2) : "—"),
+                  cap.tipo==="personal" ? fmtN(item.cantidad,2) : fmtN(item.cantidad||0,2)),
                 React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12} },
-                  cap.tipo==="personal" ? fmtN(item.dedicacion,2) : (item.unidad||"gl")),
+                  cap.tipo==="personal" ? fmtN(item.dedicacion,2) : "—"),
                 React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,fontWeight:600} },
                   fmt(calcItem(item, cap.tipo))),
                 React.createElement("td", null,
@@ -4259,14 +4297,38 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
           "Tasa estampillas: " + (resumen.tasaTotal*100).toFixed(2) + "%")
       ),
       React.createElement("div", { className:"card-body", style:{padding:0} },
-        React.createElement("div", { style:{padding:"12px 20px",borderBottom:"1px solid var(--line)",background:"#F8FAFF",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"} },
-          React.createElement("div", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)"} }, "Estampillas · Municipio:"),
-          proyecto.municipioId
-            ? React.createElement("span", { style:{padding:"3px 12px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DBEAFE",color:"#1D4ED8",border:"1px solid #93C5FD"} },
-                "\uD83C\uDFD9 " + (catEst.find(function(g){ return g.id === proyecto.municipioId; }) || {}).nombre + " (" + estampillasSeleccionadas.length + " estampillas)")
-            : React.createElement("span", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin municipio seleccionado · configura en los datos del proyecto"),
-          estampillasSeleccionadas.length > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
-            estampillasSeleccionadas.map(function(e){ return e.nombre+" "+e.pctDef+"%"; }).join(" · "))
+        React.createElement("div", { style:{padding:"12px 20px",borderBottom:"1px solid var(--line)",background:"#F8FAFF"} },
+          React.createElement("div", { style:{display:"flex",alignItems:"center",gap:10,marginBottom: readOnly ? 0 : 10,flexWrap:"wrap"} },
+            React.createElement("div", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)"} }, "Estampillas \xB7 Municipio:"),
+            proyecto.municipioId
+              ? React.createElement("span", { style:{padding:"2px 10px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DBEAFE",color:"#1D4ED8",border:"1px solid #93C5FD"} },
+                  "\uD83C\uDFD9 " + ((catEst.find(function(g){ return g.id===proyecto.municipioId; }))||{}).nombre)
+              : React.createElement("span", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin municipio \xB7 configura en los datos del proyecto"),
+            readOnly && estampillasSeleccionadas.map(function(e){
+              return React.createElement("span", { key:e.id,
+                style:{padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DBEAFE",color:"#1D4ED8",border:"1px solid #93C5FD"}},
+                e.nombre+" "+e.pctDef+"%");
+            })
+          ),
+          !readOnly && (todasEstMunicipio.length === 0
+            ? React.createElement("div", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "No hay estampillas en el cat\xE1logo para este municipio.")
+            : React.createElement("div", { style:{display:"flex",flexWrap:"wrap",gap:8} },
+                todasEstMunicipio.map(function(e) {
+                  var activa = estampillasActivasIds.includes(e.id);
+                  return React.createElement("label", { key:e.id,
+                    style:{display:"flex",alignItems:"center",gap:6,cursor:"pointer",
+                      padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:600,
+                      background: activa?"#DBEAFE":"var(--line2)",
+                      color:      activa?"#1D4ED8":"var(--ink3)",
+                      border:     activa?"1px solid #93C5FD":"1px solid var(--line)"
+                    }},
+                    React.createElement("input",{type:"checkbox",style:{accentColor:"#1D4ED8"},
+                      checked:activa,disabled:false,onChange:function(){ toggleEstampilla(e.id); }}),
+                    e.nombre+" "+e.pctDef+"%"
+                  );
+                })
+              )
+          )
         ),
         React.createElement("table", { className:"tbl" },
           React.createElement("tbody", null,
@@ -4291,7 +4353,11 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
             React.createElement("tr", null,
               React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} },
                 "P\xF3lizas y garant\xEDas (" + polizasActivas.length + " p\xF3liza" + (polizasActivas.length!==1?"s":"") + " \xB7 plazo " + plazoMeses + " meses)"),
-              React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.polizasTotal))
+              React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.primasTotal||0))
+            ),
+            React.createElement("tr", null,
+              React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} }, "50% Impuesto 4/1000 (0.2% sobre valor total)"),
+              React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.tb||0))
             ),
             React.createElement("tr", { style:{background:"#FFF7ED"} },
               React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (P\xD3LIZAS Y TRANSACCIONES BANCARIAS)"),
@@ -4387,11 +4453,20 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
                 onChange:e=>setFormItem(f=>({...f,meses:parseFloat(e.target.value)||0})) })
             )
           ),
-          !esPersonalModal && React.createElement("div", null,
-            React.createElement("label", { className:"lbl" }, "Valor Fijo (COP)"),
-            React.createElement("input", { className:"ifield", type:"number", min:"0",
-              value:formItem.valorFijo||"",
-              onChange:e=>setFormItem(f=>({...f,valorFijo:parseFloat(e.target.value)||0})) })
+          !esPersonalModal && React.createElement(React.Fragment, null,
+            React.createElement("div", null,
+              React.createElement("label", { className:"lbl" }, "Cantidad"),
+              React.createElement("input", { className:"ifield", type:"number", min:"0", value:formItem.cantidad||"", onChange:e=>setFormItem(f=>({...f,cantidad:parseFloat(e.target.value)||0})) })
+            ),
+            React.createElement("div", null,
+              React.createElement("label", { className:"lbl" }, "Valor Unitario (COP)"),
+              React.createElement("input", { className:"ifield", type:"number", min:"0", value:formItem.valorUnitario||"", onChange:e=>setFormItem(f=>({...f,valorUnitario:parseFloat(e.target.value)||0})) })
+            ),
+            React.createElement("div", { style:{gridColumn:"1/-1"} },
+              React.createElement("label", { className:"lbl" }, "Meses"),
+              React.createElement("input", { className:"ifield", type:"number", min:"1", step:"1", value:formItem.meses||"", placeholder:String(data.plazo||1), onChange:e=>setFormItem(f=>({...f,meses:parseFloat(e.target.value)||1})) }),
+              React.createElement("div", { style:{fontSize:11,color:"var(--ink4)",marginTop:4} }, "Total = " + fmt((Number(formItem.cantidad)||0)*(Number(formItem.valorUnitario)||0)*(Number(formItem.meses)||1)))
+            )
           )
         ),
         React.createElement("div", { style:{display:"flex",gap:10,justifyContent:"flex-end",marginTop:20,paddingTop:16,borderTop:"1px solid #F2F2F7"} },
@@ -5159,7 +5234,14 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
   useEffect(()=>{
     if(!proyecto?.id||!session) return;
     const pid=String(proyecto.id), myEmail=session.user.email;
-    const ch=_sb.channel("pol_items_"+pid+"_"+cid)
+    const chName = "pol_items_"+pid+"_"+cid;
+    // Remove existing channel before creating new one
+    if(!window.__edeso_ch__) window.__edeso_ch__ = {};
+    if(window.__edeso_ch__[chName]) {
+      try { _sb.removeChannel(window.__edeso_ch__[chName]); } catch(e) {}
+      delete window.__edeso_ch__[chName];
+    }
+    const ch=_sb.channel(chName)
       .on("postgres_changes",{event:"*",schema:"public",table:"items_polizas"},p=>{
         if((p.new?.updated_by_email||p.old?.updated_by_email)===myEmail) return;
         const row=p.eventType==="DELETE"?p.old:p.new;
@@ -5172,7 +5254,8 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
           updateSaved({polizasActivas:existe?(saved.polizasActivas||[]).map(x=>String(x.id)===String(row.id)?{...x,...pol}:x):[...(saved.polizasActivas||[]),pol]});
         }
       }).subscribe();
-    return()=>_sb.removeChannel(ch);
+    window.__edeso_ch__[chName] = ch;
+    return()=>{ _sb.removeChannel(ch); delete window.__edeso_ch__[chName]; };
   },[proyecto?.id,cid]);
 
   const updatePoliza = (idx, patch) => {
@@ -5282,7 +5365,7 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
           // Plazo contractual (editable)
           React.createElement("div", null,
             React.createElement("label", { className:"lbl" }, "Plazo contractual (meses)"),
-            plazoDesdeAU && React.createElement("div", { style:{fontSize:11,color:"#15803D",background:"#DCFCE7",padding:"3px 10px",borderRadius:20,fontWeight:600,marginBottom:6,display:"inline-block"} },
+            plazoDesdeAU && !readOnly && React.createElement("div", { style:{fontSize:11,color:"#15803D",background:"#DCFCE7",padding:"3px 10px",borderRadius:20,fontWeight:600,marginBottom:6,display:"inline-block"} },
               "\uD83D\uDD17 Sugerido desde AU (" + auPlazoSug + " meses) \xB7 edita para personalizar"),
             React.createElement("input", {
               className:"ifield",
@@ -5779,11 +5862,11 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
   };
 
   const abrirNuevoItem = (grpId) => { setModalItem({ grpId, itemId:null }); setFormItem({ nombre:"", pctDef:"", obs:"" }); };
-  const abrirEditItem  = (grpId, item) => { setModalItem({ grpId, itemId:item.id }); setFormItem({ nombre:item.nombre, pctDef:item.pctDef, obs:item.obs||"" }); };
+  const abrirEditItem  = (grpId, item) => { setModalItem({ grpId, itemId:item.id }); setFormItem({ nombre:item.nombre, pctDef:item.pctDef, obs:item.obs||"", aplicaObra:item.aplicaObra!==false, aplicaInterv:item.aplicaInterv!==false }); };
   const guardarItem = () => {
     if (!formItem.nombre.trim()) return;
     const { grpId, itemId } = modalItem;
-    const data = { nombre:formItem.nombre.trim(), pctDef:parseFloat(formItem.pctDef)||0, obs:formItem.obs };
+    const data = { nombre:formItem.nombre.trim(), pctDef:parseFloat(formItem.pctDef)||0, obs:formItem.obs, aplicaObra: formItem.aplicaObra !== false, aplicaInterv: formItem.aplicaInterv !== false };
     setCatalogoEstampillas(prev => prev.map(g => {
       if (g.id !== grpId) return g;
       const items = itemId
@@ -5837,6 +5920,7 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
                 React.createElement("th", null, "Estampilla"),
                 React.createElement("th", { style:{textAlign:"right",width:110} }, "% Defecto"),
                 React.createElement("th", null, "Descripci\xF3n / base legal"),
+                React.createElement("th", { style:{width:110} }, "Aplica a"),
                 React.createElement("th", { style:{width:80} })
               )),
               React.createElement("tbody", null,
@@ -5850,6 +5934,10 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
                       ),
                       React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:600} }, est.pctDef + "%"),
                       React.createElement("td", { style:{fontSize:11,color:"var(--ink4)"} }, est.obs||"\u2014"),
+                      React.createElement("td", { style:{padding:"6px 10px",fontSize:11} },
+                        est.aplicaObra!==false && React.createElement("span", { style:{marginRight:4,padding:"1px 7px",borderRadius:10,background:"#FEF3C7",color:"#92400E",fontSize:10,fontWeight:700} }, "Obra"),
+                        est.aplicaInterv!==false && React.createElement("span", { style:{padding:"1px 7px",borderRadius:10,background:"#DBEAFE",color:"#1D4ED8",fontSize:10,fontWeight:700} }, "Interv")
+                      ),
                       React.createElement("td", { style:{textAlign:"right",paddingRight:12} },
                         React.createElement("button", { className:"btn-ghost", style:{marginRight:4,fontSize:11}, onClick:()=>abrirEditItem(grp.id,est) }, "\u270F\uFE0F"),
                         React.createElement("button", { className:"btn-ghost", style:{color:"#F5C6C2",fontSize:14}, onClick:()=>setDelItem({grpId:grp.id,itemId:est.id}) }, "\xD7")
@@ -5887,6 +5975,20 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
           React.createElement("div", null,
             React.createElement("label", { className:"lbl" }, "% sobre contrato"),
             React.createElement("input", { className:"ifield", type:"number", min:0, max:100, step:0.01, value:formItem.pctDef, onChange:e=>setFormItem(f=>({...f,pctDef:e.target.value})) })
+          ),
+          React.createElement("div", { style:{display:"flex",gap:24,padding:"10px 14px",background:"var(--line2)",borderRadius:8} },
+            React.createElement("label", { style:{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600} },
+              React.createElement("input", { type:"checkbox", style:{accentColor:"#D97706",width:16,height:16},
+                checked: formItem.aplicaObra !== false,
+                onChange: e => setFormItem(f=>({...f, aplicaObra: e.target.checked})) }),
+              React.createElement("span", null, "\uD83C\uDFD7\uFE0F Aplica a Obra")
+            ),
+            React.createElement("label", { style:{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600} },
+              React.createElement("input", { type:"checkbox", style:{accentColor:"#1D4ED8",width:16,height:16},
+                checked: formItem.aplicaInterv !== false,
+                onChange: e => setFormItem(f=>({...f, aplicaInterv: e.target.checked})) }),
+              React.createElement("span", null, "\uD83D\uDCC8 Aplica a Interventor\xEDa / Consultor\xEDa")
+            )
           ),
           React.createElement("div", null,
             React.createElement("label", { className:"lbl" }, "Descripci\xF3n / base legal"),
@@ -7695,6 +7797,80 @@ function ModalExportExcel({proyecto, apus, recursos, onClose, catalogoEstampilla
 // ═══════════════════════════════════════════════════════
 // TAB PRESUPUESTO CONSULTORÍA
 // ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// FICHA FINANCIERA — cálculo con iteración
+// ═══════════════════════════════════════════════════════
+function calcPolizasEDESO(polizasActivas, valorBase, plazoMeses) {
+  // Días = (plazo + mesesExtra) × 30  (lógica Excel Pólizas EDESO)
+  return (polizasActivas || []).reduce(function(s, p) {
+    var pct       = Number(p.pct)       || 0;
+    var pctPrima  = Number(p.pctPrima)  || 0;
+    var mesesExtra= Number(p.mesesExtra)|| 0;
+    var va        = Math.round(valorBase * pct / 100);
+    var valor     = Math.round(va * pctPrima / 100);
+    var dias      = (plazoMeses + mesesExtra) * 30;
+    var prima     = dias > 0 ? Math.round(valor * dias / 365) : 0;
+    return s + Math.round(prima * 1.19);
+  }, 0);
+}
+
+function calcFichaFinanciera(proyecto, obraTotal, intervTotal, maxIter) {
+  if (maxIter === undefined) maxIter = 50;
+  var ff = proyecto.fichaFinanciera || {};
+  var pctHon  = Number(ff.pctHonoarios !== undefined ? ff.pctHonoarios : 0.08);
+  var pctIVA  = 0.19;
+  var duracion = Number(ff.duracion) || 0;
+
+  // Componentes manuales
+  var totalPersonal  = (ff.componentesPersonal  || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
+  var totalSocial    = (ff.componentesSocial    || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.valorUnit)||0); }, 0);
+  var totalLogistico = (ff.componentesLogistico || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.valorUnit)||0); }, 0);
+  var totalDiseno    = (ff.componentesDiseno    || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
+
+  // Pólizas EDESO — convergen
+  var polD = ((proyecto.polizasPorComp||{})["edeso"]) || {};
+  var polizasActivas = polD.polizasActivas || [];
+  var plazo = Number(polD.plazoContractual) || duracion;
+
+  var subtotalDirecto   = Math.round(obraTotal + intervTotal);
+  var polizasEdeso      = 0;
+  var subtotalIndirecto = 0;
+  var totalRecursos     = 0;
+  var honorarios        = 0;
+  var iva               = 0;
+  var totalContrato     = 0;
+
+  for (var i = 0; i < maxIter; i++) {
+    polizasEdeso      = calcPolizasEDESO(polizasActivas, subtotalDirecto + subtotalIndirecto, plazo);
+    subtotalIndirecto = Math.round(totalPersonal + totalSocial + polizasEdeso + totalLogistico);
+    totalRecursos     = Math.round(subtotalDirecto + subtotalIndirecto);
+    honorarios        = Math.round(subtotalDirecto * pctHon);
+    iva               = Math.round(honorarios * pctIVA);
+    var newTotal      = Math.round(totalRecursos + honorarios + iva);
+    if (Math.abs(newTotal - totalContrato) < 1) { totalContrato = newTotal; break; }
+    totalContrato = newTotal;
+  }
+
+  return {
+    duracion         : duracion,
+    obraTotal        : obraTotal,
+    intervTotal      : intervTotal,
+    totalPersonal    : totalPersonal,
+    totalSocial      : totalSocial,
+    polizasEdeso     : polizasEdeso,
+    totalLogistico   : totalLogistico,
+    totalDiseno      : totalDiseno,
+    subtotalDirecto  : subtotalDirecto,
+    subtotalIndirecto: subtotalIndirecto,
+    totalRecursos    : totalRecursos,
+    honorarios       : honorarios,
+    pctHon           : pctHon,
+    iva              : iva,
+    totalContrato    : totalContrato,
+  };
+}
+
+
 function TabPresupuestoConsultoria({ proyecto, setPActivo, readOnly, perfil, session, catalogoEstampillas }) {
   var SK = "presupConsult";
   var getData = function() {
@@ -7804,6 +7980,295 @@ function TabPresupuestoConsultoria({ proyecto, setPActivo, readOnly, perfil, ses
               React.createElement("td", { style:{padding:"14px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#fff",fontSize:17} }, fmt(resumen.valorTotal))
             )
           )
+        )
+      )
+    )
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════
+// TAB FICHA FINANCIERA
+// ═══════════════════════════════════════════════════════
+function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervTotal, catalogoPolizas }) {
+  var ff = proyecto.fichaFinanciera || {};
+  var setFF = function(next) {
+    if (readOnly) return;
+    setPActivo(function(p) {
+      var cur = p.fichaFinanciera || {};
+      var upd = typeof next === 'function' ? next(cur) : next;
+      return Object.assign({}, p, { fichaFinanciera: Object.assign({}, cur, upd) });
+    });
+  };
+
+  var [modalComp, setModalComp] = React.useState(null); // { tipo, editIdx }
+  var [formComp,  setFormComp]  = React.useState({});
+
+  var pctHon   = Number(ff.pctHonoarios !== undefined ? ff.pctHonoarios : 0.08);
+  var duracion = Number(ff.duracion) || 0;
+
+  var R = calcFichaFinanciera(proyecto, obraTotal, intervTotal);
+
+  // Helpers
+  var abrirNuevo = function(tipo) { setModalComp({ tipo: tipo, editIdx: null }); setFormComp({ descripcion:'', valor:0, cantidad:1, valorUnit:0, unidad:'mes' }); };
+  var abrirEditar = function(tipo, idx) {
+    var lista = ff['componentes'+tipo] || [];
+    setModalComp({ tipo: tipo, editIdx: idx });
+    setFormComp(Object.assign({}, lista[idx]));
+  };
+  var guardarComp = function() {
+    var tipo = modalComp.tipo;
+    var lista = (ff['componentes'+tipo] || []).slice();
+    var item = Object.assign({}, formComp);
+    if (modalComp.editIdx !== null) lista[modalComp.editIdx] = item;
+    else lista.push(item);
+    var upd = {}; upd['componentes'+tipo] = lista;
+    setFF(upd);
+    setModalComp(null);
+  };
+  var eliminarComp = function(tipo, idx) {
+    var lista = (ff['componentes'+tipo] || []).slice();
+    lista.splice(idx, 1);
+    var upd = {}; upd['componentes'+tipo] = lista;
+    setFF(upd);
+  };
+
+  var secColor = { Personal:'#1D4ED8', Social:'#15803D', Logistico:'#7C3AED', Diseno:'#B45309' };
+  var secLabel = { Personal:'Componente de Personal', Social:'Social y Comunicaciones', Logistico:'Apoyo Logístico (Gastos reembolsables)', Diseno:'Honorarios de Diseño' };
+  var esValorFijo = function(tipo) { return tipo === 'Personal' || tipo === 'Diseno'; };
+
+  var renderSeccion = function(tipo, subtotal) {
+    var lista = ff['componentes'+tipo] || [];
+    var col = secColor[tipo] || '#374151';
+    return React.createElement('div', { key:tipo, className:'card', style:{overflow:'hidden',marginBottom:10} },
+      React.createElement('div', { className:'card-header', style:{background:col+'11',borderBottom:'2px solid '+col+'33'} },
+        React.createElement('span', { style:{fontWeight:700,color:col,fontSize:13} }, secLabel[tipo]),
+        React.createElement('span', { style:{fontFamily:'var(--mono)',fontWeight:700,color:col,marginLeft:'auto'} }, fmt(subtotal)),
+        !readOnly && React.createElement('button', { className:'btn-s', style:{marginLeft:12,fontSize:11}, onClick:function(){ abrirNuevo(tipo); } }, '+ Agregar')
+      ),
+      lista.length === 0
+        ? React.createElement('div', { style:{padding:'10px 20px',fontSize:12,color:'var(--ink4)',fontStyle:'italic'} }, 'Sin ítems')
+        : React.createElement('table', { className:'tbl' },
+            React.createElement('thead', null, React.createElement('tr', null,
+              React.createElement('th', null, 'Descripción'),
+              esValorFijo(tipo)
+                ? React.createElement('th', { style:{textAlign:'right',width:180} }, 'Valor')
+                : React.createElement(React.Fragment, null,
+                    React.createElement('th', { style:{textAlign:'right',width:120} }, 'Cantidad/Duración'),
+                    React.createElement('th', { style:{textAlign:'right',width:160} }, 'Valor Unitario'),
+                    React.createElement('th', { style:{textAlign:'right',width:160} }, 'Total')
+                  ),
+              React.createElement('th', { style:{width:60} })
+            )),
+            React.createElement('tbody', null,
+              lista.map(function(item, idx) {
+                var tot = esValorFijo(tipo)
+                  ? (Number(item.valor)||0)
+                  : (Number(item.cantidad)||0) * (Number(item.valorUnit)||0);
+                return React.createElement('tr', { key:idx },
+                  React.createElement('td', { style:{fontSize:12} }, item.descripcion || '\u2014'),
+                  esValorFijo(tipo)
+                    ? React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valor)||0))
+                    : React.createElement(React.Fragment, null,
+                        React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, (Number(item.cantidad)||0)+" "+(item.unidad||'')),
+                        React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valorUnit)||0)),
+                        React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12,fontWeight:700} }, fmt(tot))
+                      ),
+                  React.createElement('td', { style:{textAlign:'right',paddingRight:8} },
+                    !readOnly && React.createElement(React.Fragment, null,
+                      React.createElement('button', { className:'btn-ghost', style:{fontSize:11,marginRight:4}, onClick:function(){ abrirEditar(tipo,idx); } }, '\u270F\uFE0F'),
+                      React.createElement('button', { className:'btn-ghost', style:{fontSize:13,color:'#F5C6C2'}, onClick:function(){ eliminarComp(tipo,idx); } }, '\xD7')
+                    )
+                  )
+                );
+              })
+            )
+          )
+    );
+  };
+
+  // Resumen table right side
+  var renderResumen = function() {
+    var rows = [
+      ['Costo de obra', R.obraTotal, false],
+      ['Interventor\xEDa', R.intervTotal, false],
+      ['Costos indirectos del proyecto', R.subtotalIndirecto, false],
+      ['SUBTOTAL RECURSOS A ADMINISTRAR', R.totalRecursos, true],
+      [null, null, false],
+      ['HONORARIOS A.D.R. ('+(pctHon*100).toFixed(0)+'%)', R.honorarios, false],
+      ['IVA 19%', R.iva, false],
+      [null, null, false],
+      ['TOTAL HONORARIOS POR ADMINISTRACIÓN', R.honorarios+R.iva, true],
+      [null, null, false],
+      ['VALOR TOTAL DE RECURSOS A INVERTIR', R.totalContrato, true, true],
+    ];
+    return React.createElement('div', { className:'card', style:{overflow:'hidden'} },
+      React.createElement('div', { className:'card-header' },
+        React.createElement('span', { style:{fontWeight:700,color:'#1D4ED8'} }, 'Resumen Financiero')
+      ),
+      React.createElement('table', { className:'tbl' },
+        React.createElement('tbody', null,
+          rows.map(function(row, i) {
+            if (!row[0]) return React.createElement('tr', { key:i }, React.createElement('td', { colSpan:2, style:{padding:'4px'} }));
+            var isSub = row[2]; var isTotal = row[3];
+            return React.createElement('tr', { key:i, style:isTotal?{background:'#1D4ED8'}:isSub?{background:'#EFF6FF',borderTop:'2px solid #93C5FD'}:{} },
+              React.createElement('td', { style:{padding:'9px 16px',fontWeight:isSub||isTotal?700:400,fontSize:isSub||isTotal?13:12,color:isTotal?'#fff':isSub?'#1D4ED8':'var(--ink2)'} }, row[0]),
+              React.createElement('td', { style:{padding:'9px 16px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:isSub||isTotal?800:600,fontSize:isTotal?15:13,color:isTotal?'#fff':isSub?'#1D4ED8':'var(--ink2)'} }, fmt(Math.round(row[1]||0)))
+            );
+          })
+        )
+      )
+    );
+  };
+
+  return React.createElement(React.Fragment, null,
+
+    // Header card
+    React.createElement('div', { className:'card', style:{marginBottom:14} },
+      React.createElement('div', { className:'card-body' },
+        React.createElement('div', { style:{display:'flex',gap:20,flexWrap:'wrap',alignItems:'flex-start'} },
+          React.createElement('div', { style:{flex:1,minWidth:260} },
+            React.createElement('div', { style:{fontWeight:700,fontSize:14,color:'var(--ink)',marginBottom:12} }, 'FICHA FINANCIERA'),
+            React.createElement('div', { style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12} },
+              React.createElement('div', null,
+                React.createElement('label', { className:'lbl' }, 'Contratante'),
+                React.createElement('input', { className:'ifield', value:ff.contratante||'', disabled:readOnly, onChange:function(e){ setFF({contratante:e.target.value}); }, placeholder:'Ej: Alcaldía de Rionegro' })
+              ),
+              React.createElement('div', null,
+                React.createElement('label', { className:'lbl' }, 'Duración (meses)'),
+                React.createElement('div', { style:{display:'flex',gap:8,alignItems:'center'} },
+                  React.createElement('input', { className:'ifield', type:'number', min:1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700}, value:ff.duracion||'', disabled:readOnly, placeholder:String((proyecto.presupInterv||{}).plazo?Number((proyecto.presupInterv||{}).plazo)+1:''), onChange:function(e){ setFF({duracion:parseInt(e.target.value)||0}); } }),
+                  React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, 'meses')
+                )
+              ),
+              React.createElement('div', null,
+                React.createElement('label', { className:'lbl' }, 'Honorarios EDESO'),
+                React.createElement('div', { style:{display:'flex',gap:8,alignItems:'center'} },
+                  React.createElement('input', { className:'ifield', type:'number', min:0, max:100, step:0.1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700}, value:pctHon*100, disabled:readOnly, onChange:function(e){ setFF({pctHonoarios:(parseFloat(e.target.value)||8)/100}); } }),
+                  React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, '% sobre costos directos')
+                )
+              ),
+              React.createElement('div', null,
+                React.createElement('label', { className:'lbl' }, 'Objeto del contrato'),
+                React.createElement('textarea', { className:'ifield', rows:2, style:{resize:'vertical'}, value:ff.objeto||'', disabled:readOnly, onChange:function(e){ setFF({objeto:e.target.value}); } })
+              )
+            )
+          ),
+          React.createElement('div', { style:{minWidth:340} }, renderResumen())
+        )
+      )
+    ),
+
+    // Ejecución (automático)
+    React.createElement('div', { className:'card', style:{marginBottom:10,overflow:'hidden'} },
+      React.createElement('div', { className:'card-header', style:{background:'#1D4ED811',borderBottom:'2px solid #1D4ED833'} },
+        React.createElement('span', { style:{fontWeight:700,color:'#1D4ED8',fontSize:13} }, 'Componente de Ejecución'),
+        React.createElement('span', { style:{fontFamily:'var(--mono)',fontWeight:700,color:'#1D4ED8',marginLeft:'auto'} }, fmt(R.subtotalDirecto))
+      ),
+      React.createElement('table', { className:'tbl' },
+        React.createElement('tbody', null,
+          React.createElement('tr', null,
+            React.createElement('td', null, 'Obra'),
+            React.createElement('td', { style:{textAlign:'right',width:100} }, 'Global'),
+            React.createElement('td', { style:{textAlign:'right',width:80} }, '1'),
+            React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontWeight:700,width:200} }, fmt(R.obraTotal)),
+            React.createElement('td', { style:{textAlign:'right',fontSize:11,color:'var(--ink4)',width:120} }, (R.obraTotal/R.subtotalDirecto*100).toFixed(2)+'%')
+          ),
+          React.createElement('tr', null,
+            React.createElement('td', null, 'Interventor\xEDa'),
+            React.createElement('td', { style:{textAlign:'right'} }, 'Global'),
+            React.createElement('td', { style:{textAlign:'right'} }, '1'),
+            React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontWeight:700} }, fmt(R.intervTotal)),
+            React.createElement('td', { style:{textAlign:'right',fontSize:11,color:'var(--ink4)'} }, (R.intervTotal/R.subtotalDirecto*100).toFixed(2)+'%')
+          )
+        )
+      )
+    ),
+
+    // Pólizas EDESO (auto desde polizasPorComp.edeso)
+    React.createElement('div', { className:'card', style:{marginBottom:10,overflow:'hidden'} },
+      React.createElement('div', { className:'card-header', style:{background:'#92400E11',borderBottom:'2px solid #92400E33'} },
+        React.createElement('span', { style:{fontWeight:700,color:'#92400E',fontSize:13} }, 'Componente P\xF3lizas y Garant\xEDas EDESO'),
+        React.createElement('span', { style:{fontFamily:'var(--mono)',fontWeight:700,color:'#92400E',marginLeft:'auto'} }, fmt(R.polizasEdeso)),
+        React.createElement('span', { style:{fontSize:11,color:'var(--ink4)',marginLeft:12} }, 'Calculado desde P\xF3lizas EDESO')
+      )
+    ),
+
+    // Secciones manuales
+    renderSeccion('Personal',  R.totalPersonal),
+    renderSeccion('Social',    R.totalSocial),
+    renderSeccion('Logistico', R.totalLogistico),
+    renderSeccion('Diseno',    R.totalDiseno),
+
+    // Totales
+    React.createElement('div', { className:'card', style:{overflow:'hidden',marginTop:14} },
+      React.createElement('table', { className:'tbl' },
+        React.createElement('tbody', null,
+          React.createElement('tr', { style:{background:'var(--line2)'} },
+            React.createElement('td', { style:{padding:'10px 20px',fontWeight:700} }, 'SUBTOTAL COSTOS DIRECTOS'),
+            React.createElement('td', { style:{padding:'10px 20px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:700} }, fmt(R.subtotalDirecto))
+          ),
+          React.createElement('tr', null,
+            React.createElement('td', { style:{padding:'8px 20px',fontSize:12,color:'var(--ink3)'} }, 'SUBTOTAL COSTOS INDIRECTOS (Personal + Social + P\xF3lizas + Log\xEDstico)'),
+            React.createElement('td', { style:{padding:'8px 20px',textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(R.subtotalIndirecto))
+          ),
+          React.createElement('tr', { style:{background:'#EFF6FF',borderTop:'2px solid #93C5FD'} },
+            React.createElement('td', { style:{padding:'11px 20px',fontWeight:800,color:'#1D4ED8'} }, 'TOTAL RECURSOS DIRECTOS E INDIRECTOS'),
+            React.createElement('td', { style:{padding:'11px 20px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:800,color:'#1D4ED8',fontSize:14} }, fmt(R.totalRecursos))
+          ),
+          React.createElement('tr', null,
+            React.createElement('td', { style:{padding:'8px 20px',fontSize:12,color:'var(--ink3)'} }, 'Honorarios EDESO ('+(pctHon*100).toFixed(0)+'% sobre costos directos)'),
+            React.createElement('td', { style:{padding:'8px 20px',textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(R.honorarios))
+          ),
+          React.createElement('tr', null,
+            React.createElement('td', { style:{padding:'8px 20px',fontSize:12,color:'var(--ink3)'} }, 'IVA (19%)'),
+            React.createElement('td', { style:{padding:'8px 20px',textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(R.iva))
+          ),
+          React.createElement('tr', { style:{background:'#374151'} },
+            React.createElement('td', { style:{padding:'14px 20px',fontWeight:800,color:'#fff',fontSize:14,letterSpacing:'.03em'} }, 'TOTAL VALOR CONTRATO INTERADMINISTRATIVO'),
+            React.createElement('td', { style:{padding:'14px 20px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:800,color:'#fff',fontSize:18} }, fmt(R.totalContrato))
+          )
+        )
+      )
+    ),
+
+    // Modal agregar/editar ítem
+    modalComp && React.createElement('div', { className:'modal-bg', onClick:function(e){ if(e.target===e.currentTarget) setModalComp(null); } },
+      React.createElement('div', { className:'modal' },
+        React.createElement('div', { className:'modal-title' }, (modalComp.editIdx!==null?'Editar':'Nuevo')+' ítem — '+secLabel[modalComp.tipo]),
+        React.createElement('div', { style:{display:'flex',flexDirection:'column',gap:14,marginTop:12} },
+          React.createElement('div', null,
+            React.createElement('label', { className:'lbl' }, 'Descripción'),
+            React.createElement('textarea', { className:'ifield', rows:2, style:{resize:'vertical'}, value:formComp.descripcion||'', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{descripcion:e.target.value}); }); } })
+          ),
+          esValorFijo(modalComp.tipo)
+            ? React.createElement('div', null,
+                React.createElement('label', { className:'lbl' }, 'Valor'),
+                React.createElement('input', { className:'ifield', type:'number', min:0, value:formComp.valor||'', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{valor:parseFloat(e.target.value)||0}); }); } })
+              )
+            : React.createElement(React.Fragment, null,
+                React.createElement('div', { style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12} },
+                  React.createElement('div', null,
+                    React.createElement('label', { className:'lbl' }, 'Cantidad/Duración'),
+                    React.createElement('input', { className:'ifield', type:'number', min:0, value:formComp.cantidad||'', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{cantidad:parseFloat(e.target.value)||0}); }); } })
+                  ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className:'lbl' }, 'Unidad'),
+                    React.createElement('input', { className:'ifield', value:formComp.unidad||'mes', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{unidad:e.target.value}); }); } })
+                  ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className:'lbl' }, 'Valor Unitario'),
+                    React.createElement('input', { className:'ifield', type:'number', min:0, value:formComp.valorUnit||'', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{valorUnit:parseFloat(e.target.value)||0}); }); } })
+                  )
+                ),
+                React.createElement('div', { style:{fontSize:12,color:'var(--ink4)',background:'var(--line2)',padding:'8px 12px',borderRadius:6} },
+                  'Total = '+ fmt((Number(formComp.cantidad)||0)*(Number(formComp.valorUnit)||0))
+                )
+              )
+        ),
+        React.createElement('div', { style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:18} },
+          React.createElement('button', { className:'btn-s', onClick:function(){ setModalComp(null); } }, 'Cancelar'),
+          React.createElement('button', { className:'btn-p', onClick:guardarComp }, modalComp.editIdx!==null?'Guardar':'Agregar')
         )
       )
     )
@@ -8345,7 +8810,23 @@ function ModuloProyectos({
     className: "btn-s",
     style: { background:"#FEF3C7", color:"#92400E", border:"1.5px solid #FCD34D", fontWeight:700 },
     title: "Recalcula pólizas, estampillas y AU hasta convergencia",
-    onClick: () => setPActivo(p => sincronizarIterativo(p))
+    onClick: () => {
+      // Para obra: sincroniza AU con pólizas+estampillas
+      // Para todos: fuerza re-render con bases convergidas
+      setPActivo(p => {
+        const synced = sincronizarIterativo(p);
+        // Forzar actualización de plazoContractual desde au.plazo si no está seteado
+        const au = synced.au || {};
+        const polPorComp = synced.polizasPorComp || {};
+        ["interventoria","consultoria"].forEach(comp => {
+          const pd = polPorComp[comp] || {};
+          if (!pd.plazoContractual && au.plazo) {
+            polPorComp[comp] = Object.assign({}, pd, { plazoContractual: au.plazo });
+          }
+        });
+        return Object.assign({}, synced, { polizasPorComp: polPorComp });
+      });
+    }
   }, "\u21BB Recalcular"), /*#__PURE__*/React.createElement("button", {
     className: "btn-p",
     onClick: guardar
@@ -8369,13 +8850,35 @@ function ModuloProyectos({
       tabs.push({ id: "presupuesto_consultoria", l: "Presupuesto Consultor\xEDa" });
       tabs.push({ id: "polizas_consultoria",     l: "P\xF3lizas Consultor\xEDa" });
     }
+    // Ficha Financiera — siempre si hay obra o interventoría
+    if (comps.includes("obra") || comps.includes("interventoria")) {
+      tabs.push({ id: "polizas_edeso",    l: "P\xF3lizas EDESO" });
+      tabs.push({ id: "fichaFinanciera",  l: "Ficha Financiera" });
+    }
     if (tabs.length === 0) tabs.push({ id: "presupuesto_obra", l: "Presupuesto" });
     return tabs.map(t => /*#__PURE__*/React.createElement("div", {
       key: t.id,
       className: `tab${tabEditor === t.id ? " on" : ""}`,
       onClick: () => setTabEditor(t.id)
     }, t.l));
-  })()), (tabEditor === "presupuesto_obra" || tabEditor === "presupuesto_interventoria" || tabEditor === "presupuesto_consultoria") && (() => {
+  })()), (tabEditor === "fichaFinanciera") && (() => {
+    const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
+    const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
+    const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
+    const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+    const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
+    const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
+    return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo, readOnly: false, obraTotal: _obraTotal, intervTotal: _intervTotal, catalogoPolizas: catalogoPolizas || [] });
+  })(), (tabEditor === "polizas_edeso") && (() => {
+    const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
+    const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
+    const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
+    const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+    const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
+    const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
+    const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal);
+    return React.createElement(TabPolizas, { proyecto: pActivo, componenteId: "edeso", totalProyecto: _fichaR.totalRecursos, totalBase: _fichaR.totalRecursos, catalogoPolizas: catalogoPolizas || [], plazoProyecto: (pActivo.fichaFinanciera||{}).duracion || 0, setPolizas: (key, pol) => setPActivo(p => ({ ...p, polizasPorComp: { ...(p.polizasPorComp || {}), [key]: pol } })), setAU: au => setPActivo(p => ({ ...p, au })) });
+  })(), (tabEditor === "presupuesto_obra" || tabEditor === "presupuesto_interventoria" || tabEditor === "presupuesto_consultoria") && (() => {
     const presupComp = tabEditor.slice(12);
     const presupLabel = presupComp === "obra" ? "Obra" : presupComp === "interventoria" ? "Interventor\xEDa" : presupComp === "consultoria" ? "Consultor\xEDa" : presupComp;
     const presupColor = presupComp === "obra" ? "var(--red)" : "#1D4ED8";
@@ -8695,20 +9198,49 @@ function ModuloProyectos({
     const cid = tabEditor.slice(8);
     // Base = total convergido del proyecto (fuente única de verdad)
     // Usar Recalcular para que converja antes de ver pólizas
-    const total = cid === "obra"
-      ? calcProyecto(pActivo, apus, recursos).total
-      : cid === "interventoria"
-        ? calcTotalPresupInterv(pActivo.presupInterv)
-        : cid === "consultoria"
-          ? calcTotalPresupConsult(pActivo.presupConsult)
-          : (cdPorComp[cid] || 0);
+    const _getTotal = (cid2) => {
+      if (cid2 === "obra") return calcProyecto(pActivo, apus, recursos).total;
+      if (cid2 === "interventoria") {
+        const sub12  = calcTotalPresupInterv(pActivo.presupInterv);
+        const polD   = ((pActivo.polizasPorComp||{})["interventoria"])||{};
+        const presup = pActivo.presupInterv || {};
+        // Usar mismas estampillas y plazo que TabPresupuestoInterventoria
+        const catEst2 = catalogoEstampillas || [];
+        const todasEst = getEstampillasMunicipio(catEst2, pActivo.municipioId);
+        const activasIds = presup.estampillasActivas !== null && presup.estampillasActivas !== undefined
+          ? presup.estampillasActivas
+          : todasEst.filter(e => e.aplicaInterv !== false).map(e => e.id);
+        const estSel = todasEst.filter(e => activasIds.includes(e.id));
+        const plazo  = Number(polD.plazoContractual) || Number(presup.plazo) || Number((pActivo.au||{}).plazo) || 0;
+        return calcResumenInterv(sub12, estSel, polD.polizasActivas||[], plazo).valorTotal;
+      }
+      if (cid2 === "consultoria") {
+        const sub12 = calcTotalPresupConsult(pActivo.presupConsult);
+        const polD  = ((pActivo.polizasPorComp||{})["consultoria"])||{};
+        const presup = pActivo.presupConsult || {};
+        const catEst2 = catalogoEstampillas || [];
+        const todasEst = getEstampillasMunicipio(catEst2, pActivo.municipioId);
+        const activasIds = presup.estampillasActivas !== null && presup.estampillasActivas !== undefined
+          ? presup.estampillasActivas
+          : todasEst.filter(e => e.aplicaInterv !== false).map(e => e.id);
+        const estSel = todasEst.filter(e => activasIds.includes(e.id));
+        const plazo  = Number(polD.plazoContractual) || Number(presup.plazo) || 0;
+        return calcResumenInterv(sub12, estSel, polD.polizasActivas||[], plazo).valorTotal;
+      }
+      return cdPorComp[cid2] || 0;
+    };
+    const total = _getTotal(cid);
     return /*#__PURE__*/React.createElement(TabPolizas, {
       proyecto: pActivo,
       componenteId: cid,
       totalProyecto: total,
       totalBase: total,
       catalogoPolizas: catalogoPolizas || [],
-      plazoProyecto: (pActivo.au || {}).plazo || 0,
+      plazoProyecto: (() => {
+        if (cid === "interventoria") return (pActivo.presupInterv || {}).plazo || (pActivo.au || {}).plazo || 0;
+        if (cid === "consultoria")   return (pActivo.presupConsult || {}).plazo || 0;
+        return (pActivo.au || {}).plazo || 0;
+      })(),
       setPolizas: (key, pol) => setPActivo(p => ({ ...p, polizasPorComp: { ...(p.polizasPorComp || {}), [key]: pol } })),
       setAU: au => setPActivo(p => ({ ...p, au }))
     });
@@ -8832,6 +9364,10 @@ function ModuloProyectos({
       TABS.push({ id: "presupuesto_consultoria", label: "Presupuesto Consultor\xEDa" });
       TABS.push({ id: "polizas_consultoria",     label: "P\xF3lizas Consultor\xEDa" });
     }
+    if (polComp.includes("obra") || polComp.includes("interventoria")) {
+      TABS.push({ id: "polizas_edeso",   label: "P\xF3lizas EDESO" });
+      TABS.push({ id: "fichaFinanciera", label: "Ficha Financiera" });
+    }
     if (TABS.length === 0) TABS.push({ id: "presupuesto_obra", label: "Presupuesto" });
     TABS.push({ id: "apus_usados", label: "APUs Proyectos (" + apusUsados.length + ")" });
     return /*#__PURE__*/React.createElement("div", {
@@ -8892,7 +9428,27 @@ function ModuloProyectos({
       key: t.id,
       className: `tab${tabDetalle === t.id ? " on" : ""}`,
       onClick: () => setTabDetalle(t.id)
-    }, t.label))), (tabDetalle === "presupuesto_obra" || tabDetalle === "presupuesto_interventoria" || tabDetalle === "presupuesto_consultoria") && (() => {
+    }, t.label))),
+    (tabDetalle === "fichaFinanciera") && (() => {
+      const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
+      const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
+      const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
+      const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+      const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
+      const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
+      return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, obraTotal: _obraTotal, intervTotal: _intervTotal, catalogoPolizas: catalogoPolizas || [] });
+    })(),
+    (tabDetalle === "polizas_edeso") && (() => {
+      const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
+      const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
+      const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
+      const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+      const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
+      const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
+      const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal);
+      return React.createElement(TabPolizas, { proyecto: pActivo, componenteId: "edeso", totalProyecto: _fichaR.totalRecursos, totalBase: _fichaR.totalRecursos, catalogoPolizas: catalogoPolizas || [], plazoProyecto: (pActivo.fichaFinanciera||{}).duracion || 0, setPolizas: () => {}, setAU: () => {}, readOnly: true, perfil, session });
+    })(),
+    (tabDetalle === "presupuesto_obra" || tabDetalle === "presupuesto_interventoria" || tabDetalle === "presupuesto_consultoria") && (() => {
       const presupComp = tabDetalle.slice(12);
       if (presupComp === "interventoria") {
         return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, storageKey: "presupInterv", perfil, session, catalogoEstampillas: catalogoEstampillas || [] });
@@ -9222,17 +9778,30 @@ function ModuloProyectos({
     }, fmtN(res.pctAIU + 100), "%"))))));
     })(), tabDetalle.startsWith("polizas_") && (() => {
       const cid = tabDetalle.slice(8);
-      const totalDisplay = cid === "obra"
-        ? calcProyecto(pActivo, apus, recursos).total
-        : cid === "interventoria"
-          ? calcTotalPresupInterv(pActivo.presupInterv)
-          : cid === "consultoria"
-            ? calcTotalPresupConsult(pActivo.presupConsult)
-            : (calcCDPorComp(pActivo, apus, recursos)[cid] || 0);
+      const totalDisplay = (() => {
+        if (cid === "obra") return calcProyecto(pActivo, apus, recursos).total;
+        if (cid === "interventoria") {
+          const s = calcTotalPresupInterv(pActivo.presupInterv);
+          const pd = ((pActivo.polizasPorComp||{})["interventoria"])||{};
+          const es = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+          return calcResumenInterv(s, es, pd.polizasActivas||[], Number(pd.plazoContractual)||0).valorTotal;
+        }
+        if (cid === "consultoria") {
+          const s = calcTotalPresupConsult(pActivo.presupConsult);
+          const pd = ((pActivo.polizasPorComp||{})["consultoria"])||{};
+          const es = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+          return calcResumenInterv(s, es, pd.polizasActivas||[], Number(pd.plazoContractual)||0).valorTotal;
+        }
+        return calcCDPorComp(pActivo, apus, recursos)[cid] || 0;
+      })();
       return React.createElement(TabPolizas, {
         proyecto: pActivo,
         componenteId: cid,
-        plazoProyecto: (pActivo.au || {}).plazo || 0,
+        plazoProyecto: (() => {
+          if (cid === "interventoria") return (pActivo.presupInterv || {}).plazo || (pActivo.au || {}).plazo || 0;
+          if (cid === "consultoria")   return (pActivo.presupConsult || {}).plazo || 0;
+          return (pActivo.au || {}).plazo || 0;
+        })(),
         totalProyecto: totalDisplay,
         catalogoPolizas: catalogoPolizas || [],
         setPolizas: () => {},
