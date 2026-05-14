@@ -425,7 +425,15 @@ function calcTotalPresupInterv(data) {
   }, 0);
 }
 function calcTotalPresupConsult(data) {
-  return Number(data && data.valorDiseno) || 0;
+  if (!data) return 0;
+  if (data.capitulos) {
+    return (data.capitulos||[]).reduce(function(s,cap) {
+      return s + (cap.items||[]).reduce(function(ss,item) {
+        return ss + (Number(item.cantidad)||0)*(Number(item.valorUnitario)||0);
+      },0);
+    },0);
+  }
+  return Number(data.valorDiseno) || 0;
 }
 
 function calcPolizasIntervTotal(polizasActivas, valorBase, plazoMeses) {
@@ -973,6 +981,7 @@ function Sidebar({
       { section:"Base de Datos" },
       { id:"Recursos",             label:"Recursos",            icon:"R",  count:counts.recursos },
       { id:"APUs",                 label:"APUs",                icon:"A",  count:counts.apus },
+      { id:"Mano de Obra",        label:"Mano de Obra",        icon:"MO" },
       { id:"Plantillas AU",        label:"Plantillas AU",       icon:"P" },
       { id:"Plantillas Interv.",   label:"Plantillas Interv.",  icon:"PI", count:counts.plantillasInt },
       { id:"Catálogo Pólizas",    label:"Catálogo Pólizas",   icon:"CP", count:counts.polizas },
@@ -4168,7 +4177,35 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
             React.createElement("div", { style:{display:"flex",alignItems:"center",gap:8} },
               React.createElement("span", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)",whiteSpace:"nowrap"} }, "Plazo interv."),
               React.createElement("input", { className:"ifield", type:"number", min:0, step:1, style:{width:76,fontFamily:"var(--mono)",fontWeight:700,fontSize:13,marginBottom:0}, value: data.plazo||"", placeholder:"0", disabled:readOnly,
-                onChange: function(e) { var v=parseInt(e.target.value)||0; var oldP=data.plazo||0; setData(function(prev){ var caps=(prev.capitulos||[]).map(function(cap){ if(cap.tipo!=="otros") return cap; return Object.assign({},cap,{items:(cap.items||[]).map(function(item){ return Number(item.meses)===oldP?Object.assign({},item,{meses:v}):item; })}); }); return Object.assign({},prev,{plazo:v,capitulos:caps}); }); }
+                onChange: function(e) {
+                  var v = parseInt(e.target.value)||0;
+                  var oldP = data.plazo||0;
+                  // Update items: if oldP=0 (first time), update ALL; otherwise only those matching oldP
+                  setData(function(prev) {
+                    var caps = (prev.capitulos||[]).map(function(cap) {
+                      return Object.assign({}, cap, {
+                        items: (cap.items||[]).map(function(item) {
+                          var shouldUpdate = oldP === 0 || Number(item.meses) === oldP;
+                          return shouldUpdate ? Object.assign({},item,{meses:v}) : item;
+                        })
+                      });
+                    });
+                    return Object.assign({}, prev, { plazo:v, capitulos:caps });
+                  });
+                  // 2. Propagate to pólizas interventoría plazoContractual if not manually overridden
+                  var SK2 = SK === "presupInterv" ? "interventoria" : "consultoria";
+                  setPActivo(function(p) {
+                    var polComp = Object.assign({}, (p.polizasPorComp||{}));
+                    var polSec  = Object.assign({}, (polComp[SK2]||{}));
+                    // Only update if plazo was previously equal to oldP or was 0
+                    if (!polSec.plazoContractual || Number(polSec.plazoContractual)===oldP) {
+                      polSec.plazoContractual = v;
+                      polComp[SK2] = polSec;
+                      return Object.assign({}, p, { polizasPorComp: polComp });
+                    }
+                    return p;
+                  });
+                }
               }),
               React.createElement("span", { style:{fontSize:11,color:"var(--ink4)"} }, "meses")
             ),
@@ -7814,7 +7851,7 @@ function calcPolizasEDESO(polizasActivas, valorBase, plazoMeses) {
   }, 0);
 }
 
-function calcFichaFinanciera(proyecto, obraTotal, intervTotal, maxIter) {
+function calcFichaFinanciera(proyecto, obraTotal, intervTotal, consultTotal, maxIter) {
   if (maxIter === undefined) maxIter = 50;
   var ff = proyecto.fichaFinanciera || {};
   var pctHon  = Number(ff.pctHonoarios !== undefined ? ff.pctHonoarios : 0.08);
@@ -7832,7 +7869,7 @@ function calcFichaFinanciera(proyecto, obraTotal, intervTotal, maxIter) {
   var polizasActivas = polD.polizasActivas || [];
   var plazo = Number(polD.plazoContractual) || duracion;
 
-  var subtotalDirecto   = Math.round(obraTotal + intervTotal);
+  var subtotalDirecto   = Math.round(obraTotal + intervTotal + (consultTotal||0));
   var polizasEdeso      = 0;
   var subtotalIndirecto = 0;
   var totalRecursos     = 0;
@@ -7873,113 +7910,332 @@ function calcFichaFinanciera(proyecto, obraTotal, intervTotal, maxIter) {
 
 function TabPresupuestoConsultoria({ proyecto, setPActivo, readOnly, perfil, session, catalogoEstampillas }) {
   var SK = "presupConsult";
-  var getData = function() {
-    return (proyecto[SK] && typeof proyecto[SK].valorDiseno !== "undefined")
-      ? proyecto[SK] : { valorDiseno: 0, estampillasActivas: [] };
-  };
-  var data = getData();
+  var defaultData = function() { return { plazo:0, capitulos:[] }; };
+  var data = (proyecto[SK] && proyecto[SK].capitulos != null) ? proyecto[SK] : defaultData();
   var setData = function(next) {
     if (readOnly) return;
-    setPActivo(function(p) { return Object.assign({}, p, { [SK]: typeof next === "function" ? next(getData()) : next }); });
+    setPActivo(function(p) { return Object.assign({}, p, { [SK]: typeof next==="function" ? next(p[SK] && p[SK].capitulos != null ? p[SK] : defaultData()) : next }); });
   };
+
+  var [modalCap,  setModalCap]  = React.useState(null);
+  var [modalItem, setModalItem] = React.useState(null);
+  var [formCap,   setFormCap]   = React.useState({});
+  var [formItem,  setFormItem]  = React.useState({});
+
   var catEst = catalogoEstampillas || [];
-  var estampillasSeleccionadas = getEstampillasMunicipio(catEst, proyecto.municipioId);
-  var polizasSaved = ((proyecto.polizasPorComp || {})["consultoria"]) || {};
-  var polizasActivas = polizasSaved.polizasActivas || [];
-  var auPlazo = Number(((proyecto.au) || {}).plazo) || 0;
-  var plazoMeses = Number(polizasSaved.plazoContractual) || 0;
-  var valorDiseno = Number(data.valorDiseno) || 0;
-  var resumen = calcResumenInterv(valorDiseno, estampillasSeleccionadas, polizasActivas, plazoMeses);
+  var todasEst = getEstampillasMunicipio(catEst, proyecto.municipioId);
+  var estActivasIds = data.estampillasActivas !== null && data.estampillasActivas !== undefined
+    ? data.estampillasActivas
+    : todasEst.filter(function(e){ return e.aplicaInterv !== false; }).map(function(e){ return e.id; });
+  var estSel = todasEst.filter(function(e){ return estActivasIds.includes(e.id); });
+
+  var polD = ((proyecto.polizasPorComp||{})["consultoria"])||{};
+  var plazoMeses = Number(polD.plazoContractual)||Number(data.plazo)||0;
+
+  // Calculate CD from capitulos
+  var totalCD = (data.capitulos||[]).reduce(function(s,cap) {
+    return s + (cap.items||[]).reduce(function(ss,item) {
+      return ss + (Number(item.cantidad)||0)*(Number(item.valorUnitario)||0);
+    }, 0);
+  }, 0);
+
+  var resumen = calcResumenInterv(totalCD, estSel, polD.polizasActivas||[], plazoMeses);
+
+  var addCap = function() {
+    setModalCap({ editIdx: null });
+    setFormCap({ nombre:"", numero: (data.capitulos||[]).length+1 });
+  };
+  var guardarCap = function() {
+    var lista = (data.capitulos||[]).slice();
+    var item = Object.assign({id:"cc_"+Date.now()}, formCap);
+    if (modalCap.editIdx !== null) lista[modalCap.editIdx] = Object.assign({},lista[modalCap.editIdx],formCap);
+    else lista.push(Object.assign({items:[]}, item));
+    setData(function(p){ return Object.assign({},p,{capitulos:lista}); });
+    setModalCap(null);
+  };
+  var addItem = function(capId) {
+    setModalItem({ capId: capId, editIdx: null });
+    setFormItem({ descripcion:"", unidad:"gl", cantidad:1, valorUnitario:0 });
+  };
+  var guardarItem = function() {
+    setData(function(prev) {
+      var caps = (prev.capitulos||[]).map(function(cap) {
+        if (cap.id !== modalItem.capId) return cap;
+        var items = (cap.items||[]).slice();
+        var newItem = Object.assign({id:"ci_"+Date.now()}, formItem, {cantidad:Number(formItem.cantidad)||1, valorUnitario:Number(formItem.valorUnitario)||0});
+        if (modalItem.editIdx !== null) items[modalItem.editIdx] = newItem;
+        else items.push(newItem);
+        return Object.assign({},cap,{items:items});
+      });
+      return Object.assign({},prev,{capitulos:caps});
+    });
+    setModalItem(null);
+  };
+  var eliminarItem = function(capId, idx) {
+    setData(function(prev) {
+      return Object.assign({},prev,{capitulos:(prev.capitulos||[]).map(function(cap) {
+        if(cap.id!==capId) return cap;
+        return Object.assign({},cap,{items:(cap.items||[]).filter(function(_,i){return i!==idx;})});
+      })});
+    });
+  };
+  var eliminarCap = function(capId) {
+    setData(function(prev){ return Object.assign({},prev,{capitulos:(prev.capitulos||[]).filter(function(c){return c.id!==capId;})}); });
+  };
+
+  var toggleEstampilla = function(id) {
+    if (readOnly) return;
+    setData(function(prev) {
+      var curr = prev.estampillasActivas !== null && prev.estampillasActivas !== undefined ? prev.estampillasActivas
+        : todasEst.filter(function(e){ return e.aplicaInterv!==false; }).map(function(e){ return e.id; });
+      var next = curr.includes(id) ? curr.filter(function(x){return x!==id;}) : [...curr, id];
+      return Object.assign({},prev,{estampillasActivas:next});
+    });
+  };
 
   return React.createElement(React.Fragment, null,
-    React.createElement("div", { className:"card", style:{marginBottom:14} },
-      React.createElement("div", { className:"card-body" },
-        React.createElement("div", { style:{display:"flex",alignItems:"center",gap:24,flexWrap:"wrap"} },
-          React.createElement("div", { style:{flex:1,fontSize:13,fontWeight:700,color:"#15803D"} }, "Presupuesto Consultor\xEDa"),
-          React.createElement("div", { style:{textAlign:"right"} },
-            React.createElement("div", { style:{fontSize:11,color:"var(--ink4)"} }, "Valor Total Consultor\xEDa"),
-            React.createElement("div", { style:{fontFamily:"var(--mono)",fontSize:16,fontWeight:800,color:"#15803D"} }, fmt(resumen.valorTotal))
+
+    // Header
+    React.createElement("div",{className:"card",style:{marginBottom:14}},
+      React.createElement("div",{className:"card-body"},
+        React.createElement("div",{style:{display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}},
+          React.createElement("div",{style:{flex:1,fontSize:13,fontWeight:700,color:"#15803D"}},"Presupuesto Consultor\xEDa / Dise\xF1o"),
+          React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},
+            React.createElement("span",{style:{fontSize:12,fontWeight:700,color:"var(--ink2)",whiteSpace:"nowrap"}},"Plazo"),
+            React.createElement("input",{className:"ifield",type:"number",min:0,step:1,
+              style:{width:76,fontFamily:"var(--mono)",fontWeight:700,fontSize:13,marginBottom:0},
+              value:data.plazo||"", placeholder:"0", disabled:readOnly,
+              onChange:function(e){
+                var v=parseInt(e.target.value)||0; var oldP=data.plazo||0;
+                setData(function(prev){
+                  var caps=(prev.capitulos||[]).map(function(cap){
+                    return Object.assign({},cap,{items:(cap.items||[]).map(function(item){
+                      var upd=oldP===0||Number(item.meses)===oldP;
+                      return upd?Object.assign({},item,{meses:v}):item;
+                    })});
+                  });
+                  return Object.assign({},prev,{plazo:v,capitulos:caps});
+                });
+                setPActivo(function(p){
+                  var pc=Object.assign({},(p.polizasPorComp||{}));
+                  var ps=Object.assign({},(pc["consultoria"]||{}));
+                  if(!ps.plazoContractual||Number(ps.plazoContractual)===oldP){ps.plazoContractual=v;pc["consultoria"]=ps;}
+                  return Object.assign({},p,{polizasPorComp:pc});
+                });
+              }
+            }),
+            React.createElement("span",{style:{fontSize:11,color:"var(--ink4)"}},"meses")
+          ),
+          React.createElement("div",{style:{textAlign:"right"}},
+            React.createElement("div",{style:{fontSize:11,color:"var(--ink4)"}},"Valor Total Consultor\xEDa"),
+            React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:16,fontWeight:800,color:"#15803D"}},fmt(resumen.valorTotal))
           )
         )
       )
     ),
-    React.createElement("div", { className:"card", style:{marginBottom:14} },
-      React.createElement("div", { className:"card-header" },
-        React.createElement("span", { style:{fontWeight:600} }, "Valor del Dise\xF1o / Consultor\xEDa")
+
+    // Estampillas selector
+    React.createElement("div",{style:{padding:"12px 20px",borderBottom:"1px solid var(--line)",background:"#F0FDF4",marginBottom:10,borderRadius:8}},
+      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:readOnly?0:10,flexWrap:"wrap"}},
+        React.createElement("div",{style:{fontSize:12,fontWeight:700,color:"var(--ink2)"}},"Estampillas \xB7 Municipio:"),
+        proyecto.municipioId
+          ? React.createElement("span",{style:{padding:"2px 10px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DCFCE7",color:"#15803D",border:"1px solid #86EFAC"}},
+              "\uD83C\uDFD9 "+((catEst.find(function(g){return g.id===proyecto.municipioId;}))||{}).nombre)
+          : React.createElement("span",{style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"}},"Sin municipio"),
+        readOnly && estSel.map(function(e){
+          return React.createElement("span",{key:e.id,style:{padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DCFCE7",color:"#15803D",border:"1px solid #86EFAC"}},e.nombre+" "+e.pctDef+"%");
+        })
       ),
-      React.createElement("div", { className:"card-body" },
-        React.createElement("div", { style:{maxWidth:380} },
-          React.createElement("label", { className:"lbl" }, "Valor directo de la consultor\xEDa (COP)"),
-          React.createElement("input", {
-            className:"ifield", type:"number", min:"0", step:"1000", disabled:readOnly,
-            value: data.valorDiseno || "",
-            placeholder:"0",
-            onChange: function(e) { setData(function(prev) { return Object.assign({}, prev, { valorDiseno: parseFloat(e.target.value) || 0 }); }); },
-            style:{fontFamily:"var(--mono)",fontWeight:700,fontSize:15}
+      !readOnly && todasEst.length > 0 && React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:8}},
+        todasEst.map(function(e){
+          var activa=estActivasIds.includes(e.id);
+          return React.createElement("label",{key:e.id,style:{display:"flex",alignItems:"center",gap:6,cursor:"pointer",padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:600,
+            background:activa?"#DCFCE7":"var(--line2)",color:activa?"#15803D":"var(--ink3)",border:activa?"1px solid #86EFAC":"1px solid var(--line)"}},
+            React.createElement("input",{type:"checkbox",style:{accentColor:"#15803D"},checked:activa,onChange:function(){toggleEstampilla(e.id);}}),
+            e.nombre+" "+e.pctDef+"%"
+          );
+        })
+      )
+    ),
+
+    // Capítulos
+    React.createElement("div",{className:"card",style:{overflow:"hidden",marginBottom:10}},
+      React.createElement("div",{className:"card-header"},
+        React.createElement("span",{style:{fontWeight:600}},"Cap\xEDtulos e \xCDtems"),
+        !readOnly && React.createElement("button",{className:"btn-dashed",onClick:addCap},"+ Agregar cap\xEDtulo")
+      ),
+      (data.capitulos||[]).length===0
+        ? React.createElement("div",{className:"empty",style:{padding:"28px 0"}},
+            React.createElement("div",{className:"empty-icon"},"\uD83D\uDCCB"),
+            React.createElement("div",{className:"empty-title"},"Sin cap\xEDtulos"),
+            React.createElement("div",{className:"empty-desc"},"Crea cap\xEDtulos para organizar los \xEDtems de la consultor\xEDa")
+          )
+        : React.createElement("table",{className:"tbl"},
+            React.createElement("thead",null,React.createElement("tr",null,
+              React.createElement("th",{style:{width:60}},"\xCDTEM"),
+              React.createElement("th",null,"DESCRIPCI\xD3N"),
+              React.createElement("th",{style:{textAlign:"right",width:80}},"UND."),
+              React.createElement("th",{style:{textAlign:"right",width:100}},"CANT."),
+              React.createElement("th",{style:{textAlign:"right",width:160}},"VALOR UNIT."),
+              React.createElement("th",{style:{textAlign:"right",width:160}},"TOTAL"),
+              React.createElement("th",{style:{width:60}})
+            )),
+            React.createElement("tbody",null,
+              (data.capitulos||[]).map(function(cap, ci) {
+                var capTotal = (cap.items||[]).reduce(function(s,i){return s+(Number(i.cantidad)||0)*(Number(i.valorUnitario)||0);},0);
+                return React.createElement(React.Fragment,{key:cap.id},
+                  // Chapter header row
+                  React.createElement("tr",{style:{background:"#111827"}},
+                    React.createElement("td",{style:{padding:"8px 14px",color:"#fff",fontWeight:700,fontSize:12}},cap.numero||ci+1),
+                    React.createElement("td",{colSpan:4,style:{padding:"8px 14px",color:"#fff",fontWeight:700,fontSize:12}},cap.nombre),
+                    React.createElement("td",{style:{padding:"8px 14px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#fff"}},fmt(capTotal)),
+                    React.createElement("td",{style:{padding:"8px 14px",textAlign:"right"}},
+                      !readOnly && React.createElement(React.Fragment,null,
+                        React.createElement("button",{className:"btn-ghost",style:{color:"#8B949E",fontSize:11,marginRight:4},
+                          onClick:function(){setModalCap({editIdx:ci});setFormCap({nombre:cap.nombre,numero:cap.numero||ci+1});}},"\u270F\uFE0F"),
+                        React.createElement("button",{className:"btn-ghost",style:{color:"#F5C6C2",fontSize:14},
+                          onClick:function(){eliminarCap(cap.id);}},"\xD7")
+                      )
+                    )
+                  ),
+                  // Items
+                  (cap.items||[]).map(function(item,ii){
+                    var tot=(Number(item.cantidad)||0)*(Number(item.valorUnitario)||0);
+                    return React.createElement("tr",{key:item.id||ii},
+                      React.createElement("td",{style:{padding:"8px 14px",fontSize:11,color:"var(--ink4)"}},(cap.numero||ci+1)+"."+(ii+1)),
+                      React.createElement("td",{style:{padding:"8px 14px",fontSize:12}},item.descripcion),
+                      React.createElement("td",{style:{padding:"8px 14px",textAlign:"right",fontSize:12}},item.unidad||"gl"),
+                      React.createElement("td",{style:{padding:"8px 14px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12}},fmtN(item.cantidad,2)),
+                      React.createElement("td",{style:{padding:"8px 14px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12}},fmt(item.valorUnitario||0)),
+                      React.createElement("td",{style:{padding:"8px 14px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700}},fmt(tot)),
+                      React.createElement("td",{style:{textAlign:"right",paddingRight:8}},
+                        !readOnly && React.createElement(React.Fragment,null,
+                          React.createElement("button",{className:"btn-ghost",style:{fontSize:11,marginRight:4},
+                            onClick:function(){setModalItem({capId:cap.id,editIdx:ii});setFormItem(Object.assign({},item));}},"\u270F\uFE0F"),
+                          React.createElement("button",{className:"btn-ghost",style:{color:"#F5C6C2",fontSize:14},
+                            onClick:function(){eliminarItem(cap.id,ii);}},"\xD7")
+                        )
+                      )
+                    );
+                  }),
+                  // Add item button
+                  !readOnly && React.createElement("tr",null,
+                    React.createElement("td",{colSpan:7,style:{padding:"6px 14px",background:"var(--line2)"}},
+                      React.createElement("button",{className:"btn-dashed",onClick:function(){addItem(cap.id);}},"+ Agregar \xEDtem")
+                    )
+                  )
+                );
+              })
+            ),
+            React.createElement("tfoot",null,React.createElement("tr",{style:{background:"var(--line2)",borderTop:"2px solid var(--line)"}},
+              React.createElement("td",{colSpan:5,style:{padding:"11px 14px",fontWeight:700,fontSize:12,letterSpacing:".04em"}},"COSTO DIRECTO (CD)"),
+              React.createElement("td",{style:{padding:"11px 14px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,fontSize:15,color:"#15803D"}},fmt(totalCD)),
+              React.createElement("td")
+            ))
+          )
+    ),
+
+    // Resumen perfeccionamiento
+    React.createElement("div",{className:"card",style:{marginTop:14,overflow:"hidden"}},
+      React.createElement("div",{className:"card-header"},
+        React.createElement("span",{style:{fontWeight:700,color:"#15803D"}},"Costos de Perfeccionamiento"),
+        resumen.tasaTotal > 0 && React.createElement("span",{style:{fontSize:11,color:"var(--ink3)"}},"Tasa: "+(resumen.tasaTotal*100).toFixed(2)+"%")
+      ),
+      React.createElement("table",{className:"tbl"},
+        React.createElement("tbody",null,
+          React.createElement("tr",{style:{background:"var(--line2)"}},
+            React.createElement("td",{style:{padding:"10px 20px",fontWeight:700,color:"var(--ink2)"}},"Costo Directo (CD)"),
+            React.createElement("td",{style:{padding:"10px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700}},fmt(totalCD))
+          ),
+          estSel.map(function(e){
+            return React.createElement("tr",{key:e.id},
+              React.createElement("td",{style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"}},"Estampilla "+e.nombre+" ("+e.pctDef+"%)"),
+              React.createElement("td",{style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12}},fmt(Math.round(resumen.subtotalGeneral*(e.pctDef/100))))
+            );
           }),
-          React.createElement("div", { style:{marginTop:6,fontSize:11,color:"var(--ink4)"} },
-            "Este valor es la base sobre la que se aplican estampillas, p\xF3lizas e IVA.")
+          resumen.impuestos>0 && React.createElement("tr",{style:{background:"#FFF7ED"}},
+            React.createElement("td",{style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12}},"COSTOS DE PERFECCIONAMIENTO (IMPUESTOS)"),
+            React.createElement("td",{style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"}},fmt(resumen.impuestos))
+          ),
+          React.createElement("tr",null,
+            React.createElement("td",{style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"}},"P\xF3lizas y garant\xEDas ("+polD.polizasActivas?.length+" \xB7 plazo "+plazoMeses+" meses)"),
+            React.createElement("td",{style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12}},fmt(resumen.primasTotal||0))
+          ),
+          React.createElement("tr",null,
+            React.createElement("td",{style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"}},"50% Impuesto 4/1000"),
+            React.createElement("td",{style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12}},fmt(resumen.tb||0))
+          ),
+          React.createElement("tr",{style:{background:"#FFF7ED"}},
+            React.createElement("td",{style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12}},"COSTOS DE PERFECCIONAMIENTO (P\xD3LIZAS Y TRANSACCIONES)"),
+            React.createElement("td",{style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"}},fmt(resumen.polizasTotal))
+          ),
+          React.createElement("tr",null,
+            React.createElement("td",{style:{padding:"7px 20px",fontSize:12,color:"var(--ink3)"}},"SUBTOTAL GENERAL"),
+            React.createElement("td",{style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)"}},fmt(resumen.subtotalGeneral))
+          ),
+          React.createElement("tr",null,
+            React.createElement("td",{style:{padding:"7px 20px",fontSize:12,color:"var(--ink3)"}},"IVA \u2014 Base antes de impuestos y p\xF3lizas (19%)"),
+            React.createElement("td",{style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)"}},fmt(resumen.iva))
+          )
+        ),
+        React.createElement("tfoot",null,React.createElement("tr",{style:{background:"#15803D"}},
+          React.createElement("td",{style:{padding:"14px 20px",fontWeight:800,color:"#fff",fontSize:14}},"VALOR TOTAL CONSULTOR\xCDA"),
+          React.createElement("td",{style:{padding:"14px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#fff",fontSize:18}},fmt(resumen.valorTotal))
+        ))
+      )
+    ),
+
+    // Modal capítulo
+    modalCap && React.createElement("div",{className:"modal-bg",onClick:function(e){if(e.target===e.currentTarget)setModalCap(null);}},
+      React.createElement("div",{className:"modal"},
+        React.createElement("div",{className:"modal-title"},modalCap.editIdx!==null?"Editar cap\xEDtulo":"Nuevo cap\xEDtulo"),
+        React.createElement("div",{style:{display:"flex",gap:12,marginTop:12}},
+          React.createElement("div",{style:{width:80}},
+            React.createElement("label",{className:"lbl"},"N\xFAm."),
+            React.createElement("input",{className:"ifield",type:"number",min:1,value:formCap.numero||"",onChange:function(e){setFormCap(function(f){return Object.assign({},f,{numero:parseInt(e.target.value)||1});}); }})
+          ),
+          React.createElement("div",{style:{flex:1}},
+            React.createElement("label",{className:"lbl"},"Nombre *"),
+            React.createElement("input",{className:"ifield",value:formCap.nombre||"",placeholder:"Ej: Estudios y Dise\xF1os",onChange:function(e){setFormCap(function(f){return Object.assign({},f,{nombre:e.target.value});}); }})
+          )
+        ),
+        React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18}},
+          React.createElement("button",{className:"btn-s",onClick:function(){setModalCap(null);}},"Cancelar"),
+          React.createElement("button",{className:"btn-p",disabled:!formCap.nombre,onClick:guardarCap},modalCap.editIdx!==null?"Guardar":"Agregar")
         )
       )
     ),
-    React.createElement("div", { className:"card", style:{overflow:"hidden"} },
-      React.createElement("div", { className:"card-header" },
-        React.createElement("span", { style:{fontWeight:700,color:"#15803D"} }, "Costos de Perfeccionamiento \xB7 Resumen Final"),
-        resumen.tasaTotal > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
-          "Tasa estampillas: " + (resumen.tasaTotal*100).toFixed(2) + "%")
-      ),
-      React.createElement("div", { className:"card-body", style:{padding:0} },
-        React.createElement("div", { style:{padding:"12px 20px",borderBottom:"1px solid var(--line)",background:"#F0FDF4",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"} },
-          React.createElement("div", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)"} }, "Estampillas \xB7 Municipio:"),
-          proyecto.municipioId
-            ? React.createElement("span", { style:{padding:"3px 12px",borderRadius:20,fontSize:12,fontWeight:600,background:"#DCFCE7",color:"#15803D",border:"1px solid #86EFAC"} },
-                "\uD83C\uDFD9 " + (catEst.find(function(g){ return g.id === proyecto.municipioId; }) || {}).nombre + " (" + estampillasSeleccionadas.length + " estampillas)")
-            : React.createElement("span", { style:{fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin municipio seleccionado \xB7 configura en los datos del proyecto"),
-          estampillasSeleccionadas.length > 0 && React.createElement("span", { style:{fontSize:11,color:"var(--ink3)"} },
-            estampillasSeleccionadas.map(function(e){ return e.nombre+" "+e.pctDef+"%"; }).join(" \xB7 "))
-        ),
-        React.createElement("table", { className:"tbl" },
-          React.createElement("tbody", null,
-            React.createElement("tr", { style:{background:"var(--line2)"} },
-              React.createElement("td", { style:{padding:"10px 20px",fontWeight:700,color:"var(--ink2)"} }, "VALOR BASE CONSULTOR\xCDA"),
-              React.createElement("td", { style:{padding:"10px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700} }, fmt(resumen.subtotal12))
+
+    // Modal ítem
+    modalItem && React.createElement("div",{className:"modal-bg",onClick:function(e){if(e.target===e.currentTarget)setModalItem(null);}},
+      React.createElement("div",{className:"modal"},
+        React.createElement("div",{className:"modal-title"},modalItem.editIdx!==null?"Editar \xEDtem":"Nuevo \xEDtem"),
+        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:14,marginTop:12}},
+          React.createElement("div",null,
+            React.createElement("label",{className:"lbl"},"Descripci\xF3n *"),
+            React.createElement("textarea",{className:"ifield",rows:2,style:{resize:"vertical"},value:formItem.descripcion||"",onChange:function(e){setFormItem(function(f){return Object.assign({},f,{descripcion:e.target.value});}); }})
+          ),
+          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}},
+            React.createElement("div",null,
+              React.createElement("label",{className:"lbl"},"Unidad"),
+              React.createElement("input",{className:"ifield",value:formItem.unidad||"gl",onChange:function(e){setFormItem(function(f){return Object.assign({},f,{unidad:e.target.value});}); }})
             ),
-            estampillasSeleccionadas.length > 0
-              ? estampillasSeleccionadas.map(function(e) { return React.createElement("tr", { key:e.id },
-                  React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} }, "Estampilla " + e.nombre + " (" + e.pctDef + "%)"),
-                  React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} },
-                    fmt(Math.round(resumen.subtotalGeneral * (Number(e.pctDef)||0) / 100)))
-                ); })
-              : React.createElement("tr", null,
-                  React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink4)",fontStyle:"italic"} }, "Sin estampillas seleccionadas"),
-                  React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink4)"} }, fmt(0))
-                ),
-            React.createElement("tr", { style:{background:"#FFF7ED"} },
-              React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (IMPUESTOS)"),
-              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"} }, fmt(resumen.impuestos))
+            React.createElement("div",null,
+              React.createElement("label",{className:"lbl"},"Cantidad"),
+              React.createElement("input",{className:"ifield",type:"number",min:0,step:0.01,value:formItem.cantidad||"",onChange:function(e){setFormItem(function(f){return Object.assign({},f,{cantidad:parseFloat(e.target.value)||0});}); }})
             ),
-            React.createElement("tr", null,
-              React.createElement("td", { style:{padding:"7px 20px 7px 36px",fontSize:12,color:"var(--ink3)"} },
-                "P\xF3lizas y garant\xEDas (" + polizasActivas.length + " p\xF3liza" + (polizasActivas.length!==1?"s":"") + " \xB7 plazo " + plazoMeses + " meses)"),
-              React.createElement("td", { style:{padding:"7px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.polizasTotal))
-            ),
-            React.createElement("tr", { style:{background:"#FFF7ED"} },
-              React.createElement("td", { style:{padding:"9px 20px",fontWeight:700,color:"#92400E",fontSize:12} }, "COSTOS DE PERFECCIONAMIENTO (P\xD3LIZAS Y TRANSACCIONES BANCARIAS)"),
-              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,color:"#92400E"} }, fmt(resumen.polizasTotal))
-            ),
-            React.createElement("tr", { style:{background:"#DCFCE7",borderTop:"2px solid #86EFAC"} },
-              React.createElement("td", { style:{padding:"11px 20px",fontWeight:800,color:"#15803D"} }, "SUBTOTAL GENERAL"),
-              React.createElement("td", { style:{padding:"11px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#15803D",fontSize:14} }, fmt(resumen.subtotalGeneral))
-            ),
-            React.createElement("tr", null,
-              React.createElement("td", { style:{padding:"9px 20px",fontSize:12,color:"var(--ink3)"} }, "IVA \u2014 Base antes de impuestos y p\xF3lizas (19%)"),
-              React.createElement("td", { style:{padding:"9px 20px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(resumen.iva))
-            ),
-            React.createElement("tr", { style:{background:"#15803D"} },
-              React.createElement("td", { style:{padding:"14px 20px",fontWeight:800,color:"#fff",fontSize:14,letterSpacing:".03em"} }, "VALOR TOTAL CONSULTOR\xCDA"),
-              React.createElement("td", { style:{padding:"14px 20px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#fff",fontSize:17} }, fmt(resumen.valorTotal))
+            React.createElement("div",null,
+              React.createElement("label",{className:"lbl"},"Valor Unitario"),
+              React.createElement("input",{className:"ifield",type:"number",min:0,value:formItem.valorUnitario||"",onChange:function(e){setFormItem(function(f){return Object.assign({},f,{valorUnitario:parseFloat(e.target.value)||0});}); }})
             )
+          ),
+          React.createElement("div",{style:{fontSize:12,color:"var(--ink4)",background:"var(--line2)",padding:"8px 12px",borderRadius:6}},
+            "Total = "+fmt((Number(formItem.cantidad)||0)*(Number(formItem.valorUnitario)||0))
           )
+        ),
+        React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18}},
+          React.createElement("button",{className:"btn-s",onClick:function(){setModalItem(null);}},"Cancelar"),
+          React.createElement("button",{className:"btn-p",disabled:!formItem.descripcion,onClick:guardarItem},modalItem.editIdx!==null?"Guardar":"Agregar")
         )
       )
     )
@@ -7990,7 +8246,7 @@ function TabPresupuestoConsultoria({ proyecto, setPActivo, readOnly, perfil, ses
 // ═══════════════════════════════════════════════════════
 // TAB FICHA FINANCIERA
 // ═══════════════════════════════════════════════════════
-function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervTotal, catalogoPolizas }) {
+function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervTotal, consultTotal, catalogoPolizas }) {
   var ff = proyecto.fichaFinanciera || {};
   var setFF = function(next) {
     if (readOnly) return;
@@ -8137,7 +8393,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
               React.createElement('div', null,
                 React.createElement('label', { className:'lbl' }, 'Duración (meses)'),
                 React.createElement('div', { style:{display:'flex',gap:8,alignItems:'center'} },
-                  React.createElement('input', { className:'ifield', type:'number', min:1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700}, value:ff.duracion||'', disabled:readOnly, placeholder:String((proyecto.presupInterv||{}).plazo?Number((proyecto.presupInterv||{}).plazo)+1:''), onChange:function(e){ setFF({duracion:parseInt(e.target.value)||0}); } }),
+                  React.createElement('input', { className:'ifield', type:'number', min:1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700}, value: ff.duracion || (Number((proyecto.presupInterv||{}).plazo||0) + 1) || '', disabled:readOnly, onChange:function(e){ setFF({duracion:parseInt(e.target.value)||0}); } }),
                   React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, 'meses')
                 )
               ),
@@ -8148,9 +8404,9 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                   React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, '% sobre costos directos')
                 )
               ),
-              React.createElement('div', null,
+              React.createElement('div', { style:{gridColumn:'1/-1'} },
                 React.createElement('label', { className:'lbl' }, 'Objeto del contrato'),
-                React.createElement('textarea', { className:'ifield', rows:2, style:{resize:'vertical'}, value:ff.objeto||'', disabled:readOnly, onChange:function(e){ setFF({objeto:e.target.value}); } })
+                React.createElement('textarea', { className:'ifield', rows:3, style:{resize:'vertical'}, value:ff.objeto||'', disabled:readOnly, onChange:function(e){ setFF({objeto:e.target.value}); }, placeholder:'Descripci\xF3n del objeto del contrato...' })
               )
             )
           ),
@@ -8180,6 +8436,13 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
             React.createElement('td', { style:{textAlign:'right'} }, '1'),
             React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontWeight:700} }, fmt(R.intervTotal)),
             React.createElement('td', { style:{textAlign:'right',fontSize:11,color:'var(--ink4)'} }, (R.intervTotal/R.subtotalDirecto*100).toFixed(2)+'%')
+          ),
+          (consultTotal||0) > 0 && React.createElement('tr', null,
+            React.createElement('td', null, 'Consultor\xEDa / Dise\xF1o'),
+            React.createElement('td', { style:{textAlign:'right'} }, 'Global'),
+            React.createElement('td', { style:{textAlign:'right'} }, '1'),
+            React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontWeight:700} }, fmt(R.consultTotal||0)),
+            React.createElement('td', { style:{textAlign:'right',fontSize:11,color:'var(--ink4)'} }, R.subtotalDirecto>0 ? (((R.consultTotal||0)/R.subtotalDirecto)*100).toFixed(2)+'%' : '')
           )
         )
       )
@@ -8269,6 +8532,310 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
         React.createElement('div', { style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:18} },
           React.createElement('button', { className:'btn-s', onClick:function(){ setModalComp(null); } }, 'Cancelar'),
           React.createElement('button', { className:'btn-p', onClick:guardarComp }, modalComp.editIdx!==null?'Guardar':'Agregar')
+        )
+      )
+    )
+  );
+}
+
+
+function calcMO(t, smmlv) {
+  var s = Math.round(smmlv * (Number(t.multiplo)||1));
+  var f = s <= smmlv*2 ? 1.70 : 1.5577;
+  var tm = Math.round(s * f);
+  return { sueldoBasico:s, jornal:Math.round(s/30), factor:f, totalMensual:tm, totalJornal:Math.round(tm/30) };
+}
+function calcCuadrillaMO(cua, trabajadores, smmlv) {
+  var tm=0, tj=0;
+  (cua.items||[]).forEach(function(ci) {
+    var t = trabajadores.find(function(x){ return x.id===ci.trabajadorId; });
+    if (!t) return;
+    var r = calcMO(t, smmlv);
+    tm += r.totalMensual*(Number(ci.cantidad)||1);
+    tj += r.totalJornal*(Number(ci.cantidad)||1);
+  });
+  return { totalMensual:Math.round(tm), totalJornal:Math.round(tj) };
+}
+function ModuloManoObra({moData, setMOData, setRecursosProp}) {
+  var smmlv        = Number(moData.smmlv)||1750905;
+  var trabajadores = moData.trabajadores||[];
+  var cuadrillas   = moData.cuadrillas||[];
+  var syncToRecursos = function(moD) {
+    var s = Number(moD.smmlv)||1750905;
+    var trab = moD.trabajadores||[];
+    var cuads = moD.cuadrillas||[];
+    var moR = [];
+    trab.forEach(function(t) {
+      var r = calcMO(t,s);
+      moR.push({id:"mo_rec_"+t.id, codigo:"MO-"+t.id.slice(-4), nombre:t.cargo, tipo:"mano_obra", categoria:"mano_obra", unidad:"jornal", precio:r.totalJornal, _moRef:t.id});
+    });
+    cuads.forEach(function(cua) {
+      var r = calcCuadrillaMO(cua,trab,s);
+      moR.push({id:"mo_rec_"+cua.id, codigo:"CUA-"+cua.id.slice(-4), nombre:cua.nombre, tipo:"mano_obra", categoria:"mano_obra", unidad:"jornal", precio:r.totalJornal, _moRef:cua.id});
+    });
+    setRecursosProp(function(prev) {
+      return (prev||[]).filter(function(r){return !String(r.id).startsWith("mo_rec_");}).concat(moR);
+    });
+  };
+  React.useEffect(function(){ syncToRecursos(moData); }, [JSON.stringify(moData)]);
+  var upd = function(p) {
+    var nuevoMO = Object.assign({},moData,p);
+    setMOData(nuevoMO);
+  };;
+  var [tab,    setTab]    = React.useState("trabajadores");
+  var [modalT, setModalT] = React.useState(null);
+  var [formT,  setFormT]  = React.useState({});
+  var [modalC, setModalC] = React.useState(null);
+  var [formC,  setFormC]  = React.useState({});
+  var [delT,   setDelT]   = React.useState(null);
+  var [delC,   setDelC]   = React.useState(null);
+  var TH  = {padding:"9px 14px",fontWeight:700,fontSize:11,color:"var(--ink3)",borderBottom:"2px solid var(--line)",background:"var(--line2)",textAlign:"right",whiteSpace:"nowrap"};
+  var THL = Object.assign({},TH,{textAlign:"left"});
+  var TD  = {padding:"9px 14px",borderBottom:"1px solid var(--line)",textAlign:"right",fontFamily:"var(--mono)",fontSize:12};
+  var TDL = Object.assign({},TD,{textAlign:"left",fontFamily:"inherit",color:"var(--ink)"});
+  var guardarT = function(){
+    var lista = trabajadores.slice();
+    var item  = Object.assign({id:"mo_"+Date.now()}, formT, {multiplo:parseFloat(formT.multiplo)||1});
+    if (modalT.editIdx!==null) lista[modalT.editIdx]=item; else lista.push(item);
+    upd({trabajadores:lista}); setModalT(null);
+  };
+  var guardarC = function(){
+    var lista = cuadrillas.slice();
+    var item  = Object.assign({id:"cua_"+Date.now()}, formC);
+    if (modalC.editIdx!==null) lista[modalC.editIdx]=item; else lista.push(item);
+    upd({cuadrillas:lista}); setModalC(null);
+  };
+  var addItemC = function(tId){
+    setFormC(function(f){
+      var items = (f.items||[]).slice();
+      var ex = items.find(function(x){ return x.trabajadorId===tId; });
+      if (ex) ex.cantidad = (Number(ex.cantidad)||1)+1;
+      else items.push({trabajadorId:tId, cantidad:1});
+      return Object.assign({},f,{items:items});
+    });
+  };
+  return React.createElement("div",{className:"page"},
+    React.createElement("div",{className:"page-hdr"},
+      React.createElement("div",null,
+        React.createElement("div",{className:"page-title"},"Mano de Obra"),
+        React.createElement("div",{className:"page-sub"},trabajadores.length+" trabajadores \xB7 "+cuadrillas.length+" cuadrillas")
+      ),
+      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:12}},
+        React.createElement("label",{style:{fontSize:12,fontWeight:700,color:"var(--ink2)"}},"SMMLV"),
+        React.createElement("input",{className:"ifield",type:"number",min:1,step:1000,
+          style:{width:140,fontFamily:"var(--mono)",fontWeight:800,fontSize:14,marginBottom:0},
+          value:smmlv, onChange:function(e){upd({smmlv:parseInt(e.target.value)||1750905});}}),
+        React.createElement("span",{style:{fontSize:11,color:"var(--ink4)"}},"2\xD7: "+fmt(smmlv*2))
+      )
+    ),
+    React.createElement("div",{className:"tabs",style:{marginBottom:16}},
+      React.createElement("div",{className:"tab"+(tab==="trabajadores"?" on":""),onClick:function(){setTab("trabajadores");}},"Trabajadores ("+trabajadores.length+")"),
+      React.createElement("div",{className:"tab"+(tab==="cuadrillas"?" on":""),onClick:function(){setTab("cuadrillas");}},"Cuadrillas ("+cuadrillas.length+")")
+    ),
+    tab==="trabajadores" && React.createElement(React.Fragment,null,
+      React.createElement("div",{style:{display:"flex",justifyContent:"flex-end",marginBottom:10}},
+        React.createElement("button",{className:"btn-p",onClick:function(){setModalT({editIdx:null});setFormT({cargo:"",multiplo:1});}},"+ Nuevo trabajador")
+      ),
+      trabajadores.length===0
+        ? React.createElement("div",{className:"card"},React.createElement("div",{className:"empty"},
+            React.createElement("div",{className:"empty-icon"},"\uD83D\uDC77"),
+            React.createElement("div",{className:"empty-title"},"Sin trabajadores"),
+            React.createElement("div",{className:"empty-desc"},"Agrega trabajadores para calcular su jornal")))
+        : React.createElement("div",{className:"card",style:{overflow:"hidden"}},
+            React.createElement("table",{className:"tbl"},
+              React.createElement("thead",null,React.createElement("tr",null,
+                React.createElement("th",{style:THL},"Cargo"),
+                React.createElement("th",{style:TH},"M\xFAltiplo"),
+                React.createElement("th",{style:TH},"Sueldo B\xE1sico"),
+                React.createElement("th",{style:TH},"Jornal"),
+                React.createElement("th",{style:TH},"Factor"),
+                React.createElement("th",{style:TH},"Total Mensual"),
+                React.createElement("th",{style:{...TH,color:"#1D4ED8"}},"Total Jornal"),
+                React.createElement("th",{style:{...TH,width:70}})
+              )),
+              React.createElement("tbody",null,
+                trabajadores.map(function(t,idx){
+                  var r = calcMO(t,smmlv);
+                  var bajo = r.sueldoBasico<=smmlv*2;
+                  return React.createElement("tr",{key:t.id||idx},
+                    React.createElement("td",{style:TDL},t.cargo||"\u2014"),
+                    React.createElement("td",{style:TD},fmtN(t.multiplo,2)+"\xD7"),
+                    React.createElement("td",{style:TD},fmt(r.sueldoBasico)),
+                    React.createElement("td",{style:TD},fmt(r.jornal)),
+                    React.createElement("td",{style:{...TD,fontSize:11,color:bajo?"#15803D":"#92400E"}},r.factor.toFixed(4)),
+                    React.createElement("td",{style:TD},fmt(r.totalMensual)),
+                    React.createElement("td",{style:{...TD,fontWeight:800,color:"#1D4ED8",fontSize:13}},fmt(r.totalJornal)),
+                    React.createElement("td",{style:{...TD,paddingRight:8,textAlign:"right"}},
+                      React.createElement("button",{className:"btn-ghost",style:{marginRight:4,fontSize:11},
+                        onClick:function(){setModalT({editIdx:idx});setFormT(Object.assign({},t));}},"\u270F\uFE0F"),
+                      React.createElement("button",{className:"btn-ghost",style:{color:"#F5C6C2",fontSize:14},
+                        onClick:function(){setDelT(idx);}},"\xD7")
+                    )
+                  );
+                })
+              )
+            )
+          )
+    ),
+    tab==="cuadrillas" && React.createElement(React.Fragment,null,
+      React.createElement("div",{style:{display:"flex",justifyContent:"flex-end",marginBottom:10}},
+        React.createElement("button",{className:"btn-p",onClick:function(){setModalC({editIdx:null});setFormC({nombre:"",items:[]});}},"+ Nueva cuadrilla")
+      ),
+      cuadrillas.length===0
+        ? React.createElement("div",{className:"card"},React.createElement("div",{className:"empty"},
+            React.createElement("div",{className:"empty-icon"},"\uD83D\uDC77\u200D\u2640\uFE0F"),
+            React.createElement("div",{className:"empty-title"},"Sin cuadrillas"),
+            React.createElement("div",{className:"empty-desc"},"Agrupa trabajadores en cuadrillas")))
+        : React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:10}},
+            cuadrillas.map(function(cua,idx){
+              var r = calcCuadrillaMO(cua,trabajadores,smmlv);
+              return React.createElement("div",{key:cua.id||idx,className:"card",style:{overflow:"hidden"}},
+                React.createElement("div",{className:"card-header"},
+                  React.createElement("span",{style:{fontWeight:700,fontSize:13}},cua.nombre||"Cuadrilla"),
+                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontWeight:700,color:"#1D4ED8",marginLeft:"auto"}},"Jornal: "+fmt(r.totalJornal)),
+                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)",marginLeft:12}},"Mensual: "+fmt(r.totalMensual)),
+                  React.createElement("button",{className:"btn-ghost",style:{marginLeft:12,fontSize:11},
+                    onClick:function(){setModalC({editIdx:idx});setFormC(JSON.parse(JSON.stringify(cua)));}},"\u270F\uFE0F"),
+                  React.createElement("button",{className:"btn-ghost",style:{color:"#F5C6C2",fontSize:14,marginLeft:4},
+                    onClick:function(){setDelC(idx);}},"\xD7")
+                ),
+                React.createElement("table",{className:"tbl"},
+                  React.createElement("thead",null,React.createElement("tr",null,
+                    React.createElement("th",{style:THL},"Cargo"),
+                    React.createElement("th",{style:{...TH,width:80}},"Cant."),
+                    React.createElement("th",{style:TH},"Total Mensual"),
+                    React.createElement("th",{style:TH},"Total Jornal")
+                  )),
+                  React.createElement("tbody",null,
+                    (cua.items||[]).map(function(ci){
+                      var t2=trabajadores.find(function(x){return x.id===ci.trabajadorId;});
+                      if(!t2) return null;
+                      var r2=calcMO(t2,smmlv); var cant=Number(ci.cantidad)||1;
+                      return React.createElement("tr",{key:ci.trabajadorId},
+                        React.createElement("td",{style:TDL},t2.cargo),
+                        React.createElement("td",{style:TD},cant),
+                        React.createElement("td",{style:TD},fmt(r2.totalMensual*cant)),
+                        React.createElement("td",{style:{...TD,fontWeight:700,color:"#1D4ED8"}},fmt(r2.totalJornal*cant))
+                      );
+                    })
+                  ),
+                  React.createElement("tfoot",null,React.createElement("tr",{style:{background:"#EFF6FF",borderTop:"2px solid #93C5FD"}},
+                    React.createElement("td",{colSpan:2,style:{padding:"10px 14px",fontWeight:700,fontSize:12,color:"#1D4ED8"}},"TOTAL"),
+                    React.createElement("td",{style:{...TD,fontWeight:800,color:"#1D4ED8"}},fmt(r.totalMensual)),
+                    React.createElement("td",{style:{...TD,fontWeight:800,color:"#1D4ED8",fontSize:14}},fmt(r.totalJornal))
+                  ))
+                )
+              );
+            })
+          )
+    ),
+    modalT && React.createElement("div",{className:"modal-bg",onClick:function(e){if(e.target===e.currentTarget)setModalT(null);}},
+      React.createElement("div",{className:"modal"},
+        React.createElement("div",{className:"modal-title"},modalT.editIdx!==null?"Editar trabajador":"Nuevo trabajador"),
+        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:14,marginTop:12}},
+          React.createElement("div",null,
+            React.createElement("label",{className:"lbl"},"Cargo *"),
+            React.createElement("input",{className:"ifield",value:formT.cargo||"",placeholder:"Ej: Oficial obra negra",
+              onChange:function(e){setFormT(function(f){return Object.assign({},f,{cargo:e.target.value});}); }})
+          ),
+          React.createElement("div",null,
+            React.createElement("label",{className:"lbl"},"M\xFAltiplo SMMLV (ej: 1.0, 1.25, 2.0)"),
+            React.createElement("input",{className:"ifield",type:"number",min:0.1,step:0.1,value:formT.multiplo||1,
+              onChange:function(e){setFormT(function(f){return Object.assign({},f,{multiplo:parseFloat(e.target.value)||1});});}
+            }),
+            formT.multiplo && React.createElement("div",{style:{marginTop:6,fontSize:11,color:"var(--ink4)",background:"var(--line2)",padding:"8px 10px",borderRadius:6}},
+              (function(){
+                var r2=calcMO({multiplo:formT.multiplo},smmlv);
+                return "Sueldo: "+fmt(r2.sueldoBasico)+" \xB7 Factor: "+r2.factor.toFixed(4)+" \xB7 Total Mensual: "+fmt(r2.totalMensual)+" \xB7 Jornal: "+fmt(r2.totalJornal);
+              })()
+            )
+          )
+        ),
+        React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18}},
+          React.createElement("button",{className:"btn-s",onClick:function(){setModalT(null);}},"Cancelar"),
+          React.createElement("button",{className:"btn-p",disabled:!formT.cargo,onClick:guardarT},modalT.editIdx!==null?"Guardar":"Agregar")
+        )
+      )
+    ),
+    modalC && React.createElement("div",{className:"modal-bg",onClick:function(e){if(e.target===e.currentTarget)setModalC(null);}},
+      React.createElement("div",{className:"modal",style:{maxWidth:560}},
+        React.createElement("div",{className:"modal-title"},modalC.editIdx!==null?"Editar cuadrilla":"Nueva cuadrilla"),
+        React.createElement("div",{style:{marginTop:12,marginBottom:14}},
+          React.createElement("label",{className:"lbl"},"Nombre *"),
+          React.createElement("input",{className:"ifield",value:formC.nombre||"",placeholder:"Ej: Cuadrilla Excavaci\xF3n pilas",
+            onChange:function(e){setFormC(function(f){return Object.assign({},f,{nombre:e.target.value});});}})
+        ),
+        (formC.items||[]).length>0 && React.createElement("table",{className:"tbl",style:{marginBottom:10}},
+          React.createElement("thead",null,React.createElement("tr",null,
+            React.createElement("th",{style:{...THL,padding:"7px 12px"}},"Cargo"),
+            React.createElement("th",{style:{...TH,padding:"7px 12px",width:80}},"Cant."),
+            React.createElement("th",{style:{...TH,padding:"7px 12px",width:40}})
+          )),
+          React.createElement("tbody",null,
+            (formC.items||[]).map(function(ci){
+              var t3=trabajadores.find(function(x){return x.id===ci.trabajadorId;});
+              if(!t3) return null;
+              return React.createElement("tr",{key:ci.trabajadorId},
+                React.createElement("td",{style:{...TDL,padding:"5px 12px"}},t3.cargo),
+                React.createElement("td",{style:{padding:"4px 8px",textAlign:"center"}},
+                  React.createElement("input",{type:"number",min:1,style:{width:56,textAlign:"center",fontFamily:"var(--mono)",fontWeight:700,border:"1.5px solid var(--line)",borderRadius:5,padding:"3px 6px"},
+                    value:ci.cantidad||1,
+                    onChange:function(e){
+                      var v=parseInt(e.target.value)||1;
+                      setFormC(function(f){return Object.assign({},f,{items:(f.items||[]).map(function(x){return x.trabajadorId===ci.trabajadorId?Object.assign({},x,{cantidad:v}):x;})});});
+                    }
+                  })
+                ),
+                React.createElement("td",{style:{padding:"4px 8px",textAlign:"center"}},
+                  React.createElement("button",{className:"btn-ghost",style:{color:"#F5C6C2",fontSize:14},
+                    onClick:function(){setFormC(function(f){return Object.assign({},f,{items:(f.items||[]).filter(function(x){return x.trabajadorId!==ci.trabajadorId;})});});}
+                  },"\xD7")
+                )
+              );
+            })
+          )
+        ),
+        React.createElement("div",{style:{fontWeight:700,fontSize:12,color:"var(--ink2)",marginBottom:6}},"+ Agregar:"),
+        React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}},
+          trabajadores.filter(function(t4){return !(formC.items||[]).find(function(x){return x.trabajadorId===t4.id;});})
+            .map(function(t4){return React.createElement("button",{key:t4.id,className:"btn-s",style:{fontSize:11},onClick:function(){addItemC(t4.id);}},"+ "+t4.cargo);})
+        ),
+        (function(){
+          var rC=calcCuadrillaMO(formC,trabajadores,smmlv);
+          return React.createElement("div",{style:{background:"#EFF6FF",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#1D4ED8",fontWeight:700,marginBottom:12}},
+            "Total Mensual: "+fmt(rC.totalMensual)+" \xB7 Total Jornal: "+fmt(rC.totalJornal));
+        })(),
+        React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end"}},
+          React.createElement("button",{className:"btn-s",onClick:function(){setModalC(null);}},"Cancelar"),
+          React.createElement("button",{className:"btn-p",disabled:!formC.nombre,onClick:guardarC},modalC.editIdx!==null?"Guardar":"Crear")
+        )
+      )
+    ),
+    delT!==null && React.createElement("div",{className:"modal-bg"},
+      React.createElement("div",{className:"modal",style:{maxWidth:360}},
+        React.createElement("div",{className:"modal-title"},"\xBFEliminar trabajador?"),
+        React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}},
+          React.createElement("button",{className:"btn-s",onClick:function(){setDelT(null);}},"Cancelar"),
+          React.createElement("button",{className:"btn-p",style:{background:"var(--red)"},onClick:function(){
+            var tid = trabajadores[delT] && trabajadores[delT].id;
+            upd({
+              trabajadores: trabajadores.filter(function(_,i){return i!==delT;}),
+              cuadrillas: cuadrillas.map(function(cu){return Object.assign({},cu,{items:(cu.items||[]).filter(function(x){return x.trabajadorId!==tid;})});})
+            });
+            setDelT(null);
+          }},"Eliminar")
+        )
+      )
+    ),
+    delC!==null && React.createElement("div",{className:"modal-bg"},
+      React.createElement("div",{className:"modal",style:{maxWidth:360}},
+        React.createElement("div",{className:"modal-title"},"\xBFEliminar cuadrilla?"),
+        React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}},
+          React.createElement("button",{className:"btn-s",onClick:function(){setDelC(null);}},"Cancelar"),
+          React.createElement("button",{className:"btn-p",style:{background:"var(--red)"},onClick:function(){
+            upd({cuadrillas:cuadrillas.filter(function(_,i){return i!==delC;})});
+            setDelC(null);
+          }},"Eliminar")
         )
       )
     )
@@ -8616,7 +9183,8 @@ function ModuloProyectos({
     return apus.filter(a => a.nombre.toLowerCase().includes(q) || a.codigo.toLowerCase().includes(q));
   }, [apus, busqApu]);
   const resumen = useMemo(() => pActivo ? calcProyecto(pActivo, apus, recursos) : null, [pActivo, apus, recursos]);
-  const cdPorComp = useMemo(() => pActivo ? calcCDPorComp(pActivo, apus, recursos) : {}, [pActivo, apus, recursos]);
+  const cdPorComp   = useMemo(() => pActivo ? calcCDPorComp(pActivo, apus, recursos) : {}, [pActivo, apus, recursos]);
+  const apusUsados  = useMemo(() => pActivo ? getApusUsados(pActivo, apus, recursos) : [], [pActivo, apus, recursos]);
   const setAuActivo = updater => setPActivo(p => ({
     ...p,
     au: typeof updater === "function" ? updater(p.au) : updater
@@ -8852,6 +9420,7 @@ function ModuloProyectos({
     }
     // Ficha Financiera — siempre si hay obra o interventoría
     if (comps.includes("obra") || comps.includes("interventoria")) {
+      tabs.push({ id: "apus_usados",      l: "APUs Proyectos (" + apusUsados.length + ")" });
       tabs.push({ id: "polizas_edeso",    l: "P\xF3lizas EDESO" });
       tabs.push({ id: "fichaFinanciera",  l: "Ficha Financiera" });
     }
@@ -8861,14 +9430,20 @@ function ModuloProyectos({
       className: `tab${tabEditor === t.id ? " on" : ""}`,
       onClick: () => setTabEditor(t.id)
     }, t.l));
-  })()), (tabEditor === "fichaFinanciera") && (() => {
+  })()), (tabEditor === "apus_usados") && React.createElement(DetalleAPUsUsados, { apusUsados: apusUsados, apus: apus, recursos: recursos, proyecto: pActivo, perfil: perfil, session: session, esLectura: false }),
+  (tabEditor === "fichaFinanciera") && (() => {
     const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
     const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
     const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
     const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
     const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
-    return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo, readOnly: false, obraTotal: _obraTotal, intervTotal: _intervTotal, catalogoPolizas: catalogoPolizas || [] });
+    const _consultSub  = calcTotalPresupConsult(pActivo.presupConsult);
+      const _consultPolD = ((pActivo.polizasPorComp||{})["consultoria"])||{};
+      const _consultEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+      const _consultPlazo= Number(_consultPolD.plazoContractual)||Number((pActivo.presupConsult||{}).plazo)||0;
+      const _consultTotal= _consultSub > 0 ? calcResumenInterv(_consultSub, _consultEst, _consultPolD.polizasActivas||[], _consultPlazo).valorTotal : 0;
+      return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo, readOnly: false, obraTotal: _obraTotal, intervTotal: _intervTotal, consultTotal: _consultTotal, catalogoPolizas: catalogoPolizas || [] });
   })(), (tabEditor === "polizas_edeso") && (() => {
     const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
@@ -8948,6 +9523,37 @@ function ModuloProyectos({
     React.createElement("select", { className:"ifield", value: pActivo.municipioId || "", onChange: e => setPActivo(p => ({...p, municipioId: e.target.value})) },
       React.createElement("option", { value:"" }, "\u2014 Sin municipio"),
       (catalogoEstampillas||[]).map(g => React.createElement("option", { key:g.id, value:g.id }, g.nombre + " (" + (g.items||[]).length + " estampillas)"))
+    )
+  ),
+  React.createElement("div", { style:{marginTop:12} },
+    React.createElement("label", { className:"lbl" }, "Componentes del proyecto"),
+    React.createElement("div", { style:{display:"flex",gap:10,flexWrap:"wrap",marginTop:6} },
+      ["obra","interventoria","consultoria","otros"].map(function(comp) {
+        var LABELS = { obra:"Obra", interventoria:"Interventoría", consultoria:"Consultoría", otros:"Otros" };
+        var COLORS = { obra:"#E53E3E", interventoria:"#1D4ED8", consultoria:"#15803D", otros:"#7C3AED" };
+        var activo = (pActivo.componentes||[]).includes(comp);
+        return React.createElement("label", { key:comp,
+          style:{display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"6px 14px",borderRadius:20,fontSize:13,fontWeight:600,
+            background: activo ? COLORS[comp]+"18" : "var(--line2)",
+            color:      activo ? COLORS[comp] : "var(--ink3)",
+            border:     activo ? "1.5px solid "+COLORS[comp]+"55" : "1.5px solid var(--line)"
+          }},
+          React.createElement("input", { type:"checkbox", style:{accentColor:COLORS[comp]},
+            checked: activo,
+            onChange: function() {
+              setPActivo(function(p) {
+                var curr = p.componentes || [];
+                var next = activo ? curr.filter(function(x){ return x !== comp; }) : [...curr, comp];
+                return Object.assign({}, p, { componentes: next });
+              });
+            }
+          }),
+          LABELS[comp]
+        );
+      })
+    ),
+    React.createElement("div", { style:{fontSize:11,color:"var(--ink4)",marginTop:4} },
+      "Agregar componentes no borra datos existentes. Quitar un componente tampoco los elimina."
     )
   )
   )), /*#__PURE__*/React.createElement("div", {
@@ -9436,7 +10042,12 @@ function ModuloProyectos({
       const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
       const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
       const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
-      return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, obraTotal: _obraTotal, intervTotal: _intervTotal, catalogoPolizas: catalogoPolizas || [] });
+      const _cSub  = calcTotalPresupConsult(pActivo.presupConsult);
+      const _cPolD = ((pActivo.polizasPorComp||{})["consultoria"])||{};
+      const _cEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
+      const _cPlazo= Number(_cPolD.plazoContractual)||Number((pActivo.presupConsult||{}).plazo)||0;
+      const _cTotal= _cSub > 0 ? calcResumenInterv(_cSub, _cEst, _cPolD.polizasActivas||[], _cPlazo).valorTotal : 0;
+      return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, obraTotal: _obraTotal, intervTotal: _intervTotal, consultTotal: _cTotal, catalogoPolizas: catalogoPolizas || [] });
     })(),
     (tabDetalle === "polizas_edeso") && (() => {
       const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
@@ -10620,6 +11231,7 @@ function App() {
   const [catalogoPolizas,    setCatalogoPolizasRaw]     = useState([]);
   const [catalogoEstampillas,setCatalogoEstampillasRaw] = useState([]);
   const [plantillasInt,      setPlantillasIntRaw]       = useState([]);
+  const [moData,             setMODataRaw]              = useState({ smmlv: 1750905, trabajadores: [], cuadrillas: [] });
   const [subTitle,           setSubTitle]               = useState(null);
 
   const migrarProyectos = ps=>(ps||[]).map(p=>({...p,au:migrarAU(p.au),capitulos:p.capitulos||[]}));
@@ -10638,6 +11250,7 @@ function App() {
       if(row.key==="catalogoPolizas")     setCatalogoPolizasRaw(row.value||[]);
       if(row.key==="catalogoEstampillas") setCatalogoEstampillasRaw(row.value||[]);
       if(row.key==="plantillasInt")       setPlantillasIntRaw(row.value||[]);
+      if(row.key==="moData")              setMODataRaw(row.value||{ smmlv: 1750905, trabajadores: [], cuadrillas: [] });
     });
     // Second pass: merge psec_* sections into projects
     const SEC_FIELD={caps:"capitulos",au:"au",pol:"polizasPorComp",
@@ -10961,6 +11574,10 @@ function App() {
       modulo==="Catálogo Pólizas"&&React.createElement(ModuloCatalogoPolizas,{catalogoPolizas,setCatalogoPolizas}),
       modulo==="Catálogo Estampillas"&&React.createElement(ModuloCatalogoEstampillas,{catalogoEstampillas,setCatalogoEstampillas}),
       modulo==="Plantillas Interv."&&React.createElement(ModuloPlantillasInterventoria,{plantillasInt,setPlantillasInt}),
+      modulo==="Mano de Obra"&&React.createElement(ModuloManoObra,{ moData, setRecursosProp: setRecursos, setMOData: v => {
+        setMODataRaw(v);
+        _sb.from("app_data").upsert({ key:"moData", value:v, updated_at:new Date().toISOString() }).then(({error})=>{ if(error) console.error("MO save:",error); });
+      } }),
       modulo==="Proyectos"&&React.createElement(ModuloProyectos,{
         recursos,apus,plantillasAU,proyectos,setProyectos,
         catalogoPolizas,catalogoEstampillas,plantillasInt,
