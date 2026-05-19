@@ -9043,7 +9043,22 @@ function ModuloProyectos({
   const [vista, setVista] = useState("lista");
   const [pActivo, setPActivo] = useState(null);
   const [tabDetalle, setTabDetalle] = useState("presupuesto");
-  const [tabEditor, setTabEditor] = useState("presupuesto");
+  const [tabEditor, setTabEditorRaw] = useState("presupuesto");
+  const setTabEditor = React.useCallback((tab) => {
+    setTabEditorRaw(tab);
+    if (tab.startsWith("presupuesto_obra_")) {
+      const psId2 = tab.slice("presupuesto_obra_".length);
+      setPActivo(function(p) {
+        if (!p) return p;
+        var presups2 = p.presupuestosObra && p.presupuestosObra.length > 0
+          ? p.presupuestosObra
+          : [{ id:"p0", capitulos: p.capitulos||[] }];
+        var psFnd = presups2.find(function(x){ return x.id===psId2; }) || presups2[0];
+        if (!psFnd) return p;
+        return Object.assign({}, p, { capitulos: psFnd.capitulos||[] });
+      });
+    }
+  }, []);
   window.__edeso_setTabEditor = setTabEditor;
   const [busq, setBusq] = useState("");
   const [showNuevo, setShowNuevo] = useState(false);
@@ -9284,32 +9299,36 @@ function ModuloProyectos({
 
   const abrirEditor = p => {
     const pSync = sincronizarIterativo(p);
-    // Migrate legacy capitulos to presupuestosObra if needed
+    // Ensure presupuestosObra exists (migration from legacy or new project)
     let pMigrated = pSync;
-    if ((!pSync.presupuestosObra || pSync.presupuestosObra.length === 0) && pSync.capitulos && pSync.capitulos.length > 0) {
+    if (!pSync.presupuestosObra || pSync.presupuestosObra.length === 0) {
       pMigrated = Object.assign({}, pSync, {
-        presupuestosObra: [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pSync.capitulos }]
+        presupuestosObra: [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pSync.capitulos||[] }]
       });
     }
-    setPActivo(pMigrated);
-    // Set first presupuesto tab
-    const ps = pMigrated.presupuestosObra && pMigrated.presupuestosObra.length > 0
-      ? pMigrated.presupuestosObra[0]
-      : { id: "p0" };
     const comps = pMigrated.componentes || [];
-    setTabEditor(comps.includes("obra") ? "presupuesto_obra_" + ps.id : "presupuesto_interventoria");
+    const firstPs = pMigrated.presupuestosObra && pMigrated.presupuestosObra.length > 0
+      ? pMigrated.presupuestosObra[0]
+      : { id: "p0", capitulos: [] };
+    // Sync pActivo.capitulos to first presupuesto's capitulos for legacy render compatibility
+    const pFinal = Object.assign({}, pMigrated, { capitulos: firstPs.capitulos||[] });
+    setPActivo(pFinal);
+    setTabEditorRaw(comps.includes("obra") ? "presupuesto_obra_" + firstPs.id : "presupuesto_interventoria");
     setVista("editor");
   };
   const crearProyecto = form => {
+    const comps = form.componentes || [];
     const nuevo = {
       id: Date.now(),
       ...form,
       au: auVacio(),
-      capitulos: []
+      capitulos: [],
+      presupuestosObra: comps.includes("obra") ? [{ id: "p0", nombre: "Presupuesto Obra", capitulos: [] }] : undefined
     };
     setProyectos(prev => [...prev, nuevo]);
     setShowNuevo(false);
-    setPActivo(JSON.parse(JSON.stringify(nuevo)));
+    setPActivo(nuevo);
+    setTabEditorRaw(comps.includes("obra") ? "presupuesto_obra_p0" : "presupuesto_interventoria");
     setVista("editor");
   };
   const guardar = () => {
@@ -9320,53 +9339,85 @@ function ModuloProyectos({
     setProyectos(prev => prev.find(p => p.id === pSinc.id) ? prev.map(p => p.id === pSinc.id ? pSinc : p) : [...prev, pSinc]);
     setVista("lista");
   };
+  // ── Helper: get active presupuesto ID from tabEditor ─────────────────────────
+  const getActivePsId = () => tabEditor.startsWith("presupuesto_obra_") ? tabEditor.slice("presupuesto_obra_".length) : null;
+
+  // ── Get capitulos for render: from presupuestosObra[active] or legacy capitulos ──
+  const getActiveCapitulos = (p) => {
+    const psId = p && tabEditor.startsWith("presupuesto_obra_") ? tabEditor.slice("presupuesto_obra_".length) : null;
+    if (psId && p && p.presupuestosObra && p.presupuestosObra.length > 0) {
+      const ps = p.presupuestosObra.find(x => x.id === psId);
+      return ps ? ps.capitulos||[] : [];
+    }
+    return (p && p.capitulos)||[];
+  };
+
+  // ── Mutate presupuestosObra[active].capitulos directly ─────────────────────
+  const mutateActiveCaps = (p, fn) => {
+    const psId = tabEditor.startsWith("presupuesto_obra_") ? tabEditor.slice("presupuesto_obra_".length) : null;
+    if (psId) {
+      const presups = p.presupuestosObra && p.presupuestosObra.length > 0
+        ? p.presupuestosObra
+        : [{ id: psId, nombre: "Presupuesto Obra", capitulos: [] }];
+      const newPresups = presups.map(ps => ps.id === psId ? {...ps, capitulos: fn(ps.capitulos||[])} : ps);
+      // Also update legacy capitulos for AU calc compatibility
+      const activeCaps = newPresups.find(ps => ps.id === psId)?.capitulos || [];
+      return {...p, presupuestosObra: newPresups, capitulos: activeCaps};
+    }
+    // Legacy path (interventoría tabs use this)
+    return {...p, capitulos: fn(p.capitulos||[])};
+  };
+
   const addCap = () => {
     const n = (pActivo.capitulos||[]).length + 1;
-    const comp = (pActivo.componentes||[])[0] || "obra";
-    const newCap = { id: Date.now(), numero: String(n), nombre: "NUEVO CAPÍTULO", tipo: comp, orden: n, items: [] };
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: [...(p.capitulos||[]), newCap] }));
+    const newCap = { id: Date.now(), numero: String(n), nombre: "NUEVO CAPÍTULO", tipo: "obra", orden: n, items: [] };
+    setPActivo(p => {
+      const psId = tabEditor.startsWith("presupuesto_obra_") ? tabEditor.slice("presupuesto_obra_".length) : null;
+      const newCaps = [...(p.capitulos||[]), newCap];
+      if (psId) {
+        const presups = p.presupuestosObra && p.presupuestosObra.length > 0
+          ? p.presupuestosObra
+          : [{ id: psId, nombre: "Presupuesto Obra", capitulos: [] }];
+        const newPresups = presups.map(ps => ps.id === psId ? {...ps, capitulos: newCaps} : ps);
+        return {...p, capitulos: newCaps, presupuestosObra: newPresups};
+      }
+      return {...p, capitulos: newCaps};
+    });
     dbSaveCap(newCap, pActivo.id);
   };
   const delCap = id => {
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).filter(c => c.id !== id) }));
+    setPActivo(p => mutateActiveCaps(p, caps => caps.filter(c => c.id !== id)));
     dbDelCap(id, pActivo.id);
   };
   const updCap = (id, campo, val) => {
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id === id ? {...c,[campo]:val} : c) }));
-    const cap = (pActivo.capitulos||[]).find(c=>c.id===id);
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === id ? {...c,[campo]:val} : c)));
+    const cap = getActiveCapitulos(pActivo).find(c=>c.id===id);
     if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id);
-  };
-  // Helper: sync pActivo.capitulos → presupuestosObra[active] after mutations
-  const syncCapToPresup = (p) => {
-    if (!tabEditor.startsWith("presupuesto_obra_")) return p;
-    const psId = tabEditor.slice("presupuesto_obra_".length);
-    const list = (p.presupuestosObra||[]).map(ps => ps.id===psId ? {...ps, capitulos: p.capitulos||[]} : ps);
-    return {...p, presupuestosObra: list};
   };
 
   const addItem = capId => {
-    const cap = (pActivo.capitulos||[]).find(c=>c.id===capId);
+    const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = { id: Date.now(), apuId: null, descripcion: "", unidad: "", cantidad: 1, orden: (cap?.items?.length||0) };
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id === capId ? {...c, items: [...(c.items||[]), item]} : c) }));
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === capId ? {...c, items: [...(c.items||[]), item]} : c)));
     setShowApuModal({ capId, itemId: item.id });
     setBusqApu("");
     if(cap) dbSaveItem(item, capId, cap.numero, pActivo.id);
   };
   const delIt = (capId, itemId) => {
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c) }));
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c)));
     dbDelItem(itemId, pActivo.id);
   };
   const updIt = (capId, itemId, campo, val) => {
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,[campo]:val}:i)} : c) }));
-    const cap = (pActivo.capitulos||[]).find(c=>c.id===capId);
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,[campo]:val}:i)} : c)));
+    const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
     if(cap&&item) { clearTimeout(window.__updItTimer__); window.__updItTimer__=setTimeout(()=>dbSaveItem({...item,[campo]:val},capId,cap.numero,pActivo.id),500); }
   };
   const selApu = apu => {
     const { capId, itemId } = showApuModal;
-    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c) }));
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c)));
     setShowApuModal(null);
-    const cap  = (pActivo.capitulos||[]).find(c=>c.id===capId);
+    const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
     if(cap&&item) dbSaveItem({...item,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad},capId,cap.numero,pActivo.id);
   };
@@ -9677,6 +9728,8 @@ function ModuloProyectos({
     const presupComp = tabEditor.startsWith("presupuesto_obra_") ? "obra" : tabEditor.slice(12);
     const presupLabel = presupComp === "obra" ? "Obra" : presupComp === "interventoria" ? "Interventor\xEDa" : presupComp === "consultoria" ? "Consultor\xEDa" : presupComp;
     const presupColor = presupComp === "obra" ? "var(--red)" : "#1D4ED8";
+    // For obra: use active presupuesto's capitulos directly
+    const obrasCapitulos = presupComp === "obra" ? (pActivo.capitulos||[]) : (pActivo.capitulos||[]);
     if (presupComp === "interventoria") {
       return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo, readOnly: false, plantillasInt: plantillasInt || [], storageKey: "presupInterv", catalogoEstampillas: catalogoEstampillas || [] });
     }
@@ -9790,7 +9843,7 @@ function ModuloProyectos({
   }, "Cap\xEDtulos e \xCDtems"), /*#__PURE__*/React.createElement("button", {
     className: "btn-dashed",
     onClick: addCap
-  }, "+ Agregar cap\xEDtulo")), (pActivo.capitulos || []).filter(c => (c.tipo || "obra") === (tabEditor.slice(12) || "obra")).length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, "+ Agregar cap\xEDtulo")), obrasCapitulos.filter(c => (c.tipo || "obra") === "obra").length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -9816,8 +9869,8 @@ function ModuloProyectos({
     style: {
       width: 40
     }
-  }))), /*#__PURE__*/React.createElement("tbody", null, (pActivo.capitulos || []).filter(c => (c.tipo || "obra") === (tabEditor.startsWith("presupuesto_") ? tabEditor.slice(12) : "obra")).map(cap => {
-    const subCap = cap.items.reduce((s, it) => s + calcItem(it, apus, recursos), 0);
+  }))), /*#__PURE__*/React.createElement("tbody", null, obrasCapitulos.filter(c => (c.tipo || "obra") === "obra").map(cap => {
+    const subCap = (cap.items||[]).reduce((s, it) => s + calcItem(it, apus, recursos), 0);
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: cap.id
     }, /*#__PURE__*/React.createElement("tr", {
@@ -11528,7 +11581,7 @@ function App() {
         user_id:session.user.id, user_email:session.user.email,
         user_nombre:perfil?.nombre||session.user.email,
         modulo:"Proyectos", accion:`Guardó ${labels[seccion]||seccion} del proyecto`,
-      }).catch(()=>{});
+      }).then(()=>{}).catch(()=>{});
     }
   };
 
