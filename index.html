@@ -343,14 +343,26 @@ function calcItem(item, apus, recursos) {
   const apu = apus.find(a => a.id === item.apuId);
   return apu ? (item.cantidad || 0) * calcAPUTotal(apu, recursos) : 0;
 }
+// Helper: get all obra capitulos (from presupuestosObra or legacy capitulos)
+function getCapitulosObra(proyecto) {
+  if (proyecto.presupuestosObra && proyecto.presupuestosObra.length > 0) {
+    return proyecto.presupuestosObra.reduce(function(all, ps) {
+      return all.concat((ps.capitulos||[]).map(function(c){ return Object.assign({},c,{_presupId:ps.id}); }));
+    }, []);
+  }
+  return (proyecto.capitulos||[]).filter(function(c){ return (c.tipo||"obra")==="obra"; });
+}
+
 function calcCD(proyecto, apus, recursos) {
-  return (proyecto.capitulos || []).reduce((s, c) => s + (c.items || []).reduce((ss, it) => ss + calcItem(it, apus, recursos), 0), 0);
+  return getCapitulosObra(proyecto).reduce((s, c) => s + (c.items || []).reduce((ss, it) => ss + calcItem(it, apus, recursos), 0), 0);
 }
 function calcCDPorComp(proyecto, apus, recursos) {
-  // Retorna un objeto { obra: X, interventoria: Y, ... } con el CD por componente
   const result = {};
-  (proyecto.capitulos || []).forEach(cap => {
-    const tipo = cap.tipo || "obra";
+  // Obra: sum all presupuestosObra
+  result["obra"] = calcCD(proyecto, apus, recursos);
+  // Other components from legacy capitulos (interventoria, etc.)
+  (proyecto.capitulos || []).filter(c => (c.tipo||"obra") !== "obra").forEach(cap => {
+    const tipo = cap.tipo;
     const cd = (cap.items || []).reduce((s, it) => s + calcItem(it, apus, recursos), 0);
     result[tipo] = (result[tipo] || 0) + cd;
   });
@@ -632,13 +644,11 @@ function calcTotalConvergido(proyecto, apus, recursos) {
 
 function getApusUsados(p, apus, recursos) {
   const ids = new Set();
-  (p.capitulos || []).forEach(c => (c.items || []).forEach(i => {
-    if (i.apuId) ids.add(i.apuId);
-  }));
-  return apus.filter(a => ids.has(a.id)).map(a => ({
-    ...a,
-    valorUnitario: calcAPUTotal(a, recursos)
-  }));
+  // Legacy capitulos
+  (p.capitulos || []).forEach(c => (c.items || []).forEach(i => { if (i.apuId) ids.add(i.apuId); }));
+  // New presupuestosObra
+  (p.presupuestosObra || []).forEach(ps => (ps.capitulos||[]).forEach(c => (c.items||[]).forEach(i => { if (i.apuId) ids.add(i.apuId); })));
+  return apus.filter(a => ids.has(a.id)).map(a => ({ ...a, valorUnitario: calcAPUTotal(a, recursos) }));
 }
 
 // ═══════════════════════════════════════════════════════
@@ -7860,8 +7870,8 @@ function calcFichaFinanciera(proyecto, obraTotal, intervTotal, consultTotal, max
 
   // Componentes manuales
   var totalPersonal  = (ff.componentesPersonal  || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
-  var totalSocial    = (ff.componentesSocial    || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.valorUnit)||0); }, 0);
-  var totalLogistico = (ff.componentesLogistico || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.valorUnit)||0); }, 0);
+  var totalSocial    = (ff.componentesSocial    || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
+  var totalLogistico = (ff.componentesLogistico || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
   var totalDiseno    = (ff.componentesDiseno    || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
 
   // Pólizas EDESO — convergen
@@ -7892,6 +7902,7 @@ function calcFichaFinanciera(proyecto, obraTotal, intervTotal, consultTotal, max
     duracion         : duracion,
     obraTotal        : obraTotal,
     intervTotal      : intervTotal,
+    consultTotal     : Math.round(consultTotal||0),
     totalPersonal    : totalPersonal,
     totalSocial      : totalSocial,
     polizasEdeso     : polizasEdeso,
@@ -8257,16 +8268,40 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
     });
   };
 
-  var [modalComp, setModalComp] = React.useState(null); // { tipo, editIdx }
+  var [modalComp, setModalComp] = React.useState(null);
   var [formComp,  setFormComp]  = React.useState({});
 
-  var pctHon   = Number(ff.pctHonoarios !== undefined ? ff.pctHonoarios : 0.08);
-  var duracion = Number(ff.duracion) || 0;
+  var pctHon     = Number(ff.pctHonoarios !== undefined ? ff.pctHonoarios : 0.08);
+  var intervPlazo= Number((proyecto.presupInterv||{}).plazo)||0;
+  var autoD      = intervPlazo > 0 ? intervPlazo + 1 : 0;
+  var duracion   = Number(ff.duracion) || autoD;
 
-  var R = calcFichaFinanciera(proyecto, obraTotal, intervTotal);
+  // ── Auto-sync duracion when presupInterv.plazo changes ─────────────────────
+  React.useEffect(function() {
+    if (readOnly || !autoD) return;
+    var oldD = Number(ff.duracion) || 0;
+    if (oldD === autoD) return;
+    var updItems = function(lista) {
+      return (lista||[]).map(function(item) {
+        return (Number(item.meses)===oldD || oldD===0) ? Object.assign({},item,{meses:autoD}) : item;
+      });
+    };
+    setPActivo(function(p) {
+      var cur = p.fichaFinanciera || {};
+      return Object.assign({},p,{ fichaFinanciera: Object.assign({},cur,{
+        duracion:             autoD,
+        componentesPersonal:  updItems(cur.componentesPersonal),
+        componentesSocial:    updItems(cur.componentesSocial),
+        componentesLogistico: updItems(cur.componentesLogistico),
+        componentesDiseno:    updItems(cur.componentesDiseno)
+      })});
+    });
+  }, [autoD]);
+
+  var R = calcFichaFinanciera(proyecto, obraTotal, intervTotal, consultTotal||0);
 
   // Helpers
-  var abrirNuevo = function(tipo) { setModalComp({ tipo: tipo, editIdx: null }); setFormComp({ descripcion:'', valor:0, cantidad:1, valorUnit:0, unidad:'mes' }); };
+  var abrirNuevo = function(tipo) { setModalComp({ tipo: tipo, editIdx: null }); setFormComp({ descripcion:'', valor:0, cantidad:1, meses:duracion||1, valorUnit:0, unidad:'mes' }); };
   var abrirEditar = function(tipo, idx) {
     var lista = ff['componentes'+tipo] || [];
     setModalComp({ tipo: tipo, editIdx: idx });
@@ -8310,9 +8345,10 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
               esValorFijo(tipo)
                 ? React.createElement('th', { style:{textAlign:'right',width:180} }, 'Valor')
                 : React.createElement(React.Fragment, null,
-                    React.createElement('th', { style:{textAlign:'right',width:120} }, 'Cantidad/Duración'),
-                    React.createElement('th', { style:{textAlign:'right',width:160} }, 'Valor Unitario'),
-                    React.createElement('th', { style:{textAlign:'right',width:160} }, 'Total')
+                    React.createElement('th', { style:{textAlign:'right',width:90} }, 'Cantidad'),
+                    React.createElement('th', { style:{textAlign:'right',width:80} }, 'Meses'),
+                    React.createElement('th', { style:{textAlign:'right',width:150} }, 'Valor Unitario'),
+                    React.createElement('th', { style:{textAlign:'right',width:150} }, 'Total')
                   ),
               React.createElement('th', { style:{width:60} })
             )),
@@ -8320,13 +8356,14 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
               lista.map(function(item, idx) {
                 var tot = esValorFijo(tipo)
                   ? (Number(item.valor)||0)
-                  : (Number(item.cantidad)||0) * (Number(item.valorUnit)||0);
+                  : (Number(item.cantidad)||0) * (Number(item.meses)||1) * (Number(item.valorUnit)||0);
                 return React.createElement('tr', { key:idx },
                   React.createElement('td', { style:{fontSize:12} }, item.descripcion || '\u2014'),
                   esValorFijo(tipo)
                     ? React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valor)||0))
                     : React.createElement(React.Fragment, null,
                         React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, (Number(item.cantidad)||0)+" "+(item.unidad||'')),
+                        React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, (Number(item.meses)||1)+" m"),
                         React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valorUnit)||0)),
                         React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12,fontWeight:700} }, fmt(tot))
                       ),
@@ -8348,6 +8385,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
     var rows = [
       ['Costo de obra', R.obraTotal, false],
       ['Interventor\xEDa', R.intervTotal, false],
+      (proyecto.componentes||[]).includes('consultoria') ? ['Consultor\xEDa / Dise\xF1o', R.consultTotal||0, false] : null,
       ['Costos indirectos del proyecto', R.subtotalIndirecto, false],
       ['SUBTOTAL RECURSOS A ADMINISTRAR', R.totalRecursos, true],
       [null, null, false],
@@ -8364,7 +8402,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
       ),
       React.createElement('table', { className:'tbl' },
         React.createElement('tbody', null,
-          rows.map(function(row, i) {
+          rows.filter(Boolean).map(function(row, i) {
             if (!row[0]) return React.createElement('tr', { key:i }, React.createElement('td', { colSpan:2, style:{padding:'4px'} }));
             var isSub = row[2]; var isTotal = row[3];
             return React.createElement('tr', { key:i, style:isTotal?{background:'#1D4ED8'}:isSub?{background:'#EFF6FF',borderTop:'2px solid #93C5FD'}:{} },
@@ -8393,7 +8431,22 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
               React.createElement('div', null,
                 React.createElement('label', { className:'lbl' }, 'Duración (meses)'),
                 React.createElement('div', { style:{display:'flex',gap:8,alignItems:'center'} },
-                  React.createElement('input', { className:'ifield', type:'number', min:1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700}, value: ff.duracion || (Number((proyecto.presupInterv||{}).plazo||0) + 1) || '', disabled:readOnly, onChange:function(e){ setFF({duracion:parseInt(e.target.value)||0}); } }),
+                  React.createElement('input', { className:'ifield', type:'number', min:1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700},
+                    value: duracion || '',
+                    disabled:readOnly,
+                    onChange:function(e){
+                      var v = parseInt(e.target.value)||0;
+                      var oldD = duracion;
+                      var updItems = function(lista) {
+                        return (lista||[]).map(function(item) {
+                          return (Number(item.meses)===oldD||oldD===0) ? Object.assign({},item,{meses:v}) : item;
+                        });
+                      };
+                      setFF({ duracion:v, componentesPersonal:updItems(ff.componentesPersonal), componentesSocial:updItems(ff.componentesSocial), componentesLogistico:updItems(ff.componentesLogistico), componentesDiseno:updItems(ff.componentesDiseno) });
+                    }
+                  }),
+                  !ff.duracion && autoD > 0 && React.createElement('span', { style:{fontSize:10,color:'#15803D',background:'#DCFCE7',padding:'2px 8px',borderRadius:20,fontWeight:600} },
+                    'auto: interv. '+intervPlazo+'+1'),
                   React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, 'meses')
                 )
               ),
@@ -8437,7 +8490,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
             React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontWeight:700} }, fmt(R.intervTotal)),
             React.createElement('td', { style:{textAlign:'right',fontSize:11,color:'var(--ink4)'} }, (R.intervTotal/R.subtotalDirecto*100).toFixed(2)+'%')
           ),
-          (consultTotal||0) > 0 && React.createElement('tr', null,
+          (proyecto.componentes||[]).includes('consultoria') && React.createElement('tr', null,
             React.createElement('td', null, 'Consultor\xEDa / Dise\xF1o'),
             React.createElement('td', { style:{textAlign:'right'} }, 'Global'),
             React.createElement('td', { style:{textAlign:'right'} }, '1'),
@@ -8510,10 +8563,17 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                 React.createElement('input', { className:'ifield', type:'number', min:0, value:formComp.valor||'', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{valor:parseFloat(e.target.value)||0}); }); } })
               )
             : React.createElement(React.Fragment, null,
-                React.createElement('div', { style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12} },
+                React.createElement('div', { style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12} },
                   React.createElement('div', null,
-                    React.createElement('label', { className:'lbl' }, 'Cantidad/Duración'),
+                    React.createElement('label', { className:'lbl' }, 'Cantidad'),
                     React.createElement('input', { className:'ifield', type:'number', min:0, value:formComp.cantidad||'', onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{cantidad:parseFloat(e.target.value)||0}); }); } })
+                  ),
+                  React.createElement('div', null,
+                    React.createElement('label', { className:'lbl' }, 'Meses (auto)'),
+                    React.createElement('input', { className:'ifield', type:'number', min:1,
+                      value: formComp.meses !== undefined ? formComp.meses : (duracion||1),
+                      placeholder: String(duracion||1),
+                      onChange:function(e){ setFormComp(function(f){ return Object.assign({},f,{meses:parseFloat(e.target.value)||1}); }); } })
                   ),
                   React.createElement('div', null,
                     React.createElement('label', { className:'lbl' }, 'Unidad'),
@@ -8525,7 +8585,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                   )
                 ),
                 React.createElement('div', { style:{fontSize:12,color:'var(--ink4)',background:'var(--line2)',padding:'8px 12px',borderRadius:6} },
-                  'Total = '+ fmt((Number(formComp.cantidad)||0)*(Number(formComp.valorUnit)||0))
+                  'Total = '+ fmt((Number(formComp.cantidad)||0)*(Number(formComp.meses)||1)*(Number(formComp.valorUnit)||0))
                 )
               )
         ),
@@ -8843,6 +8903,111 @@ function ModuloManoObra({moData, setMOData, setRecursosProp}) {
 }
 
 
+// ═══════════════════════════════════════════════════════
+// PRESUPUESTO OBRA TAB — wrapper for a single presupuesto
+// ═══════════════════════════════════════════════════════
+function PresupuestoObraBody({ proyecto, setCapitulos, apus, recursos, perfil, session, presupNombre }) {
+  // Uses the existing obra presupuesto render by wrapping setPActivo
+  // to intercept capitulos changes and route them to the right presupuesto
+  var wrapSetPActivo = function(updater) {
+    if (typeof updater === "function") {
+      // Extract capitulos change and route to setCapitulos
+      var fake = Object.assign({}, proyecto);
+      var result = updater(fake);
+      if (result.capitulos !== fake.capitulos) {
+        setCapitulos(result.capitulos);
+      }
+    }
+  };
+  // Re-use the existing editor presupuesto obra render
+  // by calling the external render function with our proxy
+  return React.createElement(PresupuestoObraRender, {
+    proyecto: proyecto,
+    setPActivo: wrapSetPActivo,
+    apus: apus,
+    recursos: recursos,
+    perfil: perfil,
+    session: session
+  });
+}
+
+
+function PresupuestoObraTab({ proyecto, presupuesto, setPActivo, setCapitulos, apus, recursos, perfil, session, allPresups }) {
+  var [showMgr, setShowMgr] = React.useState(false);
+  var [editNombre, setEditNombre] = React.useState(null); // idx being edited
+  var [formNombre, setFormNombre] = React.useState("");
+
+  var presups = allPresups && allPresups.length > 0 ? allPresups
+    : [{ id:"p0", nombre:"Presupuesto Obra", capitulos: proyecto.capitulos||[] }];
+
+  var renombrar = function(idx, nombre) {
+    setPActivo(function(p) {
+      var list = (p.presupuestosObra||presups).map(function(x,i){ return i===idx ? Object.assign({},x,{nombre:nombre}) : x; });
+      return Object.assign({},p,{presupuestosObra:list});
+    });
+    setEditNombre(null);
+  };
+  var agregarPresup = function() {
+    setPActivo(function(p) {
+      var list = (p.presupuestosObra||presups).slice();
+      list.push({ id:"p_"+Date.now(), nombre:"Nuevo Presupuesto", capitulos:[] });
+      return Object.assign({},p,{presupuestosObra:list});
+    });
+  };
+  var eliminarPresup = function(idx) {
+    if (presups.length <= 1) return;
+    setPActivo(function(p) {
+      var list = (p.presupuestosObra||presups).filter(function(_,i){ return i!==idx; });
+      return Object.assign({},p,{presupuestosObra:list});
+    });
+  };
+
+  var cdTotal = presups.reduce(function(s, ps) {
+    var proxy = Object.assign({}, proyecto, {capitulos: ps.capitulos||[]});
+    return s + calcCD(proxy, apus, recursos);
+  }, 0);
+
+  return React.createElement(React.Fragment, null,
+    // Manage presupuestos bar
+    React.createElement("div", { style:{display:"flex",alignItems:"center",gap:12,marginBottom:12,padding:"10px 16px",background:"var(--line2)",borderRadius:8} },
+      React.createElement("span", { style:{fontSize:12,fontWeight:700,color:"var(--ink2)"} }, "Presupuestos de Obra:"),
+      presups.map(function(ps, idx) {
+        var isActive = ps.id === presupuesto.id;
+        return React.createElement("div", { key:ps.id, style:{display:"flex",alignItems:"center",gap:4} },
+          editNombre === idx
+            ? React.createElement(React.Fragment, null,
+                React.createElement("input", { className:"ifield", style:{width:140,fontSize:12,marginBottom:0}, value:formNombre,
+                  onChange:function(e){ setFormNombre(e.target.value); },
+                  onBlur:function(){ renombrar(idx, formNombre); },
+                  onKeyDown:function(e){ if(e.key==="Enter") renombrar(idx, formNombre); }
+                })
+              )
+            : React.createElement("span", {
+                style:{padding:"4px 12px",borderRadius:16,fontSize:12,fontWeight:600,cursor:"pointer",
+                  background:isActive?"var(--red)":"#fff",
+                  color:isActive?"#fff":"var(--ink2)",
+                  border:isActive?"none":"1px solid var(--line)"
+                },
+                onClick:function(){
+                  // Switch tab
+                  setPActivo(function(p){ return p; }); // trigger re-render with new tab
+                  window.__edeso_setTabEditor && window.__edeso_setTabEditor("presupuesto_obra_"+ps.id);
+                }
+              }, ps.nombre||"Presupuesto "+(idx+1)),
+          React.createElement("button", { className:"btn-ghost", style:{fontSize:11,padding:"2px 4px"},
+            onClick:function(){ setEditNombre(idx); setFormNombre(ps.nombre||""); }, title:"Renombrar" }, "✏️"),
+          presups.length > 1 && React.createElement("button", { className:"btn-ghost", style:{color:"#F5C6C2",fontSize:13,padding:"2px 4px"},
+            onClick:function(){ eliminarPresup(idx); }, title:"Eliminar" }, "×")
+        );
+      }),
+      React.createElement("button", { className:"btn-dashed", style:{fontSize:11}, onClick:agregarPresup }, "+ Nuevo presupuesto"),
+      React.createElement("span", { style:{marginLeft:"auto",fontFamily:"var(--mono)",fontSize:12,fontWeight:700,color:"var(--red)"} },
+        "CD Total: "+fmt(cdTotal))
+    )
+  );
+}
+
+
 function ModuloProyectos({
   recursos,
   apus,
@@ -8879,6 +9044,7 @@ function ModuloProyectos({
   const [pActivo, setPActivo] = useState(null);
   const [tabDetalle, setTabDetalle] = useState("presupuesto");
   const [tabEditor, setTabEditor] = useState("presupuesto");
+  window.__edeso_setTabEditor = setTabEditor;
   const [busq, setBusq] = useState("");
   const [showNuevo, setShowNuevo] = useState(false);
   const [obsMode, setObsMode] = useState(false);
@@ -9046,7 +9212,14 @@ function ModuloProyectos({
   }, [proyectos, busq]);
   const abrirDetalle = p => {
     setPActivo(JSON.parse(JSON.stringify(p)));
-    setTabDetalle("presupuesto");
+    setTabDetalle(function() {
+      const comps = p.componentes || [];
+      if (comps.includes("obra")) {
+        const presups = p.presupuestosObra && p.presupuestosObra.length > 0 ? p.presupuestosObra : [{ id:"p0" }];
+        return "presupuesto_obra_" + presups[0].id;
+      }
+      return "presupuesto_interventoria";
+    }());
     setVista("detalle");
   };
   const sincronizarPolizasAU = (proyecto) => {
@@ -9111,8 +9284,20 @@ function ModuloProyectos({
 
   const abrirEditor = p => {
     const pSync = sincronizarIterativo(p);
-    setPActivo(pSync);
-    setTabEditor("presupuesto");
+    // Migrate legacy capitulos to presupuestosObra if needed
+    let pMigrated = pSync;
+    if ((!pSync.presupuestosObra || pSync.presupuestosObra.length === 0) && pSync.capitulos && pSync.capitulos.length > 0) {
+      pMigrated = Object.assign({}, pSync, {
+        presupuestosObra: [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pSync.capitulos }]
+      });
+    }
+    setPActivo(pMigrated);
+    // Set first presupuesto tab
+    const ps = pMigrated.presupuestosObra && pMigrated.presupuestosObra.length > 0
+      ? pMigrated.presupuestosObra[0]
+      : { id: "p0" };
+    const comps = pMigrated.componentes || [];
+    setTabEditor(comps.includes("obra") ? "presupuesto_obra_" + ps.id : "presupuesto_interventoria");
     setVista("editor");
   };
   const crearProyecto = form => {
@@ -9136,44 +9321,52 @@ function ModuloProyectos({
     setVista("lista");
   };
   const addCap = () => {
-    const n = pActivo.capitulos.length + 1;
-    const comp = pActivo.componentes[0] || "obra";
+    const n = (pActivo.capitulos||[]).length + 1;
+    const comp = (pActivo.componentes||[])[0] || "obra";
     const newCap = { id: Date.now(), numero: String(n), nombre: "NUEVO CAPÍTULO", tipo: comp, orden: n, items: [] };
-    setPActivo(p => ({ ...p, capitulos: [...p.capitulos, newCap] }));
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: [...(p.capitulos||[]), newCap] }));
     dbSaveCap(newCap, pActivo.id);
   };
   const delCap = id => {
-    setPActivo(p => ({ ...p, capitulos: p.capitulos.filter(c => c.id !== id) }));
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).filter(c => c.id !== id) }));
     dbDelCap(id, pActivo.id);
   };
   const updCap = (id, campo, val) => {
-    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id === id ? {...c,[campo]:val} : c) }));
-    const cap = pActivo.capitulos.find(c=>c.id===id);
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id === id ? {...c,[campo]:val} : c) }));
+    const cap = (pActivo.capitulos||[]).find(c=>c.id===id);
     if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id);
   };
+  // Helper: sync pActivo.capitulos → presupuestosObra[active] after mutations
+  const syncCapToPresup = (p) => {
+    if (!tabEditor.startsWith("presupuesto_obra_")) return p;
+    const psId = tabEditor.slice("presupuesto_obra_".length);
+    const list = (p.presupuestosObra||[]).map(ps => ps.id===psId ? {...ps, capitulos: p.capitulos||[]} : ps);
+    return {...p, presupuestosObra: list};
+  };
+
   const addItem = capId => {
-    const cap = pActivo.capitulos.find(c=>c.id===capId);
+    const cap = (pActivo.capitulos||[]).find(c=>c.id===capId);
     const item = { id: Date.now(), apuId: null, descripcion: "", unidad: "", cantidad: 1, orden: (cap?.items?.length||0) };
-    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id === capId ? {...c, items: [...c.items, item]} : c) }));
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id === capId ? {...c, items: [...(c.items||[]), item]} : c) }));
     setShowApuModal({ capId, itemId: item.id });
     setBusqApu("");
     if(cap) dbSaveItem(item, capId, cap.numero, pActivo.id);
   };
   const delIt = (capId, itemId) => {
-    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id===capId ? {...c, items:c.items.filter(i=>i.id!==itemId)} : c) }));
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c) }));
     dbDelItem(itemId, pActivo.id);
   };
   const updIt = (capId, itemId, campo, val) => {
-    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id===capId ? {...c, items:c.items.map(i=>i.id===itemId?{...i,[campo]:val}:i)} : c) }));
-    const cap = pActivo.capitulos.find(c=>c.id===capId);
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,[campo]:val}:i)} : c) }));
+    const cap = (pActivo.capitulos||[]).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
     if(cap&&item) { clearTimeout(window.__updItTimer__); window.__updItTimer__=setTimeout(()=>dbSaveItem({...item,[campo]:val},capId,cap.numero,pActivo.id),500); }
   };
   const selApu = apu => {
     const { capId, itemId } = showApuModal;
-    setPActivo(p => ({ ...p, capitulos: p.capitulos.map(c => c.id===capId ? {...c, items:c.items.map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c) }));
+    setPActivo(p => syncCapToPresup({ ...p, capitulos: (p.capitulos||[]).map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c) }));
     setShowApuModal(null);
-    const cap  = pActivo.capitulos.find(c=>c.id===capId);
+    const cap  = (pActivo.capitulos||[]).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
     if(cap&&item) dbSaveItem({...item,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad},capId,cap.numero,pActivo.id);
   };
@@ -9405,7 +9598,13 @@ function ModuloProyectos({
     const CL = { obra: "Obra", interventoria: "Interventoría", consultoria: "Consultoría", otros: "Otros" };
     const tabs = [];
     if (comps.includes("obra")) {
-      tabs.push({ id: "presupuesto_obra", l: "Presupuesto Obra" });
+      // Dynamic tabs per presupuesto
+      const presups = pActivo.presupuestosObra && pActivo.presupuestosObra.length > 0
+        ? pActivo.presupuestosObra
+        : [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pActivo.capitulos||[] }];
+      presups.forEach(function(ps) {
+        tabs.push({ id: "presupuesto_obra_" + ps.id, l: ps.nombre || "Presupuesto Obra" });
+      });
       tabs.push({ id: "au",               l: "C\xE1lculo A+U" });
       tabs.push({ id: "polizas_obra",     l: "P\xF3lizas Obra" });
       tabs.push({ id: "estampillas",      l: "Estampillas" });
@@ -9453,8 +9652,29 @@ function ModuloProyectos({
     const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
     const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal);
     return React.createElement(TabPolizas, { proyecto: pActivo, componenteId: "edeso", totalProyecto: _fichaR.totalRecursos, totalBase: _fichaR.totalRecursos, catalogoPolizas: catalogoPolizas || [], plazoProyecto: (pActivo.fichaFinanciera||{}).duracion || 0, setPolizas: (key, pol) => setPActivo(p => ({ ...p, polizasPorComp: { ...(p.polizasPorComp || {}), [key]: pol } })), setAU: au => setPActivo(p => ({ ...p, au })) });
-  })(), (tabEditor === "presupuesto_obra" || tabEditor === "presupuesto_interventoria" || tabEditor === "presupuesto_consultoria") && (() => {
-    const presupComp = tabEditor.slice(12);
+  })(), (tabEditor.startsWith("presupuesto_obra_")) && (() => {
+    // Dynamic presupuesto tab
+    const psId = tabEditor.slice("presupuesto_obra_".length);
+    const presups = pActivo.presupuestosObra && pActivo.presupuestosObra.length > 0
+      ? pActivo.presupuestosObra
+      : [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pActivo.capitulos||[] }];
+    const ps = presups.find(function(x){ return x.id === psId; }) || presups[0];
+    if (!ps) return null;
+    // Create a proxy proyecto for this presupuesto's capitulos
+    const proxyP = Object.assign({}, pActivo, { capitulos: ps.capitulos||[] });
+    const setProxy = function(upd) {
+      setPActivo(function(p) {
+        var list = (p.presupuestosObra && p.presupuestosObra.length > 0)
+          ? p.presupuestosObra.map(function(x){ return x.id===ps.id ? Object.assign({},x,{capitulos:typeof upd==="function"?upd(x.capitulos||[]):upd}):x; })
+          : [Object.assign({},ps,{capitulos:typeof upd==="function"?upd(ps.capitulos||[]):upd})];
+        return Object.assign({},p,{ presupuestosObra: list, capitulos: undefined });
+      });
+    };
+    return React.createElement(PresupuestoObraTab, { proyecto: proxyP, presupuesto: ps, setPActivo: setPActivo, setCapitulos: setProxy, apus: apus, recursos: recursos, perfil: perfil, session: session, allPresups: presups });
+  })(),
+  // Render obra body (shared with legacy) for presupuesto_obra_* tabs
+  (tabEditor.startsWith("presupuesto_obra_") || tabEditor === "presupuesto_interventoria" || tabEditor === "presupuesto_consultoria") && (() => {
+    const presupComp = tabEditor.startsWith("presupuesto_obra_") ? "obra" : tabEditor.slice(12);
     const presupLabel = presupComp === "obra" ? "Obra" : presupComp === "interventoria" ? "Interventor\xEDa" : presupComp === "consultoria" ? "Consultor\xEDa" : presupComp;
     const presupColor = presupComp === "obra" ? "var(--red)" : "#1D4ED8";
     if (presupComp === "interventoria") {
@@ -9957,7 +10177,12 @@ function ModuloProyectos({
     const polComp = pActivo.componentes || [];
     const TABS = [];
     if (polComp.includes("obra")) {
-      TABS.push({ id: "presupuesto_obra",  label: "Presupuesto Obra" });
+      const presups = pActivo.presupuestosObra && pActivo.presupuestosObra.length > 0
+        ? pActivo.presupuestosObra
+        : [{ id: "p0", nombre: "Presupuesto Obra" }];
+      presups.forEach(function(ps) {
+        TABS.push({ id: "presupuesto_obra_" + ps.id, label: ps.nombre || "Presupuesto Obra" });
+      });
       TABS.push({ id: "calculo_au",        label: "C\xE1lculo A+U" });
       TABS.push({ id: "polizas_obra",      label: "P\xF3lizas Obra" });
       TABS.push({ id: "estampillas",       label: "Estampillas" });
@@ -10059,8 +10284,18 @@ function ModuloProyectos({
       const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal);
       return React.createElement(TabPolizas, { proyecto: pActivo, componenteId: "edeso", totalProyecto: _fichaR.totalRecursos, totalBase: _fichaR.totalRecursos, catalogoPolizas: catalogoPolizas || [], plazoProyecto: (pActivo.fichaFinanciera||{}).duracion || 0, setPolizas: () => {}, setAU: () => {}, readOnly: true, perfil, session });
     })(),
-    (tabDetalle === "presupuesto_obra" || tabDetalle === "presupuesto_interventoria" || tabDetalle === "presupuesto_consultoria") && (() => {
-      const presupComp = tabDetalle.slice(12);
+    (tabDetalle.startsWith("presupuesto_obra_") || tabDetalle === "presupuesto_interventoria" || tabDetalle === "presupuesto_consultoria") && (() => {
+      const presupComp = tabDetalle.startsWith("presupuesto_obra_") ? "obra" : tabDetalle.slice(12);
+      // For obra tabs, inject the correct presupuesto's capitulos
+      let pActivo2 = pActivo;
+      if (presupComp === "obra") {
+        const psId = tabDetalle.slice("presupuesto_obra_".length);
+        const presups = pActivo.presupuestosObra && pActivo.presupuestosObra.length > 0
+          ? pActivo.presupuestosObra
+          : [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pActivo.capitulos||[] }];
+        const ps2 = presups.find(x => x.id === psId) || presups[0];
+        pActivo2 = Object.assign({}, pActivo, { capitulos: ps2 ? ps2.capitulos||[] : [] });
+      }
       if (presupComp === "interventoria") {
         return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, storageKey: "presupInterv", perfil, session, catalogoEstampillas: catalogoEstampillas || [] });
       }
