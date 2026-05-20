@@ -9212,7 +9212,7 @@ function ModuloProyectos({
     };
     return()=>{ window.__edeso_seccion_externa__=null; };
   },[pActivo?.id]);
-  const [busqApu, setBusqApu] = useState("");
+  const [busqApu, setBusqApu] = useState(""); const [selectedApuIds, setSelectedApuIds] = useState([]);
   const [delItem, setDelItem] = useState(null);
   const [capEdit, setCapEdit] = useState(null);
   const proyectosVisibles = useMemo(()=>{
@@ -9400,7 +9400,7 @@ function ModuloProyectos({
     const item = { id: Date.now(), apuId: null, descripcion: "", unidad: "", cantidad: 1, orden: (cap?.items?.length||0) };
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === capId ? {...c, items: [...(c.items||[]), item]} : c)));
     setShowApuModal({ capId, itemId: item.id });
-    setBusqApu("");
+    setBusqApu(""); setSelectedApuIds([]);
     if(cap) dbSaveItem(item, capId, cap.numero, pActivo.id);
   };
   const delIt = (capId, itemId) => {
@@ -9420,6 +9420,32 @@ function ModuloProyectos({
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
     if(cap&&item) dbSaveItem({...item,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad},capId,cap.numero,pActivo.id);
+  };
+  const selMultipleApus = () => {
+    if (!selectedApuIds.length || !showApuModal) return;
+    const { capId, itemId } = showApuModal;
+    const cap = getActiveCapitulos(pActivo).find(c => c.id === capId);
+    if (!cap) return;
+    const selected = apus.filter(a => selectedApuIds.includes(a.id));
+    if (!selected.length) return;
+    const first = selected[0];
+    const rest  = selected.slice(1);
+    const newItems = rest.map((a, i) => ({
+      id: Date.now() + i + 1, apuId: a.id,
+      descripcion: a.nombre, unidad: a.unidad,
+      cantidad: 1, orden: (cap.items?.length || 0) + i + 1
+    }));
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => {
+      if (c.id !== capId) return c;
+      const its = (c.items || []).map(i =>
+        i.id === itemId ? {...i, apuId:first.id, descripcion:first.nombre, unidad:first.unidad} : i
+      );
+      return {...c, items: [...its, ...newItems]};
+    })));
+    setShowApuModal(null); setSelectedApuIds([]);
+    const blankItem = cap.items?.find(i => i.id === itemId);
+    if (blankItem) dbSaveItem({...blankItem, apuId:first.id, descripcion:first.nombre, unidad:first.unidad}, capId, cap.numero, pActivo.id);
+    newItems.forEach(it => dbSaveItem(it, capId, cap.numero, pActivo.id));
   };
   const apusFiltrados = useMemo(() => {
     if (!busqApu.trim()) return apus;
@@ -10176,11 +10202,15 @@ function ModuloProyectos({
     }
   }, "Sin resultados")) : apusFiltrados.map(a => {
     const vu = calcAPUTotal(a, recursos);
+    const isSelected = selectedApuIds.includes(a.id);
     return /*#__PURE__*/React.createElement("tr", {
       key: a.id,
       className: "pick",
-      onClick: () => selApu(a)
-    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
+      style: { background: isSelected ? "var(--red-soft)" : "", outline: isSelected ? "1px solid var(--red-mid)" : "" },
+      onClick: () => setSelectedApuIds(prev => prev.includes(a.id) ? prev.filter(id => id !== a.id) : [...prev, a.id])
+    }, /*#__PURE__*/React.createElement("td", { style:{width:28,textAlign:"center"} },
+      React.createElement("input", { type:"checkbox", readOnly:true, checked:isSelected, style:{accentColor:"var(--red)",cursor:"pointer"} })
+    ), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
       style: {
         fontFamily: "var(--mono)",
         fontSize: 11,
@@ -10205,10 +10235,17 @@ function ModuloProyectos({
       justifyContent: "flex-end",
       marginTop: 14
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  },
+  React.createElement("button", {
     className: "btn-s",
-    onClick: () => setShowApuModal(null)
-  }, "Cancelar")))));
+    onClick: () => { setShowApuModal(null); setSelectedApuIds([]); }
+  }, "Cancelar"),
+  React.createElement("button", {
+    className: "btn-p",
+    disabled: selectedApuIds.length === 0,
+    onClick: selMultipleApus,
+    style: { opacity: selectedApuIds.length === 0 ? 0.4 : 1 }
+  }, selectedApuIds.length === 0 ? "Selecciona APUs" : `Agregar ${selectedApuIds.length} APU${selectedApuIds.length > 1 ? "s" : ""}`)))));
 
   // ── DETALLE ──
   if (vista === "detalle" && pActivo) {
