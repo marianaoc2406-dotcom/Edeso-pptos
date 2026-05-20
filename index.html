@@ -6214,21 +6214,21 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
       const st=i%2===0?ST.dataA():ST.dataB();
       s(ws,r,0,cap.numero,Cn(st)); s(ws,r,1,cap.nombre,st); s(ws,r,2,cap.tipo||'obra',Cn(st)); n(ws,r,3,cdC,R(st)); r++;
     });
-    return fin(ws,r,NC,[{wch:40},{wch:14},{wch:22},{wch:20}],M);
+    return fin(ws,r,NC,[{wch:50},{wch:16},{wch:24},{wch:22}],M);
   };
 
   // ═══════════════════════════════════════════════════════
   // HOJA 2 — PRESUPUESTO OBRA
   // ═══════════════════════════════════════════════════════
-  const crearPresupuesto=()=>{
+  const crearHojaPresupuestoUnica=(titulo, capitulos)=>{
     const ws={},M=[],NC=6; let r=0;
-    s(ws,r,0,'PRESUPUESTO DE OBRA',ST.titleDark(14)); fillR(ws,r,1,NC,ST.titleDark(14)); mrg(M,r,0,r,NC); r++;
+    s(ws,r,0,titulo,ST.titleDark(14)); fillR(ws,r,1,NC,ST.titleDark(14)); mrg(M,r,0,r,NC); r++;
     [['Proyecto:',proyecto.nombre],['Código:',proyecto.codigo],['Contratante:',proyecto.contratante||'—']].forEach(([l,v])=>{
       s(ws,r,0,l,ST.lbl()); s(ws,r,1,v,ST.val()); r++;
     }); r++;
     ['Ítem','Cód. APU','Descripción','Und','Cantidad','V. Unitario','V. Total'].forEach((h,c)=>s(ws,r,c,h,ST.colHdr())); r++;
     const chapCells=[]; let iRow=0;
-    (proyecto.capitulos||[]).forEach(cap=>{
+    (capitulos||[]).forEach(cap=>{
       s(ws,r,0,`CAP. ${cap.numero}`,ST.chapHdr()); blk(ws,r,1,ST.chapHdr());
       s(ws,r,2,cap.nombre.toUpperCase(),ST.chapHdr()); fillR(ws,r,3,NC,ST.chapHdr()); mrg(M,r,2,r,NC); r++;
       const iS=r;
@@ -6260,8 +6260,20 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     const totSt=ST.rowTot(),totVal=Math.round(res.total);
     fillR(ws,r,0,1,L(totSt)); fillR(ws,r,3,5,L(totSt));
     s(ws,r,2,'TOTAL PRESUPUESTO',L(totSt)); mrg(M,r,0,r,4); blk(ws,r,5,L(totSt));
-    f(ws,r,6,`${EC(cdR,6)}+${EC(aiuR,6)}`,totVal,R(totSt)); r++;
-    return fin(ws,r,NC,[{wch:7},{wch:13},{wch:54},{wch:7},{wch:12},{wch:18},{wch:20}],M);
+    f(ws,r,6,`${EC(cdR,6)}+${EC(aiuR,6)}`,totVal,R(totSt)); const totR=r; r++;
+    return {ws: fin(ws,r,NC,[{wch:8},{wch:14},{wch:62},{wch:8},{wch:14},{wch:22},{wch:24}],M), cdR, totR};
+  };
+
+  // crearPresupuesto principal: genera una hoja por cada presupuesto de obra
+  const crearPresupuesto=()=>{
+    const presups = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+      ? proyecto.presupuestosObra
+      : [{ id:'p0', nombre:'Presupuesto Obra', capitulos: proyecto.capitulos||[] }];
+    return presups.map(ps=>{
+      const nombre = ps.nombre || 'Presupuesto Obra';
+      const result = crearHojaPresupuestoUnica('PRESUPUESTO — '+nombre.toUpperCase(), ps.capitulos||[]);
+      return { ws: result.ws, nombre, cdR: result.cdR, totR: result.totR };
+    });
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6271,8 +6283,19 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     const ws={},M=[],NC=6; let r=0;
     s(ws,r,0,'ADMINISTRACIÓN Y UTILIDAD (A+U)',ST.titleDark(14)); fillR(ws,r,1,NC,ST.titleDark(14)); mrg(M,r,0,r,NC); r++;
     s(ws,r,0,'Costo Directo (CD):',ST.lbl());
-    n(ws,r,1,Math.round(cd),{...R(ST.val()),font:fnt(C.dark,11,true)});
-    s(ws,r,2,'← actualice este valor y las fórmulas recalculan automáticamente',
+    // Fórmula cross-sheet: suma el COSTO DIRECTO de cada hoja de presupuesto
+    const _presupSheets = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+      ? proyecto.presupuestosObra.map(ps => ps.nombre || 'Presupuesto Obra')
+      : ['Presupuesto Obra'];
+    const _cdCrossRefs = _auPresupCdRows
+      ? _presupSheets.map((nm,i)=> `'${nm}'!${_auPresupCdRows[i]||'G10'}`).join('+')
+      : null;
+    if(_cdCrossRefs){
+      f(ws,r,1,_cdCrossRefs,Math.round(cd),{...R(ST.val()),font:fnt(C.dark,11,true)});
+    } else {
+      n(ws,r,1,Math.round(cd),{...R(ST.val()),font:fnt(C.dark,11,true)});
+    }
+    s(ws,r,2,'CD = suma de hojas de presupuesto de obra',
       {...ST.val(),font:{name:'Calibri',sz:9,color:{rgb:C.ink3}},alignment:aln()});
     fillR(ws,r,3,NC,ST.val()); mrg(M,r,2,r,NC);
     const cdCell=EC(r,1); r++; r++;
@@ -6319,8 +6342,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     fillR(ws,r,1,NC,nSt); mrg(M,r,0,r,NC); r++; r++;
     const totAU=Math.round(res.valorAIU), totSt=ST.rowTot();
     fillR(ws,r,0,5,L(totSt)); s(ws,r,0,'TOTAL A+U',L(totSt)); mrg(M,r,0,r,5);
-    f(ws,r,6,allTots.map(x=>x.cell).join('+')||'0',totAU,R(totSt)); r++;
-    return fin(ws,r,NC,[{wch:40},{wch:8},{wch:7},{wch:16},{wch:7},{wch:8},{wch:20}],M);
+    f(ws,r,6,allTots.map(x=>x.cell).join('+')||'0',totAU,R(totSt)); const auTotR=r; r++;
+    return {ws: fin(ws,r,NC,[{wch:58},{wch:9},{wch:8},{wch:20},{wch:8},{wch:12},{wch:24}],M), auTotR};
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6349,8 +6372,12 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
      ['Valor base:','']].forEach(([l,v])=>{
       s(ws,r,0,l,ST.lbl()); s(ws,r,1,v||'',ST.val()); r++;
     });
-    // Valor base como número
-    n(ws,r-1,1,Math.round(vc),{...L(ST.val()),font:fnt(C.dark,11,true)});
+    // Valor base: fórmula cross-sheet al TOTAL del AU si es obra, sino número
+    if(cid==='obra' && _auTotRef){
+      f(ws,r-1,1,_auTotRef,Math.round(vc),{...L(ST.val()),font:fnt(C.dark,11,true)});
+    } else {
+      n(ws,r-1,1,Math.round(vc),{...L(ST.val()),font:fnt(C.dark,11,true)});
+    }
     const vcCell=EC(r-1,1);
 
     // Cabecera
@@ -6402,7 +6429,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     s(ws,r,0,'TOTAL PÓLIZAS',L(tSt)); mrg(M,r,0,r,9);
     primaConIVACells.length?f(ws,r,11,`SUM(${EC(r-polizas.length,11)}:${EC(r-1,11)})`,totPolVal,R(tSt)):n(ws,r,11,0,R(tSt));
     r++;
-    return fin(ws,r,NC,[{wch:30},{wch:12},{wch:18},{wch:14},{wch:18},{wch:10},{wch:12},{wch:12},{wch:12},{wch:18},{wch:12},{wch:18}],M);
+    return fin(ws,r,NC,[{wch:35},{wch:14},{wch:20},{wch:15},{wch:20},{wch:11},{wch:13},{wch:13},{wch:14},{wch:18},{wch:12},{wch:18}],M);
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6441,7 +6468,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     s(ws,r,0,'TOTAL ESTAMPILLAS',L(tSt)); blk(ws,r,1,tSt);
     valCells.length?f(ws,r,2,`SUM(${EC(r-activas.length,2)}:${EC(r-1,2)})`,totEst,R(tSt)):n(ws,r,2,0,R(tSt));
     blk(ws,r,3,tSt); r++;
-    return fin(ws,r,NC,[{wch:40},{wch:16},{wch:22},{wch:10}],M);
+    return fin(ws,r,NC,[{wch:50},{wch:18},{wch:24},{wch:12}],M);
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6522,7 +6549,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     const totSt=ST.intTot(cc.hbg,cc.hfg); fillR(ws,r,0,6,L(totSt));
     s(ws,r,0,`TOTAL ${lbl.toUpperCase()}`,L(totSt)); mrg(M,r,0,r,5);
     f(ws,r,7,chapCells.map(x=>x.cell).join('+')||'0',Math.round(totalGeneral),R(totSt)); r++;
-    return fin(ws,r,NC,[{wch:6},{wch:46},{wch:7},{wch:8},{wch:10},{wch:18},{wch:8},{wch:20}],M);
+    return fin(ws,r,NC,[{wch:7},{wch:58},{wch:9},{wch:10},{wch:11},{wch:20},{wch:10},{wch:22}],M);
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6574,7 +6601,112 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     fillR(ws,r,0,4,vuSt); s(ws,r,1,'VALOR UNITARIO APU',L(vuSt)); mrg(M,r,0,r,4);
     prCell?f(ws,r,5,`${tlCell}+${prCell}`,vuVal,R(vuSt)):ws[EC(r,5)]={t:'n',f:tlCell,v:tlVal,s:R(vuSt),z:'#,##0'};
     r++;
-    return fin(ws,r,NC,[{wch:22},{wch:46},{wch:7},{wch:14},{wch:16},{wch:18}],M);
+    return fin(ws,r,NC,[{wch:28},{wch:58},{wch:9},{wch:14},{wch:20},{wch:22}],M);
+  };
+
+
+  // ═══════════════════════════════════════════════════════
+  // HOJA — FICHA FINANCIERA (solo si tiene interventoría)
+  // ═══════════════════════════════════════════════════════
+  const crearHojaFichaFinanciera=()=>{
+    const ws={},M=[],NC=5; let r=0;
+    const obraT  = calcProyecto(proyecto,apus,recursos).total;
+    const intervT= calcTotalPresupInterv(proyecto.presupInterv);
+    const consultT= calcTotalPresupInterv(proyecto.presupConsult);
+    const ff     = proyecto.fichaFinanciera||{};
+    const R2     = calcFichaFinanciera(proyecto, obraT, intervT, consultT);
+    const fmt2   = v=>Math.round(v||0);
+    const hdrSt  = {...ST.titleDark(12)};
+    const secSt  = ()=>({fill:fl('1E3A5F'),font:fnt('FFFFFF',10,true),alignment:aln()});
+    const lblSt  = ()=>ST.lbl();
+    const valSt  = ()=>({...R(ST.val()),font:fnt(C.dark,10,true)});
+    const datA   = ()=>ST.dataA();
+    const datB   = ()=>ST.dataB();
+
+    // Título
+    s(ws,r,0,'FICHA FINANCIERA',hdrSt); fillR(ws,r,1,NC,hdrSt); mrg(M,r,0,r,NC); r++;
+    [['Proyecto:',proyecto.nombre],['Código:',proyecto.codigo],
+     ['Contratante:',proyecto.contratante||'—'],
+     ['Duración (meses):', R2.duracion]].forEach(([l,v],i)=>{
+      s(ws,r,0,l,lblSt());
+      typeof v==='number' ? n(ws,r,1,v,valSt()) : s(ws,r,1,v||'',valSt());
+      r++;
+    }); r++;
+
+    // Resumen de valores base
+    s(ws,r,0,'VALORES BASE',secSt()); fillR(ws,r,1,NC,secSt()); mrg(M,r,0,r,NC); r++;
+    [['Costo Total Obra (con A+U):',  obraT,   tieneObra2],
+     ['Costo Total Interventoría:',   intervT, tieneInterv2],
+     ['Costo Total Consultoría:',     consultT,tieneConsult2],
+    ].forEach(([l,v,show],i)=>{
+      if(!show) return;
+      const st=i%2===0?datA():datB();
+      s(ws,r,0,l,st); n(ws,r,1,fmt2(v),R(st)); r++;
+    });
+    const subtDirR=r;
+    const sdSt=ST.subtot();
+    fillR(ws,r,0,0,sdSt); s(ws,r,0,'SUBTOTAL DIRECTO',L(sdSt));
+    n(ws,r,1,fmt2(R2.subtotalDirecto),R(sdSt)); const subtDirCell=EC(r,1); r++; r++;
+
+    // Componente Personal
+    if((ff.componentesPersonal||[]).length){
+      s(ws,r,0,'COMPONENTE DE PERSONAL',secSt()); fillR(ws,r,1,NC,secSt()); mrg(M,r,0,r,NC); r++;
+      ['Descripción','Valor'].forEach((h,i)=>s(ws,r,i,h,ST.colHdr())); r++;
+      const pers=ff.componentesPersonal||[]; const pS=r;
+      pers.forEach((it,i)=>{
+        const st=i%2===0?datA():datB();
+        s(ws,r,0,it.descripcion||'',st); n(ws,r,1,fmt2(it.valor),R(st)); r++;
+      });
+      const pE=r-1; const pSt=ST.subtot();
+      fillR(ws,r,0,0,pSt); s(ws,r,0,'Subtotal Personal',L(pSt));
+      pE>=pS?f(ws,r,1,`SUM(${EC(pS,1)}:${EC(pE,1)})`,fmt2(R2.totalPersonal),R(pSt)):n(ws,r,1,0,R(pSt));
+      r++; r++;
+    }
+
+    // Helper para componentes con Cant × Meses × VUnit
+    const addComp=(titulo,items,total)=>{
+      if(!items||!items.length) return;
+      s(ws,r,0,titulo,secSt()); fillR(ws,r,1,NC,secSt()); mrg(M,r,0,r,NC); r++;
+      ['Descripción','Und','Cant.','Meses','V. Unit.','Total'].forEach((h,i)=>s(ws,r,i,h,ST.colHdr())); r++;
+      const iS=r;
+      items.forEach((it,i)=>{
+        const st=i%2===0?datA():datB();
+        const tot=fmt2((it.cantidad||0)*(it.meses||1)*(it.valorUnit||0));
+        s(ws,r,0,it.descripcion||'',st);
+        s(ws,r,1,it.unidad||'mes',Cn(st));
+        n(ws,r,2,it.cantidad||0,R(st),'#,##0');
+        n(ws,r,3,it.meses||0,R(st),'#,##0');
+        n(ws,r,4,it.valorUnit||0,R(st));
+        f(ws,r,5,`${EC(r,2)}*${EC(r,3)}*${EC(r,4)}`,tot,R(st)); r++;
+      });
+      const iE=r-1; const tSt=ST.subtot();
+      fillR(ws,r,0,4,tSt); s(ws,r,0,`Subtotal ${titulo}`,L(tSt));
+      iE>=iS?f(ws,r,5,`SUM(${EC(iS,5)}:${EC(iE,5)})`,fmt2(total),R(tSt)):n(ws,r,5,0,R(tSt));
+      r++; r++;
+    };
+    addComp('COMPONENTE SOCIAL',       ff.componentesSocial,    R2.totalSocial);
+    addComp('COMPONENTE LOGÍSTICO',    ff.componentesLogistico, R2.totalLogistico);
+    addComp('COMPONENTE DE DISEÑO',    ff.componentesDiseno,    R2.totalDiseno);
+
+    // Subtotal indirecto
+    const siSt=ST.subtot();
+    fillR(ws,r,0,0,siSt); s(ws,r,0,'SUBTOTAL INDIRECTO',L(siSt));
+    n(ws,r,1,fmt2(R2.subtotalIndirecto),R(siSt)); r++; r++;
+
+    // Totales finales
+    [['Total Recursos (Directo + Indirecto)', R2.totalRecursos],
+     [`Honorarios (${(R2.pctHon*100).toFixed(0)}% sobre subtotal directo)`, R2.honorarios],
+     ['IVA 19% sobre honorarios', R2.iva],
+    ].forEach(([l,v],i)=>{
+      const st=i%2===0?datA():datB();
+      s(ws,r,0,l,st); n(ws,r,1,fmt2(v),R(st)); r++;
+    });
+    // Total Contrato
+    const tcSt={...ST.rowTot()};
+    fillR(ws,r,0,0,L(tcSt)); s(ws,r,0,'TOTAL CONTRATO EDESO',L(tcSt));
+    n(ws,r,1,fmt2(R2.totalContrato),R(tcSt)); r++;
+
+    return fin(ws,r,NC,[{wch:55},{wch:9},{wch:9},{wch:9},{wch:20},{wch:24}],M);
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6585,15 +6717,35 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
   const tieneConsult2= comps.includes('consultoria');
   const totObraBase  = calcProyecto(proyecto,apus,recursos).total;
 
+  // Registros de cross-sheet refs (se llenan al agregar hojas)
+  let _auPresupCdRows = null;  // array de cell-refs p/ej 'G12' de cada hoja ppto
+  let _auTotRef       = null;  // ref cross-sheet al TOTAL AU p/ej "'Cálculo A+U'!G45"
+
   const _addResumen    = ()=>XLSX.utils.book_append_sheet(wb,crearResumen(),'Resumen');
-  const _addPresup     = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearPresupuesto(),'Presupuesto Obra'); };
-  const _addAU         = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaAU(),'Cálculo A+U'); };
+  const _addPresup     = ()=>{
+    if(!tieneObra2) return;
+    const hojas = crearPresupuesto();
+    _auPresupCdRows = [];
+    hojas.forEach(h=>{
+      const nombre = h.nombre || 'Presupuesto Obra';
+      XLSX.utils.book_append_sheet(wb, h.ws, nombre);
+      // cdR es la row (0-indexed) donde está COSTO DIRECTO en esa hoja
+      _auPresupCdRows.push(`'${nombre}'!${EC(h.cdR,6)}`);
+    });
+  };
+  const _addAU = ()=>{
+    if(!tieneObra2) return;
+    const auResult = crearHojaAU();
+    XLSX.utils.book_append_sheet(wb, auResult.ws, 'Cálculo A+U');
+    _auTotRef = `'Cálculo A+U'!${EC(auResult.auTotR,6)}`;
+  };
   const _addPolizas    = ()=>{
     if(tieneObra2)    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('obra',totObraBase),'Pólizas Obra');
     if(tieneInterv2)  { const t=calcTotalPresupInterv(proyecto.presupInterv);  XLSX.utils.book_append_sheet(wb,crearHojaPolizas('interventoria',t),'Pólizas Interventoría'); }
     if(tieneConsult2) { const t=calcTotalPresupInterv(proyecto.presupConsult); XLSX.utils.book_append_sheet(wb,crearHojaPolizas('consultoria',t),'Pólizas Consultoría'); }
   };
   const _addEst        = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaEstampillas(totObraBase),'Estampillas'); };
+  const _addFicha      = ()=>{ XLSX.utils.book_append_sheet(wb,crearHojaFichaFinanciera(),'Ficha Financiera'); };
   const _addInterv     = ()=>{
     if(tieneInterv2)  XLSX.utils.book_append_sheet(wb,crearPresupInterv('interventoria','presupInterv'),'Presup. Interventoría');
     if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría');
@@ -6603,69 +6755,96 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
 
   // Hoja consolidada de APUs (todos en una sola hoja)
   const crearHojaAPUsConsolidada = () => {
-    const ws={},M=[],NC=5; let r=0;
-    s(ws,r,0,'APUs USADOS — DESGLOSE COMPLETO',ST.titleDark(13));
+    const NC=6; const ws={},M=[]; let r=0;
+    const SC_COLOR = {
+      material:   {bg:'FFF8E1',fg:'92400E',hbg:'B45309',label:'MATERIALES'},
+      mano_obra:  {bg:'FEF3C7',fg:'92400E',hbg:'D97706',label:'MANO DE OBRA'},
+      maquinaria: {bg:'EFF6FF',fg:'1E3A5F',hbg:'1E40AF',label:'MAQUINARIA / EQUIPO / HERRAMIENTAS'},
+      transporte: {bg:'EFF6FF',fg:'1E3A5F',hbg:'1D4ED8',label:'TRANSPORTE'},
+    };
+    s(ws,r,0,'APUs — DESGLOSE COMPLETO',ST.titleDark(13));
     fillR(ws,r,1,NC,ST.titleDark(13)); mrg(M,r,0,r,NC); r++;
-    s(ws,r,0,`Proyecto: ${proyecto.nombre}`,ST.lbl()); fillR(ws,r,1,NC,ST.val()); mrg(M,r,0,r,NC); r++; r++;
+    s(ws,r,0,`Proyecto: ${proyecto.nombre}  |  Código: ${proyecto.codigo||'—'}`,ST.lbl());
+    fillR(ws,r,1,NC,ST.val()); mrg(M,r,0,r,NC); r++; r++;
 
-    apusUsados.forEach((apu,ai)=>{
-      // Header APU
-      const hdSt={fill:fill(C.dark2),font:fnt(C.white,11,true),border:box(C.dark),alignment:aln()};
-      s(ws,r,0,`${apu.codigo}`,hdSt);
-      s(ws,r,1,apu.nombre,{...hdSt,alignment:aln()});
-      fillR(ws,r,2,4,hdSt);
-      s(ws,r,3,`Unidad: ${apu.unidad}`,{...hdSt,alignment:aln('right')});
-      s(ws,r,4,`Valor: ${fmt(apu.valorUnitario)} / ${apu.unidad}`,{...hdSt,alignment:aln('right')});
-      mrg(M,r,1,r,2); r++;
+    apusUsados.forEach((apu)=>{
+      const apuObj = apus.find(x=>x.id===apu.id)||{lineas:[]};
+      // apuOverrides tiene los valores editados por proyecto (tienen prioridad)
+      const lineas = (proyecto.apuOverrides && proyecto.apuOverrides[apu.id])
+        ? proyecto.apuOverrides[apu.id]
+        : (apuObj.lineas||[]);
+      const vuVal  = Math.round(calcAPUTotal(apuObj, recursos));
 
-      // Column headers
-      ['Sección','Recurso','Und.','Cant./Rend.','P. Unitario','Subtotal'].forEach((h,c)=>s(ws,r,c,h,ST.colHdr())); r++;
+      // Cabecera APU
+      const hdSt={fill:fill(C.dark),font:fnt(C.white,11,true),border:box(C.dark),alignment:aln()};
+      const hdR ={fill:fill(C.red), font:fnt(C.white,11,true),border:box(C.red), alignment:aln('right')};
+      s(ws,r,0,apu.codigo||'',hdSt);
+      s(ws,r,1,apu.nombre||'',{...hdSt,alignment:aln()}); mrg(M,r,1,r,4);
+      s(ws,r,5,`${fmt(vuVal)} / ${apu.unidad||''}`,hdR);
+      fillR(ws,r,2,4,hdSt); r++;
+      const infoSt={fill:fill(C.dark2),font:fnt(C.white,9),border:box(C.dark2),alignment:aln()};
+      const moSub  = lineas.filter(l=>{const r2=recursos.find(x=>x.id===l.recursoId);return r2&&r2.categoria==='mano_obra';  }).reduce((ss,l)=>ss+calcLinea(l,recursos,lineas),0);
+      const maqSub = lineas.filter(l=>{const r2=recursos.find(x=>x.id===l.recursoId);return r2&&r2.categoria==='maquinaria'; }).reduce((ss,l)=>ss+calcLinea(l,recursos,lineas),0);
+      const traSub = lineas.filter(l=>{const r2=recursos.find(x=>x.id===l.recursoId);return r2&&r2.categoria==='transporte'; }).reduce((ss,l)=>ss+calcLinea(l,recursos,lineas),0);
+      const matSub = lineas.filter(l=>{const r2=recursos.find(x=>x.id===l.recursoId);return r2&&r2.categoria==='material';   }).reduce((ss,l)=>ss+calcLinea(l,recursos,lineas),0);
+      s(ws,r,0,`Unidad: ${apu.unidad||''}`,infoSt);
+      s(ws,r,1,`M.O.: ${fmt(Math.round(moSub))}   Maq+Herr: ${fmt(Math.round(maqSub+moSub*0.05))}   Transp: ${fmt(Math.round(traSub))}   Mat: ${fmt(Math.round(matSub))}`,{...infoSt,alignment:aln()});
+      mrg(M,r,1,r,NC); r++;
 
-      const apuObj=apus.find(x=>x.id===apu.id)||{lineas:[]};
-      const secTots=[]; let moCell=null; let iRow=0;
+      // Cabecera columnas
+      ['Código','Recurso','Und.','Cant./Rend.','P. Unitario','Subtotal'].forEach((h,i)=>s(ws,r,i,h,ST.colHdr())); r++;
 
-      SECCIONES_APU.forEach(sec=>{
-        const ls=(apuObj.lineas||[]).filter(l=>{const rec=recursos.find(x=>x.id===l.recursoId);return rec&&rec.categoria===sec.id;});
+      const secTots=[]; let moSubtotCell=null; let iRow=0;
+
+      ['mano_obra','maquinaria','transporte','material'].forEach(catId=>{
+        const secInfo = SECCIONES_APU.find(s2=>s2.id===catId)||{usa:'cantidad'};
+        const sc = SC_COLOR[catId]||{bg:C.line2,fg:C.dark,hbg:C.dark3,label:catId};
+        const ls = lineas.filter(l=>{const r2=recursos.find(x=>x.id===l.recursoId);return r2&&r2.categoria===catId;});
         if(!ls.length) return;
-        const sc=APU_SC[sec.id]||{bg:C.dark3,fg:C.white};
-        s(ws,r,0,sec.label.toUpperCase(),ST.apuSecH(sc.bg,C.white));
-        fillR(ws,r,1,NC,ST.apuSecH(sc.bg,C.white)); mrg(M,r,0,r,NC); r++;
+        const secHSt={fill:fill(sc.hbg),font:fnt(C.white,10,true),border:box(sc.hbg),alignment:aln()};
+        s(ws,r,0,sc.label,secHSt); fillR(ws,r,1,NC,secHSt); mrg(M,r,0,r,NC); r++;
         const sS=r;
         ls.forEach(l=>{
           const rec=recursos.find(x=>x.id===l.recursoId); if(!rec) return;
-          const val=sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0),sub=val*(rec.precio||0);
-          const stD=iRow%2===0?{fill:fill(C.white),font:fnt(C.dark,10),border:box(),alignment:aln()}:{fill:fill(sc.bg),font:fnt(C.dark,10),border:box(),alignment:aln()};
-          s(ws,r,0,sec.label,stD); s(ws,r,1,rec.nombre,stD); s(ws,r,2,rec.unidad||'',Cn(stD));
-          n(ws,r,3,val,R(stD),'#,##0.0000'); n(ws,r,4,rec.precio||0,R(stD));
-          f(ws,r,5,`${EC(r,3)}*${EC(r,4)}`,Math.round(sub),R(stD)); iRow++; r++;
+          const sub   = calcLinea(l,recursos,lineas);
+          const precio= rec.precio||0;
+          const val   = precio>0 ? sub/precio : (l.cantidad||l.rendimiento||0);
+          const st=iRow%2===0
+            ?{fill:fill(C.white),font:fnt(C.dark,10),border:box(),alignment:aln()}
+            :{fill:fill(sc.bg), font:fnt(C.dark,10),border:box(),alignment:aln()};
+          s(ws,r,0,rec.codigo||'—',Cn(st));
+          s(ws,r,1,rec.nombre||'',st);
+          s(ws,r,2,rec.unidad||'',Cn(st));
+          n(ws,r,3,val,  R(st),'#,##0.0000');
+          n(ws,r,4,precio,R(st));
+          f(ws,r,5,`${EC(r,3)}*${EC(r,4)}`,Math.round(sub),R(st));
+          iRow++; r++;
         });
+        if(catId==='maquinaria'&&moSubtotCell){
+          const hmVal=Math.round(moSub*0.05);
+          const hmSt={fill:fill(C.amb),font:fnt(C.ambH,10,true),border:box(C.ambH),alignment:aln()};
+          s(ws,r,0,'—',Cn(hmSt)); s(ws,r,1,'Herramienta menor (5% M.O.)',hmSt);
+          s(ws,r,2,'%MO',Cn(hmSt)); n(ws,r,3,0.05,R(hmSt),'0.00%');
+          f(ws,r,4,`${moSubtotCell}`,Math.round(moSub),R(hmSt));
+          f(ws,r,5,`${EC(r,3)}*${EC(r,4)}`,hmVal,R(hmSt)); r++;
+        }
         const sE=r-1;
-        const sVal=ls.reduce((ss,l)=>{const rec=recursos.find(x=>x.id===l.recursoId);if(!rec)return ss;return ss+(sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0))*(rec.precio||0);},0);
-        const sSt=ST.apuSubt(sc.bg,sc.fg);
-        fillR(ws,r,0,4,sSt); s(ws,r,1,`Subtotal ${sec.label}`,L(sSt));
-        sS<=sE?f(ws,r,5,`SUM(${EC(sS,5)}:${EC(sE,5)})`,Math.round(sVal),R(sSt)):n(ws,r,5,0,R(sSt));
-        if(sec.id==='mano_obra') moCell=EC(r,5);
-        secTots.push({cell:EC(r,5),val:Math.round(sVal)}); r++; r++;
+        const secVal=ls.reduce((ss,l)=>ss+calcLinea(l,recursos,lineas),0)+(catId==='maquinaria'?moSub*0.05:0);
+        const sSt={fill:fill(sc.hbg),font:fnt(C.white,10,true),border:box(sc.hbg),alignment:aln('right')};
+        fillR(ws,r,0,4,{...sSt,alignment:aln()});
+        s(ws,r,1,`Subtotal ${sc.label}`,{...sSt,alignment:aln()});
+        sE>=sS?f(ws,r,5,`SUM(${EC(sS,5)}:${EC(sE,5)})`,Math.round(secVal),R(sSt)):n(ws,r,5,0,R(sSt));
+        if(catId==='mano_obra') moSubtotCell=EC(r,5);
+        secTots.push({cell:EC(r,5),val:Math.round(secVal)}); r++; r++;
       });
 
-      const tlVal=secTots.reduce((ss,x)=>ss+x.val,0); const sv=ST.subtot();
-      fillR(ws,r,0,4,sv); s(ws,r,1,'Total líneas',L(sv));
-      f(ws,r,5,secTots.map(x=>x.cell).join('+')||'0',tlVal,R(sv)); const tlCell=EC(r,5); r++;
-      const moTotal=calcTotalMO(apuObj.lineas,recursos); let prCell=null;
-      if(moTotal>0&&moCell){
-        const prVal=Math.round(moTotal*0.05);
-        const prSt={fill:fill(C.amb),font:fnt(C.ambH,10,true),border:box(C.ambH),alignment:aln('right')};
-        fillR(ws,r,0,4,prSt); s(ws,r,1,'Prestaciones sobre M.O. (5%)',L(prSt));
-        f(ws,r,5,`${moCell}*0.05`,prVal,R(prSt)); prCell=EC(r,5); r++;
-      }
-      const vuVal=Math.round(calcAPUTotal(apu,recursos)); const vuSt=ST.apuTot();
-      fillR(ws,r,0,4,vuSt); s(ws,r,1,'VALOR UNITARIO APU',L(vuSt)); mrg(M,r,0,r,4);
-      if(prCell) f(ws,r,5,`${tlCell}+${prCell}`,vuVal,R(vuSt));
-      else ws[EC(r,5)]={t:'n',f:tlCell,v:tlVal,s:R(vuSt),z:'#,##0'};
-      r++; r++; // Space between APUs
+      const vuSt ={fill:fill(C.dark),font:fnt(C.white,11,true),border:box(C.dark),alignment:aln()};
+      const vuRSt={fill:fill(C.red), font:fnt(C.white,12,true),border:box(C.red), alignment:aln('right')};
+      fillR(ws,r,0,4,vuSt); s(ws,r,1,'VALOR UNITARIO APU',{...vuSt,alignment:aln()});
+      f(ws,r,5,secTots.map(x=>x.cell).join('+')||'0',vuVal,R(vuRSt)); r++; r++;
     });
 
-    return fin(ws,r,NC,[{wch:22},{wch:46},{wch:7},{wch:14},{wch:16},{wch:18}],M);
+    return fin(ws,r,NC,[{wch:14},{wch:62},{wch:9},{wch:14},{wch:20},{wch:22}],M);
   };
 
   // ── Descargar ──────────────────────────────────────────
@@ -6679,7 +6858,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
   else if(opcion==='interventoria'){ _addInterv(); }
   else if(opcion==='consultoria'){ if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría'); }
   else if(opcion==='apus')       { _addAPUs(); }
-  else                           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
+  else                           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addFicha();_addAPUs(); }
 
   descargarExcel(wb, fname);
 }
@@ -7465,13 +7644,13 @@ function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, o
   );
 }
 
-function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose}) {
+function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampillas, plantillasAU, esVisor, onClose}) {
   const [allObs, setAllObs] = useState([]);
   const [busy,   setBusy]   = useState(true);
   const [openKey,setOpenKey]= useState(null);
   const [textos, setTextos] = useState({});
   const [replyTo,setReplyTo]= useState({});
-  const [tabActiva, setTabActiva] = useState("presupuesto");
+  const [tabActiva, setTabActiva] = useState("");
 
   const lk = (cid,idx) => cid+"__"+idx;
 
@@ -7482,6 +7661,14 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
       .order("created_at",{ascending:true})
       .then(({data})=>{ setAllObs(data||[]); setBusy(false); });
   };
+
+  // Set initial tab to first presupuesto
+  useEffect(()=>{
+    const firstPs = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+      ? proyecto.presupuestosObra[0]
+      : {id:"p0"};
+    setTabActiva("presupuesto_obra_"+firstPs.id);
+  },[]);
 
   useEffect(()=>{
     obsViewRef.current();
@@ -7543,161 +7730,97 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
   const tieneInterv = comps.includes("interventoria");
   const tieneConsult = comps.includes("consultoria");
   const apusUsados = getApusUsados(proyecto, apus, recursos);
+  const presupuestosObra2 = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+    ? proyecto.presupuestosObra
+    : [{id:"p0", nombre:"Presupuesto Obra", capitulos: proyecto.capitulos||[]}];
+  const comps2 = proyecto.componentes||[];
+  const _tieneObra   = comps2.includes("obra")||comps2.length===0;
+  const _tieneInterv = comps2.includes("interventoria");
+  const _tieneConsult= comps2.includes("consultoria");
+
   const tabs = [
-    {id:"presupuesto",          label:"Presupuesto Obra",         show:tieneObra},
-    {id:"polizas_obra",         label:"Pólizas Obra",             show:tieneObra},
-    {id:"estampillas",          label:"Estampillas",              show:tieneObra},
-    {id:"calculo_au",           label:"Cálculo A+U",              show:tieneObra},
-    {id:"presupInterv",         label:"Presup. Interventoría",    show:tieneInterv},
-    {id:"polizas_interventoria",label:"Pólizas Interventoría",    show:tieneInterv},
-    {id:"presupConsult",        label:"Presup. Consultoría",      show:tieneConsult},
-    {id:"polizas_consultoria",  label:"Pólizas Consultoría",      show:tieneConsult},
-    {id:"apus_usados",          label:`APUs Proyectos (${apusUsados.length})`, show:apusUsados.length>0},
+    ...(_tieneObra ? presupuestosObra2.map(ps=>({id:"presupuesto_obra_"+ps.id, label:ps.nombre||"Presupuesto Obra", show:true})) : []),
+    {id:"calculo_au",              label:"Cálculo A+U",               show:_tieneObra},
+    {id:"polizas_obra",            label:"Pólizas Obra",              show:_tieneObra},
+    {id:"estampillas",             label:"Estampillas",               show:_tieneObra},
+    {id:"presupuesto_interventoria",label:"Presupuesto Interventoría",show:_tieneInterv},
+    {id:"polizas_interventoria",   label:"Pólizas Interventoría",     show:_tieneInterv},
+    {id:"presupuesto_consultoria", label:"Presupuesto Consultoría",   show:_tieneConsult},
+    {id:"polizas_consultoria",     label:"Pólizas Consultoría",       show:_tieneConsult},
+    {id:"polizas_edeso",           label:"Pólizas EDESO",             show:_tieneObra||_tieneInterv},
+    {id:"fichaFinanciera",         label:"Ficha Financiera",          show:_tieneObra||_tieneInterv},
+    {id:"apus_usados",             label:`APUs Proyectos (${apusUsados.length})`, show:apusUsados.length>0},
   ].filter(t=>t.show);
 
   const res = calcProyecto(proyecto, apus, recursos);
 
   // ── Render por tab ────────────────────────────────────────────────────────
   const renderTabContent = () => {
-    if(tabActiva==="presupuesto") return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-      (proyecto.capitulos||[]).map(cap=>{
-        const items=cap.items||[];
-        if(!items.length) return null;
-        const cdCap=items.reduce((s,it)=>s+calcItem(it,apus,recursos),0);
-        return React.createElement("div",{key:cap.id,className:"card",style:{overflow:"hidden"}},
-          React.createElement("div",{style:{background:"#1F2937",padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
-            React.createElement("div",{style:{display:"flex",gap:12,alignItems:"center"}},
-              React.createElement("span",{style:{color:"#9CA3AF",fontFamily:"var(--mono)",fontSize:11}},`CAP. ${cap.numero}`),
-              React.createElement("span",{style:{color:"#fff",fontWeight:700}},cap.nombre)
-            ),
-            React.createElement("span",{style:{fontFamily:"var(--mono)",color:"#6EE7B7",fontWeight:700}},fmt(cdCap))
-          ),
-          items.map((item,idx)=>{
-            const apu=apus.find(a=>a.id===item.apuId);
-            const vu=apu?calcAPUTotal(apu,recursos):0;
-            const vt=(item.cantidad||0)*vu;
-            const desc=item.descripcion||(apu?.nombre)||`Ítem ${idx+1}`;
-            return React.createElement("div",{key:item.id,style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk(cap.id,idx)?"#FFFBF0":"#fff"}},
-              React.createElement("div",{style:{display:"grid",gridTemplateColumns:"60px 1fr 70px 100px 120px 130px",gap:8,padding:"10px 20px",alignItems:"center"}},
-                React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--red)"}},`${cap.numero}.${idx+1}`),
-                React.createElement("div",null,
-                  React.createElement("div",{style:{fontSize:13,fontWeight:500}},desc),
-                  apu&&React.createElement("div",{style:{fontSize:10,color:"#9CA3AF"}},apu.codigo)
-                ),
-                React.createElement("div",{style:{fontSize:11,color:"#6B7280",textAlign:"center"}},item.unidad||(apu?.unidad||"")),
-                React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(item.cantidad,2)),
-                React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},apu?fmt(vu):"—"),
-                React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:13,textAlign:"right",fontWeight:700}},apu?fmt(vt):"—")
-              ),
-              React.createElement(HiloObs,{cid:cap.id,idx,desc,tabLabel:"Presupuesto Obra",allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
-            );
-          })
-        );
-      })
-    );
-
-    // Pólizas genérico
-    if(tabActiva.startsWith("polizas_")) {
-      const cid=tabActiva.slice(8);
-      const saved=(proyecto.polizasPorComp||{})[cid]||{polizasActivas:[]};
-      const polizas=saved.polizasActivas||[];
-      const tabL=tabActiva==="polizas_obra"?"Pólizas Obra":tabActiva==="polizas_interventoria"?"Pólizas Interventoría":"Pólizas Consultoría";
-      return React.createElement("div",{className:"card",style:{overflow:"hidden"}},
-        React.createElement("div",{style:{background:"#1F2937",padding:"10px 20px"}},
-          React.createElement("span",{style:{color:"#fff",fontWeight:700}},tabL)
-        ),
-        polizas.length===0
-          ?React.createElement("div",{style:{padding:32,textAlign:"center",color:"#9CA3AF"}},"Sin pólizas registradas")
-          :polizas.map((pol,idx)=>React.createElement("div",{key:pol.id||idx,
-              style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk(tabActiva,idx)?"#FFFBF0":"#fff"}},
-            React.createElement("div",{style:{padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}},
-              React.createElement("span",{style:{fontWeight:500,fontSize:13}},pol.nombre||"Póliza "+(idx+1)),
-              React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},(pol.pct||0)+"% · "+(pol.pctPrima||0)+"% prima")
-            ),
-            React.createElement(HiloObs,{cid:tabActiva,idx,desc:pol.nombre||"Póliza "+(idx+1),tabLabel:tabL,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
-          ))
-      );
-    }
-
-    // Estampillas
-    if(tabActiva==="estampillas") {
-      const activas=(proyecto.estampillas?.activas)||[];
-      return React.createElement("div",{className:"card",style:{overflow:"hidden"}},
-        React.createElement("div",{style:{background:"#1F2937",padding:"10px 20px"}},
-          React.createElement("span",{style:{color:"#fff",fontWeight:700}},"Estampillas")
-        ),
-        activas.length===0
-          ?React.createElement("div",{style:{padding:32,textAlign:"center",color:"#9CA3AF"}},"Sin estampillas registradas")
-          :activas.map((est,idx)=>React.createElement("div",{key:est.id||idx,
-              style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk("estampillas",idx)?"#FFFBF0":"#fff"}},
-            React.createElement("div",{style:{padding:"10px 20px",display:"flex",justifyContent:"space-between"}},
-              React.createElement("span",{style:{fontWeight:500,fontSize:13}},est.nombre),
-              React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},(est.pct||0)+"%")
-            ),
-            React.createElement(HiloObs,{cid:"estampillas",idx,desc:est.nombre,tabLabel:"Estampillas",allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
-          ))
-      );
-    }
-
-    // Cálculo A+U
-    if(tabActiva==="calculo_au") {
-      const secciones=(proyecto.au?.secciones)||[];
+    // Presupuestos de obra
+    if(tabActiva.startsWith("presupuesto_obra_")) {
+      const psId=tabActiva.slice("presupuesto_obra_".length);
+      const presups=(proyecto.presupuestosObra&&proyecto.presupuestosObra.length)
+        ?proyecto.presupuestosObra:[{id:"p0",nombre:"Presupuesto Obra",capitulos:proyecto.capitulos||[]}];
+      const ps2=presups.find(x=>String(x.id)===String(psId))||presups[0]||{};
+      const psLabel=ps2.nombre||"Presupuesto Obra";
+      const capsToShow=ps2.capitulos||[];
       return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-        secciones.map(sec=>(sec.subsecciones||[]).map(sub=>{
-          const items=sub.items||[];
-          if(!items.length) return null;
-          return React.createElement("div",{key:sub.id,className:"card",style:{overflow:"hidden"}},
-            React.createElement("div",{style:{background:"#1F2937",padding:"8px 20px"}},
-              React.createElement("span",{style:{color:"#fff",fontWeight:700,fontSize:12}},sub.titulo)
-            ),
-            items.map((item,idx)=>React.createElement("div",{key:item.id||idx,
-                style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk("au_"+sub.id,idx)?"#FFFBF0":"#fff"}},
-              React.createElement("div",{style:{padding:"10px 20px",display:"flex",justifyContent:"space-between"}},
-                React.createElement("span",{style:{fontSize:13}},item.descripcion||"Ítem "+(idx+1)),
-                React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},fmt(item.valorMesBase||item.valorFijo||0))
-              ),
-              React.createElement(HiloObs,{cid:"au_"+sub.id,idx,desc:item.descripcion||"Ítem "+(idx+1),tabLabel:"Cálculo A+U",allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
-            ))
-          );
-        }))
-      );
-    }
-
-    // Presup. Interventoría / Consultoría
-    if(tabActiva==="presupInterv"||tabActiva==="presupConsult") {
-      const key=tabActiva==="presupInterv"?"presupInterv":"presupConsult";
-      const lbl=tabActiva==="presupInterv"?"Presup. Interventoría":"Presup. Consultoría";
-      const capitulos=(proyecto[key]?.capitulos)||[];
-      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:12}},
-        capitulos.map(cap=>{
-          const items=cap.items||[];
-          if(!items.length) return null;
+        capsToShow.map(cap=>{
+          const items=cap.items||[]; if(!items.length) return null;
+          const cdCap=items.reduce((s,it)=>s+calcItem(it,apus,recursos),0);
           return React.createElement("div",{key:cap.id,className:"card",style:{overflow:"hidden"}},
-            React.createElement("div",{style:{background:"#1F2937",padding:"8px 20px"}},
-              React.createElement("span",{style:{color:"#fff",fontWeight:700,fontSize:12}},cap.titulo)
-            ),
-            items.map((item,idx)=>React.createElement("div",{key:item.id||idx,
-                style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk(key+"_"+cap.id,idx)?"#FFFBF0":"#fff"}},
-              React.createElement("div",{style:{padding:"10px 20px",display:"flex",justifyContent:"space-between"}},
-                React.createElement("span",{style:{fontSize:13}},item.descripcion||"Ítem "+(idx+1)),
-                React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},fmt(item.valorMesBase||item.valorFijo||0))
+            React.createElement("div",{style:{background:"#1F2937",padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
+              React.createElement("div",{style:{display:"flex",gap:12,alignItems:"center"}},
+                React.createElement("span",{style:{color:"#9CA3AF",fontFamily:"var(--mono)",fontSize:11}},`CAP. ${cap.numero}`),
+                React.createElement("span",{style:{color:"#fff",fontWeight:700}},cap.nombre)
               ),
-              React.createElement(HiloObs,{cid:key+"_"+cap.id,idx,desc:item.descripcion||"Ítem "+(idx+1),tabLabel:lbl,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
-            ))
+              React.createElement("span",{style:{fontFamily:"var(--mono)",color:"#6EE7B7",fontWeight:700}},fmt(cdCap))
+            ),
+            items.map((item,idx)=>{
+              const apu=apus.find(a=>a.id===item.apuId);
+              const vu=apu?calcAPUTotal(apu,recursos):0;
+              const vt=(item.cantidad||0)*vu;
+              const desc=item.descripcion||(apu?.nombre)||`Ítem ${idx+1}`;
+              return React.createElement("div",{key:item.id,style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk(cap.id,idx)?"#FFFBF0":"#fff"}},
+                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"60px 1fr 70px 100px 120px 130px",gap:8,padding:"10px 20px",alignItems:"center"}},
+                  React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--red)"}},`${cap.numero}.${idx+1}`),
+                  React.createElement("div",null,
+                    React.createElement("div",{style:{fontSize:13,fontWeight:500}},desc),
+                    apu&&React.createElement("div",{style:{fontSize:10,color:"#9CA3AF"}},apu.codigo)
+                  ),
+                  React.createElement("div",{style:{fontSize:11,color:"#6B7280",textAlign:"center"}},item.unidad||(apu?.unidad||"")),
+                  React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(item.cantidad,2)),
+                  React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},apu?fmt(vu):"—"),
+                  React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:13,textAlign:"right",fontWeight:700}},apu?fmt(vt):"—")
+                ),
+                React.createElement(HiloObs,{cid:cap.id,idx,desc,tabLabel:psLabel,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+              );
+            })
           );
         })
       );
     }
-    // APUs Proyectos
+    if(tabActiva==="calculo_au")
+      return React.createElement(TabAU,{au:proyecto.au||{},setAu:()=>{},cd:calcCD(proyecto,apus,recursos),total:calcProyecto(proyecto,apus,recursos).total,plantillasAU:plantillasAU||[],readOnly:true,perfil,session});
+    if(tabActiva.startsWith("polizas_")){
+      const cid=tabActiva.slice(8);
+      const tot=calcProyecto(proyecto,apus,recursos).total;
+      return React.createElement(TabPolizas,{proyecto,componenteId:cid,plazoProyecto:(proyecto.au||{}).plazo||0,totalProyecto:tot,totalBase:tot,catalogoPolizas:[],readOnly:true,perfil,session,setPolizas:()=>{},setAU:()=>{}});
+    }
+    if(tabActiva==="estampillas")
+      return React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:calcProyecto(proyecto,apus,recursos).total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}});
+    if(tabActiva==="presupuesto_interventoria")
+      return React.createElement(TabPresupuestoInterventoria,{proyecto,setPActivo:()=>{},readOnly:true,storageKey:"presupInterv",perfil,session,catalogoEstampillas:catalogoEstampillas||[]});
+    if(tabActiva==="presupuesto_consultoria")
+      return React.createElement(TabPresupuestoConsultoria,{proyecto,setPActivo:()=>{},readOnly:true,perfil,session,catalogoEstampillas:catalogoEstampillas||[]});
+    if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera")
+      return React.createElement(TabFichaFinanciera,{proyecto,setPActivo:()=>{},apus,recursos,readOnly:true,perfil,session});
     if(tabActiva==="apus_usados") return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:16}},
-      apusUsados.map((apu,apuIdx)=>{
+      apusUsados.map((apu)=>{
         const apuObj=apus.find(x=>x.id===apu.id)||{lineas:[]};
-        const lineas=apuObj.lineas||[];
+        const lineas=(proyecto.apuOverrides&&proyecto.apuOverrides[apu.id])?proyecto.apuOverrides[apu.id]:(apuObj.lineas||[]);
         const moTotal=calcTotalMO(lineas,recursos);
-        const SEC_COLORS={
-          material:{bg:"#FEE2E2",fg:"#C81E1E"},mano_obra:{bg:"#FEF3C7",fg:"#B45309"},
-          maquinaria:{bg:"#F5F3FF",fg:"#6D28D9"},transporte:{bg:"#EFF6FF",fg:"#1D4ED8"}
-        };
+        const SC={material:{bg:"#FEE2E2",fg:"#C81E1E"},mano_obra:{bg:"#FEF3C7",fg:"#B45309"},maquinaria:{bg:"#F5F3FF",fg:"#6D28D9"},transporte:{bg:"#EFF6FF",fg:"#1D4ED8"}};
         return React.createElement("div",{key:apu.id,className:"card",style:{overflow:"hidden"}},
           React.createElement("div",{style:{background:"#1F2937",padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
             React.createElement("div",{style:{display:"flex",gap:12,alignItems:"center"}},
@@ -7709,40 +7832,38 @@ function TabObsView({proyecto, apus, recursos, perfil, session, esVisor, onClose
           SECCIONES_APU.map(sec=>{
             const ls=lineas.filter(l=>{const r=recursos.find(x=>x.id===l.recursoId);return r&&r.categoria===sec.id;});
             if(!ls.length) return null;
-            const sc=SEC_COLORS[sec.id]||{bg:"#F3F4F6",fg:"#374151"};
-            const sub=ls.reduce((s,l)=>{const r=recursos.find(x=>x.id===l.recursoId);if(!r)return s;return s+(sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0))*(r.precio||0);},0);
+            const sc=SC[sec.id]||{bg:"#F3F4F6",fg:"#374151"};
             return React.createElement("div",{key:sec.id},
               React.createElement("div",{style:{background:sc.bg,padding:"6px 20px",display:"flex",justifyContent:"space-between"}},
                 React.createElement("span",{style:{fontSize:11,fontWeight:700,textTransform:"uppercase",color:sc.fg}},sec.label),
-                React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,fontWeight:700,color:sc.fg}},fmt(sub))
+                React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,fontWeight:700,color:sc.fg}},fmt(Math.round(ls.reduce((s,l)=>s+calcLinea(l,recursos,lineas),0))))
               ),
-              ls.map((l,lIdx)=>{
-                const r=recursos.find(x=>x.id===l.recursoId);if(!r)return null;
-                const val=sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0);
-                const subL=val*(r.precio||0);
-                const cid="apu_"+apu.id+"_"+sec.id;
-                const desc=r.nombre||"Recurso "+(lIdx+1);
-                return React.createElement("div",{key:l.id||lIdx,style:{borderBottom:"1px solid #F3F4F6",background:openKey===lk(cid,lIdx)?"#FFFBF0":"#fff"}},
-                  React.createElement("div",{style:{display:"grid",gridTemplateColumns:"80px 1fr 70px 110px 120px 120px",gap:8,padding:"8px 20px",alignItems:"center"}},
-                    React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--ink3)"}},r.codigo||"—"),
-                    React.createElement("div",null,
-                      React.createElement("div",{style:{fontSize:13,fontWeight:500}},r.nombre),
-                      React.createElement("div",{style:{fontSize:10,color:"#9CA3AF"}},r.unidad)
-                    ),
-                    React.createElement("div",{style:{fontSize:11,color:"#6B7280",textAlign:"center"}},r.unidad||""),
-                    React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(val,4)),
-                    React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt(r.precio||0)),
-                    React.createElement("div",{style:{fontFamily:"var(--mono)",fontSize:13,textAlign:"right",fontWeight:700}},fmt(subL))
-                  ),
-                  React.createElement(HiloObs,{cid,idx:lIdx,desc,tabLabel:"APU "+apu.codigo,allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo})
+              ls.map((l,li)=>{
+                const rec=recursos.find(x=>x.id===l.recursoId); if(!rec) return null;
+                const sub=calcLinea(l,recursos,lineas);
+                const val=rec.precio>0?sub/rec.precio:(l.cantidad||l.rendimiento||0);
+                return React.createElement("div",{key:l.id||li,style:{padding:"8px 20px",borderBottom:"1px solid #F3F4F6",display:"grid",gridTemplateColumns:"auto 1fr 60px 90px 100px 110px",gap:8,alignItems:"center"}},
+                  React.createElement("code",{style:{fontSize:10,color:"#9CA3AF",fontFamily:"var(--mono)"}},rec.codigo||"—"),
+                  React.createElement("span",{style:{fontSize:12}},rec.nombre),
+                  React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",textAlign:"center"}},rec.unidad||""),
+                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(val,4)),
+                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt(rec.precio||0)),
+                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",fontWeight:700}},fmt(Math.round(sub)))
                 );
-              })
+              }),
+              moTotal>0&&sec.id==="maquinaria"&&React.createElement("div",{style:{padding:"6px 20px",background:"#FEF3C7",display:"flex",justifyContent:"space-between"}},
+                React.createElement("span",{style:{fontSize:11,color:"#92400E"}},"Herramienta menor (5% M.O.)"),
+                React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,fontWeight:700,color:"#92400E"}},fmt(Math.round(moTotal*0.05)))
+              )
             );
-          })
+          }),
+          React.createElement("div",{style:{background:"#1F2937",padding:"10px 20px",display:"flex",justifyContent:"space-between"}},
+            React.createElement("span",{style:{color:"#fff",fontWeight:700}},"VALOR UNITARIO APU"),
+            React.createElement("span",{style:{fontFamily:"var(--mono)",color:"#6EE7B7",fontWeight:700}},fmt(apu.valorUnitario)+" / "+apu.unidad)
+          )
         );
       })
     );
-
     return null;
   };
 
@@ -10222,6 +10343,8 @@ function ModuloProyectos({
     );
     if (obsMode || esVisor) return React.createElement(TabObsView, {
       proyecto: pActivo, apus, recursos, perfil, session,
+      catalogoEstampillas: catalogoEstampillas||[],
+      plantillasAU: plantillasAU||[],
       esVisor,
       onClose: esVisor ? null : () => setObsMode(false)
     });
@@ -10347,9 +10470,8 @@ function ModuloProyectos({
           ? pActivo.presupuestosObra
           : [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pActivo.capitulos||[] }];
         const ps2 = presups.find(x => x.id === psId) || presups[0];
-        pActivo2 = Object.assign({}, pActivo, { capitulos: ps2 ? ps2.capitulos||[] : [], presupuestosObra: [] });
+        pActivo2 = Object.assign({}, pActivo, { capitulos: ps2 ? ps2.capitulos||[] : [] });
       }
-      const res2 = (presupComp === "obra") ? calcProyecto(pActivo2, apus, recursos) : res;
       if (presupComp === "interventoria") {
         return React.createElement(TabPresupuestoInterventoria, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, storageKey: "presupInterv", perfil, session, catalogoEstampillas: catalogoEstampillas || [] });
       }
@@ -10443,17 +10565,17 @@ function ModuloProyectos({
       }
     }, /*#__PURE__*/React.createElement(MetricCard, {
       label: "Costo Directo",
-      value: fmt(res2.cd),
+      value: fmt(res.cd),
       sub: "Suma de todos los cap\xEDtulos",
       accent: "#6B7280"
     }), /*#__PURE__*/React.createElement(MetricCard, {
-      label: `C.I. (${fmtN(res2.pctAIU, 1)}%)`,
+      label: `C.I. (${fmtN(res.pctAIU, 1)}%)`,
       value: fmt(res.valorAIU),
-      sub: `A=${fmtN(res2.pctA, 2)}% I=${fmtN(res2.pctI, 2)}% U=${fmtN(res2.pctU, 2)}%`,
+      sub: `A=${fmtN(res.pctA, 2)}% I=${fmtN(res.pctI, 2)}% U=${fmtN(res.pctU, 2)}%`,
       accent: "#D97706"
     }), /*#__PURE__*/React.createElement(MetricCard, {
       label: "COSTO TOTAL",
-      value: fmt(res2.total),
+      value: fmt(res.total),
       sub: "C.D. + C.I.",
       accent: C.rojo
     })), /*#__PURE__*/React.createElement("div", {
@@ -10502,7 +10624,7 @@ function ModuloProyectos({
       }
     }, "% Incid."))), /*#__PURE__*/React.createElement("tbody", null, (pActivo.capitulos || []).filter(c => (c.tipo || "obra") === presupComp).map(cap => {
       const subCap = cap.items.reduce((s, it) => s + calcItem(it, apus, recursos), 0);
-      const pctCap = res2.cd > 0 ? subCap / res2.cd * 100 : 0;
+      const pctCap = res.cd > 0 ? subCap / res.cd * 100 : 0;
       const t = TIPOS_COMPONENTE.find(x => x.id === cap.tipo);
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: cap.id
@@ -10541,7 +10663,7 @@ function ModuloProyectos({
         const apu = apus.find(a => a.id === item.apuId);
         const vu = apu ? calcAPUTotal(apu, recursos) : 0;
         const vt = calcItem(item, apus, recursos);
-        const pctIt = res2.cd > 0 ? vt / res2.cd * 100 : 0;
+        const pctIt = res.cd > 0 ? vt / res.cd * 100 : 0;
         return /*#__PURE__*/React.createElement("tr", {
           key: item.id,
           style: {
@@ -10612,7 +10734,7 @@ function ModuloProyectos({
         fontFamily: "var(--mono)",
         fontSize: 13
       }
-    }, fmt(res2.cd)), /*#__PURE__*/React.createElement("td", {
+    }, fmt(res.cd)), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "12px 16px",
         textAlign: "right",
@@ -10621,11 +10743,11 @@ function ModuloProyectos({
         color: "var(--ink4)"
       }
     }, "100%")), [{
-      l: `Administración (${fmtN(res2.pctA, 2)}%)`,
-      v: res2.cd * res2.pctA / 100
+      l: `Administración (${fmtN(res.pctA, 2)}%)`,
+      v: res.cd * res.pctA / 100
     }, {
-      l: `Utilidad (${fmtN(res2.pctU, 2)}%)`,
-      v: res2.cd * res2.pctU / 100
+      l: `Utilidad (${fmtN(res.pctU, 2)}%)`,
+      v: res.cd * res.pctU / 100
     }].map(row => /*#__PURE__*/React.createElement("tr", {
       key: row.l,
       className: "aiu-row"
@@ -10667,7 +10789,7 @@ function ModuloProyectos({
         fontFamily: "var(--mono)",
         fontSize: 16
       }
-    }, fmt(res2.total)), /*#__PURE__*/React.createElement("td", {
+    }, fmt(res.total)), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "14px 16px",
         textAlign: "right",
