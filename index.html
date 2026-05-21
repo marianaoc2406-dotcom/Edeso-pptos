@@ -848,7 +848,7 @@ const CSS = `
     opacity: .6;
   }
   .metric-label { font-size: 11px; font-weight: 600; color: var(--ink4); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 8px; }
-  .metric-value { font-size: 24px; font-weight: 700; font-family: var(--mono); color: var(--ink); line-height: 1; letter-spacing: -.02em; }
+  .metric-value { font-size: clamp(13px,2vw,24px); font-weight: 700; font-family: var(--mono); color: var(--ink); line-height: 1.1; letter-spacing: -.02em; word-break: break-all; }
   .metric-sub { font-size: 11px; color: var(--ink4); margin-top: 6px; }
 
   /* ── FORMS ── */
@@ -1108,15 +1108,15 @@ function MetricCard({
   sub,
   accent
 }) {
+  const _vlen=String(value||"").replace(/[^\d]/g,"").length;
+  const _vsize=_vlen<=9?24:_vlen<=12?18:_vlen<=15?14:12;
   return /*#__PURE__*/React.createElement("div", {
     className: "metric-card",
-    style: {
-      "--accent": accent || C.rojo
-    }
+    style: { "--accent": accent || C.rojo }
   }, /*#__PURE__*/React.createElement("div", {
     className: "metric-label"
   }, label), /*#__PURE__*/React.createElement("div", {
-    className: "metric-value"
+    className: "metric-value", style:{fontSize:_vsize}
   }, value), sub && /*#__PURE__*/React.createElement("div", {
     className: "metric-sub"
   }, sub));
@@ -3015,7 +3015,7 @@ function TabAU({
     if (sub.id === "s1_3") (sub.items || []).forEach(i => { personal13 += calcAUItem(i, sub.tipo, cd, 0); });
   }));
   return /*#__PURE__*/React.createElement("div", null,
-    au.plazo > 0 && React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
+    React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
       React.createElement("div", { style:{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"} },
         React.createElement("div", { style:{fontSize:13,fontWeight:700,color:"var(--ink2)"} }, "\uD83D\uDCC5 Plazo del proyecto"),
         React.createElement("div", { style:{display:"flex",alignItems:"center",gap:8} },
@@ -3042,6 +3042,14 @@ function TabAU({
                   });
                 });
                 return Object.assign({}, prev, { plazo: v, secciones: secciones });
+              });
+              setPActivo(function(p) {
+                var polPorComp = Object.assign({}, p.polizasPorComp || {});
+                ["obra","interventoria","consultoria"].forEach(function(comp) {
+                  var pd = polPorComp[comp] || {};
+                  polPorComp[comp] = Object.assign({}, pd, { plazoContractual: v });
+                });
+                return Object.assign({}, p, { polizasPorComp: polPorComp });
               });
             }
           }) : React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:800,fontSize:15,color:"var(--ink)"} }, au.plazo || 0),
@@ -4304,7 +4312,7 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
               ),
               React.createElement("tr", { style:{background:"#DBEAFE",borderBottom:"2px solid #93C5FD"} },
                 React.createElement("td", { colSpan:7, style:{padding:"8px 16px",paddingLeft:28,fontSize:12,fontWeight:700,color:"#1E40AF"} },
-                  `FACTOR MULTIPLICADOR × SALARIOS (FM = ${fmtN(fm,2)})`),
+                  "FACTOR MULTIPLICADOR × SALARIOS"),
                 React.createElement("td", { style:{padding:"8px 16px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:800,color:"#1E40AF",fontSize:13} }, fmt(totalCap(cap))),
                 React.createElement("td")
               )
@@ -6207,37 +6215,14 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
       s(ws,r,0,lbl,L(st)); pp!==''?p(ws,r,1,pp,R(st)):blk(ws,r,1,R(st));
       n(ws,r,2,vv,R(st)); blk(ws,r,3,R(st)); mrg(M,r,2,r,NC); r++;
     }); r++;
-    // ── Por presupuesto de obra ───────────────────────────────
-    const presups2 = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
-      ? proyecto.presupuestosObra
-      : [{ id:"p0", nombre:"Presupuesto Obra", capitulos: proyecto.capitulos||[] }];
-
-    presups2.forEach(ps => {
-      const cdPs = (ps.capitulos||[]).reduce((ss,cap)=>
-        ss+(cap.items||[]).reduce((ss2,it)=>ss2+calcItem(it,apus,recursos),0),0);
-
-      // Cabecera del presupuesto
-      const psSt = ST.secRed();
-      s(ws,r,0,(ps.nombre||"Presupuesto Obra").toUpperCase(),L(psSt));
-      fillR(ws,r,1,NC,psSt); mrg(M,r,0,r,2);
-      n(ws,r,3,Math.round(cdPs),R(psSt)); r++;
-
-      // Columnas
-      ['Núm.','Capítulo','Tipo','CD (COP)'].forEach((h,ci)=>s(ws,r,ci,h,ST.colHdr())); r++;
-
-      // Filas de capítulos
-      (ps.capitulos||[]).forEach((cap,i)=>{
-        const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos),0);
-        const st=i%2===0?ST.dataA():ST.dataB();
-        s(ws,r,0,cap.numero,Cn(st));
-        s(ws,r,1,cap.nombre,st);
-        s(ws,r,2,cap.tipo||'obra',Cn(st));
-        n(ws,r,3,Math.round(cdC),R(st)); r++;
-      });
-      r++;
+    s(ws,r,0,'CAPÍTULOS',ST.secRed()); fillR(ws,r,1,NC,ST.secRed()); mrg(M,r,0,r,NC); r++;
+    ['Núm.','Nombre','Tipo','CD (COP)'].forEach((h,c)=>s(ws,r,c,h,ST.colHdr())); r++;
+    (proyecto.capitulos||[]).forEach((cap,i)=>{
+      const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos),0);
+      const st=i%2===0?ST.dataA():ST.dataB();
+      s(ws,r,0,cap.numero,Cn(st)); s(ws,r,1,cap.nombre,st); s(ws,r,2,cap.tipo||'obra',Cn(st)); n(ws,r,3,cdC,R(st)); r++;
     });
-
-    return fin(ws,r,NC,[{wch:12},{wch:55},{wch:14},{wch:24}],M);
+    return fin(ws,r,NC,[{wch:50},{wch:16},{wch:24},{wch:22}],M);
   };
 
   // ═══════════════════════════════════════════════════════
@@ -6640,7 +6625,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     const R2     = calcFichaFinanciera(proyecto, obraT, intervT, consultT);
     const fmt2   = v=>Math.round(v||0);
     const hdrSt  = {...ST.titleDark(12)};
-    const secSt  = ()=>({fill:fl('1E3A5F'),font:fnt('FFFFFF',10,true),alignment:aln()});
+    const secSt  = ()=>({fill:fill('1E3A5F'),font:fnt('FFFFFF',10,true),alignment:aln()});
     const lblSt  = ()=>ST.lbl();
     const valSt  = ()=>({...R(ST.val()),font:fnt(C.dark,10,true)});
     const datA   = ()=>ST.dataA();
@@ -6732,6 +6717,33 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     return fin(ws,r,NC,[{wch:55},{wch:9},{wch:9},{wch:9},{wch:20},{wch:24}],M);
   };
 
+
+  // ═══════════════════════════════════════════════════════
+  // HOJA — RESUMEN POR PRESUPUESTO
+  // ═══════════════════════════════════════════════════════
+  const crearHojaResumenObra=()=>{
+    const ws={},M=[],NC=3; let r=0;
+    s(ws,r,0,'RESUMEN POR PRESUPUESTO DE OBRA',ST.titleDark(14)); fillR(ws,r,1,NC,ST.titleDark(14)); mrg(M,r,0,r,NC); r++;
+    s(ws,r,0,`Proyecto: ${proyecto.nombre}`,ST.lbl()); fillR(ws,r,1,NC,ST.val()); mrg(M,r,0,r,NC); r++; r++;
+    const presups2=(proyecto.presupuestosObra&&proyecto.presupuestosObra.length)
+      ?proyecto.presupuestosObra:[{id:'p0',nombre:'Presupuesto Obra',capitulos:proyecto.capitulos||[]}];
+    presups2.forEach(ps=>{
+      const cdPs=(ps.capitulos||[]).reduce((ss,cap)=>ss+(cap.items||[]).reduce((ss2,it)=>ss2+calcItem(it,apus,recursos),0),0);
+      const psSt=ST.secRed();
+      s(ws,r,0,(ps.nombre||'Presupuesto Obra').toUpperCase(),L(psSt)); fillR(ws,r,1,NC,psSt); mrg(M,r,0,r,2);
+      n(ws,r,3,Math.round(cdPs),R(psSt)); r++;
+      ['Núm.','Capítulo','Tipo','CD (COP)'].forEach((h,ci)=>s(ws,r,ci,h,ST.colHdr())); r++;
+      (ps.capitulos||[]).forEach((cap,i)=>{
+        const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos),0);
+        const pct=cdPs>0?(cdC/cdPs*100).toFixed(1):'0.0';
+        const st=i%2===0?ST.dataA():ST.dataB();
+        s(ws,r,0,cap.numero,Cn(st)); s(ws,r,1,cap.nombre,st); s(ws,r,2,cap.tipo||'obra',Cn(st));
+        n(ws,r,3,Math.round(cdC),R(st)); r++;
+      });
+      r++;
+    });
+    return fin(ws,r,NC,[{wch:12},{wch:60},{wch:12},{wch:24}],M);
+  };
   // ═══════════════════════════════════════════════════════
   // ARMAR WORKBOOK según opción
   // ═══════════════════════════════════════════════════════
@@ -6749,10 +6761,13 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     if(!tieneObra2) return;
     const hojas = crearPresupuesto();
     _auPresupCdRows = [];
+    const _usedNames = {};
     hojas.forEach(h=>{
-      const nombre = h.nombre || 'Presupuesto Obra';
+      // Sanitizar nombre: max 31 chars, sin caracteres inválidos, sin duplicados
+      let nombre = (h.nombre || "Presupuesto Obra").replace(/[\/\\\?\*\[\]:]/g,"").slice(0,31).trim();
+      if (_usedNames[nombre]) { nombre = nombre.slice(0,28) + "_" + _usedNames[nombre]; }
+      _usedNames[nombre] = (_usedNames[nombre]||0) + 1;
       XLSX.utils.book_append_sheet(wb, h.ws, nombre);
-      // cdR es la row (0-indexed) donde está COSTO DIRECTO en esa hoja
       _auPresupCdRows.push(`'${nombre}'!${EC(h.cdR,6)}`);
     });
   };
@@ -6766,9 +6781,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
     if(tieneObra2)    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('obra',totObraBase),'Pólizas Obra');
     if(tieneInterv2)  { const t=calcTotalPresupInterv(proyecto.presupInterv);  XLSX.utils.book_append_sheet(wb,crearHojaPolizas('interventoria',t),'Pólizas Interventoría'); }
     if(tieneConsult2) { const t=calcTotalPresupInterv(proyecto.presupConsult); XLSX.utils.book_append_sheet(wb,crearHojaPolizas('consultoria',t),'Pólizas Consultoría'); }
-  };
-  const _addEst        = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaEstampillas(totObraBase),'Estampillas'); };
-  const _addFicha      = ()=>{ XLSX.utils.book_append_sheet(wb,crearHojaFichaFinanciera(),'Ficha Financiera'); };
+    XLSX.utils.book_append_sheet(wb,crearHojaPolizas('edeso',totObraBase),'Pólizas EDESO');
+  };;
+  const _addEst           = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaEstampillas(totObraBase),'Estampillas'); };
+  const _addResumenObra   = ()=>{ if(tieneObra2) XLSX.utils.book_append_sheet(wb,crearHojaResumenObra(),'Resumen Obra'); };
+  const _addFicha      = ()=>{ if(tieneObra2||tieneInterv2) XLSX.utils.book_append_sheet(wb,crearHojaFichaFinanciera(),'Ficha Financiera'); };
   const _addInterv     = ()=>{
     if(tieneInterv2)  XLSX.utils.book_append_sheet(wb,crearPresupInterv('interventoria','presupInterv'),'Presup. Interventoría');
     if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría');
@@ -6873,7 +6890,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
   // ── Descargar ──────────────────────────────────────────
   const fname=`EDESO_${(proyecto.codigo||'proyecto').replace(/[\/\\:*?"<>|]/g,'_')}.xlsx`;
 
-  if(opcion==='todo')           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addAPUs(); }
+  if(opcion==='todo')           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addFicha();_addResumenObra();_addAPUs(); }
   else if(opcion==='presupuesto'){ _addResumen();_addPresup(); }
   else if(opcion==='au')         { _addAU(); }
   else if(opcion==='polizas')    { _addPolizas(); }
@@ -6881,7 +6898,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion="todo", catEst) 
   else if(opcion==='interventoria'){ _addInterv(); }
   else if(opcion==='consultoria'){ if(tieneConsult2) XLSX.utils.book_append_sheet(wb,crearPresupInterv('consultoria','presupConsult'),'Presup. Consultoría'); }
   else if(opcion==='apus')       { _addAPUs(); }
-  else                           { _addResumen();_addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addFicha();_addAPUs(); }
+  else                           { _addPresup();_addAU();_addPolizas();_addEst();_addInterv();_addFicha();_addResumenObra();_addAPUs();_addResumen(); }
 
   descargarExcel(wb, fname);
 }
@@ -8586,7 +8603,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                           return (Number(item.meses)===oldD||oldD===0) ? Object.assign({},item,{meses:v}) : item;
                         });
                       };
-                      setFF({ duracion:v, componentesPersonal:updItems(ff.componentesPersonal), componentesSocial:updItems(ff.componentesSocial), componentesLogistico:updItems(ff.componentesLogistico), componentesDiseno:updItems(ff.componentesDiseno) });
+                      setFF({ duracion:v, componentesSocial:updItems(ff.componentesSocial), componentesLogistico:updItems(ff.componentesLogistico), componentesDiseno:updItems(ff.componentesDiseno) });
                     }
                   }),
                   !ff.duracion && autoD > 0 && React.createElement('span', { style:{fontSize:10,color:'#15803D',background:'#DCFCE7',padding:'2px 8px',borderRadius:20,fontWeight:600} },
@@ -9166,6 +9183,7 @@ function ModuloProyectos({
   guardarSeccion
 }) {
   const rol = perfil?.rol || "usuario";
+  const esAdmin   = rol === "admin";
   const esLectura = rol === "jefe" || rol === "visor";
   const esVisor   = rol === "visor";
   const [accesos, setAccesos] = useState([]); // IDs de proyectos que puede ver el visor
@@ -9319,7 +9337,7 @@ function ModuloProyectos({
       caps:"capitulos", au:"au", pol:"polizasPorComp",
       est:"estampillas", interv:"presupInterv", consult:"presupConsult"
     };
-    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides"];
+    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","finalizado","snapshot"];
 
     Object.entries(secciones).forEach(([sec,field])=>{
       if(JSON.stringify(pActivo[field])!==JSON.stringify(prev[field])){
@@ -9356,7 +9374,7 @@ function ModuloProyectos({
     };
     return()=>{ window.__edeso_seccion_externa__=null; };
   },[pActivo?.id]);
-  const [busqApu, setBusqApu] = useState("");
+  const [busqApu, setBusqApu] = useState(""); const [selectedApuIds, setSelectedApuIds] = useState([]);
   const [delItem, setDelItem] = useState(null);
   const [capEdit, setCapEdit] = useState(null);
   const proyectosVisibles = useMemo(()=>{
@@ -9380,12 +9398,21 @@ function ModuloProyectos({
       }
       return "presupuesto_interventoria";
     }());
-    const _firstPs = (p.presupuestosObra&&p.presupuestosObra.length)
-      ? p.presupuestosObra[0] : {id:"p0"};
-    setTabDetalle("presupuesto_obra_"+_firstPs.id);
     setVista("detalle");
   };
-  const sincronizarPolizasAU = (proyecto) => {
+  const finalizarProyecto = () => {
+    if (!window.confirm("¿Finalizar este proyecto? Quedará bloqueado para edición. Solo un administrador podrá reabrirlo.")) return;
+    const snap={ts:new Date().toISOString(),presupuestosObra:JSON.parse(JSON.stringify(pActivo.presupuestosObra||[])),capitulos:JSON.parse(JSON.stringify(pActivo.capitulos||[])),au:JSON.parse(JSON.stringify(pActivo.au||{})),resultados:calcProyecto(pActivo,apus,recursos)};
+    setPActivo(p=>({...p,finalizado:true,snapshot:snap}));
+    setProyectos(prev=>prev.map(p=>p.id===pActivo.id?{...p,finalizado:true,snapshot:snap}:p));
+  };
+  const reabrirProyecto = () => {
+    if (!esAdmin) return;
+    if (!window.confirm("¿Reabrir este proyecto?")) return;
+    setPActivo(p=>({...p,finalizado:false,snapshot:null}));
+    setProyectos(prev=>prev.map(p=>p.id===pActivo.id?{...p,finalizado:false,snapshot:null}:p));
+  };
+const sincronizarPolizasAU = (proyecto) => {
     // Recalcula polizas y estampillas de obra y los inyecta en s1_8 del AU
     const polData = ((proyecto.polizasPorComp || {})["obra"]) || {};
     const plazo   = Number(polData.plazoContractual) || Number((proyecto.au||{}).plazo) || 0;
@@ -9446,6 +9473,7 @@ function ModuloProyectos({
   };
 
   const abrirEditor = p => {
+    if (p.finalizado) { alert("Este proyecto está finalizado. Solo un administrador puede reabrirlo."); return; }
     const pSync = sincronizarIterativo(p);
     // Ensure presupuestosObra exists (migration from legacy or new project)
     let pMigrated = pSync;
@@ -9548,7 +9576,7 @@ function ModuloProyectos({
     const item = { id: Date.now(), apuId: null, descripcion: "", unidad: "", cantidad: 1, orden: (cap?.items?.length||0) };
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === capId ? {...c, items: [...(c.items||[]), item]} : c)));
     setShowApuModal({ capId, itemId: item.id });
-    setBusqApu("");
+    setBusqApu(""); setSelectedApuIds([]);
     if(cap) dbSaveItem(item, capId, cap.numero, pActivo.id);
   };
   const delIt = (capId, itemId) => {
@@ -9568,6 +9596,25 @@ function ModuloProyectos({
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
     if(cap&&item) dbSaveItem({...item,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad},capId,cap.numero,pActivo.id);
+  };
+  const selMultipleApus = () => {
+    if (!selectedApuIds.length || !showApuModal) return;
+    const { capId, itemId } = showApuModal;
+    const cap = getActiveCapitulos(pActivo).find(c => c.id === capId);
+    if (!cap) return;
+    const selected = apus.filter(a => selectedApuIds.includes(a.id));
+    if (!selected.length) return;
+    const first = selected[0]; const rest = selected.slice(1);
+    const newItems = rest.map((a, i) => ({ id: Date.now()+i+1, apuId: a.id, descripcion: a.nombre, unidad: a.unidad, cantidad: 1, orden: (cap.items?.length||0)+i+1 }));
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => {
+      if (c.id !== capId) return c;
+      const its = (c.items||[]).map(i => i.id===itemId ? {...i,apuId:first.id,descripcion:first.nombre,unidad:first.unidad} : i);
+      return {...c, items: [...its, ...newItems]};
+    })));
+    setShowApuModal(null); setSelectedApuIds([]);
+    const blankItem = cap.items?.find(i => i.id===itemId);
+    if (blankItem) dbSaveItem({...blankItem,apuId:first.id,descripcion:first.nombre,unidad:first.unidad},capId,cap.numero,pActivo.id);
+    newItems.forEach(it => dbSaveItem(it,capId,cap.numero,pActivo.id));
   };
   const apusFiltrados = useMemo(() => {
     if (!busqApu.trim()) return apus;
@@ -9651,11 +9698,10 @@ function ModuloProyectos({
         color: "var(--red)",
         fontWeight: 500
       }
-    }, p.codigo || "\u2014")), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontWeight: 500
-      }
-    }, p.nombre), p.contratante && /*#__PURE__*/React.createElement("div", {
+    }, p.codigo || "\u2014")), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div",{style:{fontWeight:500,display:"flex",alignItems:"center",gap:6}},
+      p.nombre,
+      p.finalizado&&React.createElement("span",{style:{fontSize:10,background:"#FEF2F2",color:"#B91C1C",border:"1px solid #FECACA",borderRadius:4,padding:"1px 5px",fontWeight:600}},"🔒")
+    ), p.contratante && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: "var(--ink4)",
@@ -9754,7 +9800,7 @@ function ModuloProyectos({
         // Forzar actualización de plazoContractual desde au.plazo si no está seteado
         const au = synced.au || {};
         const polPorComp = synced.polizasPorComp || {};
-        ["interventoria","consultoria"].forEach(comp => {
+        ["obra","interventoria","consultoria"].forEach(comp => {
           const pd = polPorComp[comp] || {};
           if (!pd.plazoContractual && au.plazo) {
             polPorComp[comp] = Object.assign({}, pd, { plazoContractual: au.plazo });
@@ -9764,45 +9810,27 @@ function ModuloProyectos({
       });
     }
   }, "\u21BB Recalcular"),
-  React.createElement("button", {
-    className: "btn-s",
-    style: { background:"#065F46", color:"#fff", border:"none" },
-    title: "Busca cada ítem por nombre y lo vincula al APU correcto del catálogo",
-    onClick: () => {
-      let vinculados = 0, noEncontrados = [];
-      setPActivo(p => {
-        // Función que re-linkea items en un array de capitulos
-        const relinkCaps = (caps) => (caps||[]).map(cap => ({
-          ...cap,
-          items: (cap.items||[]).map(item => {
-            // Si ya tiene APU válido, no tocar
-            if (item.apuId && apus.find(a => a.id === item.apuId)) return item;
-            // Buscar APU por descripcion exacta, luego parcial
-            const desc = (item.descripcion||"").trim().toLowerCase();
-            let match = apus.find(a => (a.nombre||"").trim().toLowerCase() === desc);
-            if (!match) match = apus.find(a => desc.length > 20 && (a.nombre||"").toLowerCase().includes(desc.slice(0,40)));
-            if (!match) match = apus.find(a => desc.length > 20 && desc.includes((a.nombre||"").toLowerCase().slice(0,40)));
-            if (match) {
-              vinculados++;
-              return { ...item, apuId: match.id, unidad: match.unidad || item.unidad };
-            }
-            if (item.descripcion) noEncontrados.push(item.descripcion.slice(0,50));
-            return item;
-          })
-        }));
-        const newPresups = (p.presupuestosObra||[]).map(ps => ({...ps, capitulos: relinkCaps(ps.capitulos)}));
-        const newCaps   = relinkCaps(p.capitulos);
-        return { ...p, presupuestosObra: newPresups, capitulos: newCaps };
+  React.createElement("button",{className:"btn-s",style:{background:"#065F46",color:"#fff",border:"none"},
+    title:"Busca cada ítem por nombre y lo vincula al APU correcto del catálogo",
+    onClick:()=>{
+      let vinculados=0,noEncontrados=[];
+      setPActivo(p=>{
+        const relinkCaps=(caps)=>(caps||[]).map(cap=>({...cap,items:(cap.items||[]).map(item=>{
+          if(item.apuId&&apus.find(a=>a.id===item.apuId)) return item;
+          const desc=(item.descripcion||"").trim().toLowerCase();
+          let match=apus.find(a=>(a.nombre||"").trim().toLowerCase()===desc);
+          if(!match) match=apus.find(a=>desc.length>20&&(a.nombre||"").toLowerCase().includes(desc.slice(0,40)));
+          if(!match) match=apus.find(a=>desc.length>20&&desc.includes((a.nombre||"").toLowerCase().slice(0,40)));
+          if(match){vinculados++;return{...item,apuId:match.id,unidad:match.unidad||item.unidad};}
+          if(item.descripcion) noEncontrados.push(item.descripcion.slice(0,50));
+          return item;
+        })}));
+        const newPresups=(p.presupuestosObra||[]).map(ps=>({...ps,capitulos:relinkCaps(ps.capitulos)}));
+        return{...p,presupuestosObra:newPresups,capitulos:relinkCaps(p.capitulos)};
       });
-      setTimeout(() => {
-        alert(`✓ ${vinculados} ítems vinculados.${noEncontrados.length ? "\n\nNo encontrados:\n" + noEncontrados.slice(0,5).join("\n") : ""}`);
-      }, 300);
-    }
-  }, "🔗 Re-vincular APUs"),
-  /*#__PURE__*/React.createElement("button", {
-    className: "btn-p",
-    onClick: guardar
-  }, "Guardar"))), /*#__PURE__*/React.createElement("div", {
+      setTimeout(()=>alert(`✓ ${vinculados} ítems vinculados.${noEncontrados.length?"\n\nNo encontrados:\n"+noEncontrados.slice(0,5).join("\n"):""}`),300);
+    }},"🔗 Re-vincular APUs"),
+  /*#__PURE__*/React.createElement("button",{className:"btn-p",onClick:guardar},"Guardar"))), /*#__PURE__*/React.createElement("div", {
     className: "tabs no-print"
   }, (() => {
     const comps = pActivo ? (pActivo.componentes || []) : [];
@@ -9814,7 +9842,7 @@ function ModuloProyectos({
         ? pActivo.presupuestosObra
         : [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pActivo.capitulos||[] }];
       presups.forEach(function(ps) {
-        tabs.push({ id: "presupuesto_obra_" + ps.id, l: ps.nombre || "Presupuesto Obra" });
+        tabs.push({ id: "presupuesto_obra_" + ps.id, l: (function(){ var _ps_cd = calcCD(Object.assign({}, pActivo, {capitulos: ps.capitulos||[], presupuestosObra:[]}), apus, recursos); return (ps.nombre || "Presupuesto Obra") + "  ·  " + fmt(_ps_cd); })() });
       });
       tabs.push({ id: "au",               l: "C\xE1lculo A+U" });
       tabs.push({ id: "polizas_obra",     l: "P\xF3lizas Obra" });
@@ -10338,16 +10366,15 @@ function ModuloProyectos({
     }
   }, "Sin resultados")) : apusFiltrados.map(a => {
     const vu = calcAPUTotal(a, recursos);
+    const isSelected = selectedApuIds.includes(a.id);
     return /*#__PURE__*/React.createElement("tr", {
-      key: a.id,
-      className: "pick",
-      onClick: () => selApu(a)
-    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
-      style: {
-        fontFamily: "var(--mono)",
-        fontSize: 11,
-        color: "var(--red)"
-      }
+      key: a.id, className: "pick",
+      style: { background: isSelected ? "var(--red-soft)" : "", outline: isSelected ? "1px solid var(--red-mid)" : "" },
+      onClick: () => setSelectedApuIds(prev => prev.includes(a.id) ? prev.filter(id=>id!==a.id) : [...prev,a.id])
+    }, React.createElement("td",{style:{width:28,textAlign:"center"}},
+      React.createElement("input",{type:"checkbox",readOnly:true,checked:isSelected,style:{accentColor:"var(--red)",cursor:"pointer"}})
+    ), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
+      style: { fontFamily: "var(--mono)", fontSize: 11, color: "var(--red)" }
     }, a.codigo)), /*#__PURE__*/React.createElement("td", null, a.nombre), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
       style: {
         fontFamily: "var(--mono)",
@@ -10367,45 +10394,36 @@ function ModuloProyectos({
       justifyContent: "flex-end",
       marginTop: 14
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "btn-s",
-    onClick: () => setShowApuModal(null)
-  }, "Cancelar")))));
+  },
+  React.createElement("button",{className:"btn-s",onClick:()=>{setShowApuModal(null);setSelectedApuIds([]);}},"Cancelar"),
+  React.createElement("button",{className:"btn-p",disabled:selectedApuIds.length===0,onClick:selMultipleApus,style:{opacity:selectedApuIds.length===0?0.4:1}},
+    selectedApuIds.length===0?"Selecciona APUs":`Agregar ${selectedApuIds.length} APU${selectedApuIds.length>1?"s":""}`)))));
 
 
   function renderResumenObra() {
-    const presups = (pActivo.presupuestosObra && pActivo.presupuestosObra.length)
-      ? pActivo.presupuestosObra
-      : [{ id:"p0", nombre:"Presupuesto Obra", capitulos: pActivo.capitulos||[] }];
-    return React.createElement("div", { style:{display:"flex",flexDirection:"column",gap:20,padding:"8px 0"} },
-      presups.map(ps => {
-        const cdPs = (ps.capitulos||[]).reduce((ss,cap)=>
-          ss+(cap.items||[]).reduce((ss2,it)=>ss2+calcItem(it,apus,recursos),0),0);
+    const presups=(pActivo.presupuestosObra&&pActivo.presupuestosObra.length)?pActivo.presupuestosObra:[{id:"p0",nombre:"Presupuesto Obra",capitulos:pActivo.capitulos||[]}];
+    return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:20,padding:"8px 0"}},
+      presups.map(ps=>{
+        const cdPs=(ps.capitulos||[]).reduce((ss,cap)=>ss+(cap.items||[]).reduce((ss2,it)=>ss2+calcItem(it,apus,recursos),0),0);
         return React.createElement("div",{key:ps.id,className:"card",style:{overflow:"hidden"}},
           React.createElement("div",{style:{background:"#111827",padding:"12px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
             React.createElement("span",{style:{color:"#fff",fontWeight:700,fontSize:15}},ps.nombre||"Presupuesto Obra"),
             React.createElement("span",{style:{color:"#6EE7B7",fontFamily:"var(--mono)",fontWeight:800,fontSize:16}},fmt(Math.round(cdPs)))
           ),
           React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
-            React.createElement("thead",null,
-              React.createElement("tr",{style:{background:"#F3F4F6"}},
-                ["Ítem","Capítulo","CD","% Incid."].map((h,i)=>React.createElement("th",{
-                  key:i,style:{padding:"8px 16px",textAlign:i>=2?"right":"left",fontSize:11,fontWeight:700,color:"#6B7280",textTransform:"uppercase"}
-                },h))
-              )
-            ),
-            React.createElement("tbody",null,
-              (ps.capitulos||[]).map((cap,ci)=>{
-                const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos),0);
-                const pct = cdPs>0 ? (cdC/cdPs*100).toFixed(1) : "0.0";
-                return React.createElement("tr",{key:cap.id,style:{borderBottom:"1px solid #F3F4F6",background:ci%2===0?"#fff":"#F9FAFB"}},
-                  React.createElement("td",{style:{padding:"10px 16px",fontFamily:"var(--mono)",fontSize:12,color:"var(--red)",fontWeight:700,whiteSpace:"nowrap"}},cap.numero),
-                  React.createElement("td",{style:{padding:"10px 16px",fontSize:13}},cap.nombre),
-                  React.createElement("td",{style:{padding:"10px 16px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,fontSize:13}},fmt(Math.round(cdC))),
-                  React.createElement("td",{style:{padding:"10px 16px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},pct+"%")
-                );
-              })
-            )
+            React.createElement("thead",null,React.createElement("tr",{style:{background:"#F3F4F6"}},
+              ["Ítem","Capítulo","CD","% Incid."].map((h,i)=>React.createElement("th",{key:i,style:{padding:"8px 16px",textAlign:i>=2?"right":"left",fontSize:11,fontWeight:700,color:"#6B7280",textTransform:"uppercase"}},h))
+            )),
+            React.createElement("tbody",null,(ps.capitulos||[]).map((cap,ci)=>{
+              const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos),0);
+              const pct=cdPs>0?(cdC/cdPs*100).toFixed(1):"0.0";
+              return React.createElement("tr",{key:cap.id,style:{borderBottom:"1px solid #F3F4F6",background:ci%2===0?"#fff":"#F9FAFB"}},
+                React.createElement("td",{style:{padding:"10px 16px",fontFamily:"var(--mono)",fontSize:12,color:"var(--red)",fontWeight:700,whiteSpace:"nowrap"}},cap.numero),
+                React.createElement("td",{style:{padding:"10px 16px",fontSize:13}},cap.nombre),
+                React.createElement("td",{style:{padding:"10px 16px",textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,fontSize:13}},fmt(Math.round(cdC))),
+                React.createElement("td",{style:{padding:"10px 16px",textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"#6B7280"}},pct+"%")
+              );
+            }))
           )
         );
       })
@@ -10437,7 +10455,7 @@ function ModuloProyectos({
         ? pActivo.presupuestosObra
         : [{ id: "p0", nombre: "Presupuesto Obra" }];
       presups.forEach(function(ps) {
-        TABS.push({ id: "presupuesto_obra_" + ps.id, label: ps.nombre || "Presupuesto Obra" });
+        TABS.push({ id: "presupuesto_obra_" + ps.id, label: (function(){ var _ps_cd = calcCD(Object.assign({}, pActivo, {capitulos: ps.capitulos||[], presupuestosObra:[]}), apus, recursos); return (ps.nombre || "Presupuesto Obra") + "  ·  " + fmt(_ps_cd); })() });
       });
       TABS.push({ id: "calculo_au",        label: "C\xE1lculo A+U" });
       TABS.push({ id: "polizas_obra",      label: "P\xF3lizas Obra" });
@@ -10493,10 +10511,10 @@ function ModuloProyectos({
         display: "flex",
         gap: 10
       }
-    }, !esLectura&&/*#__PURE__*/React.createElement("button", {
-      className: "btn-s",
-      onClick: () => abrirEditor(pActivo)
-    }, "Editar"),
+    }, pActivo.finalizado&&React.createElement("span",{style:{background:"#FEF2F2",color:"#B91C1C",border:"1px solid #FECACA",borderRadius:6,padding:"3px 10px",fontSize:12,fontWeight:600}},"🔒 Finalizado"),
+    !esLectura&&!pActivo.finalizado&&/*#__PURE__*/React.createElement("button",{className:"btn-s",onClick:()=>abrirEditor(pActivo)},"Editar"),
+    !esLectura&&!pActivo.finalizado&&React.createElement("button",{className:"btn-s",style:{background:"#92400E",color:"#fff",border:"none"},onClick:finalizarProyecto},"🔒 Finalizar"),
+    esAdmin&&pActivo.finalizado&&React.createElement("button",{className:"btn-s",style:{background:"#1D4ED8",color:"#fff",border:"none"},onClick:reabrirProyecto},"🔓 Reabrir"),
     React.createElement("button", {
       className: "btn-s",
       style:{background:"#1E40AF",color:"#fff",border:"none"},
