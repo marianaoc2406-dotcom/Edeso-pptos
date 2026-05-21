@@ -9642,10 +9642,6 @@ function ModuloProyectos({
   }, "Sin proyectos"), /*#__PURE__*/React.createElement("div", {
     className: "empty-desc"
   }, "Crea el primer proyecto con el bot\xF3n de arriba")))) : filtered.map(p => {
-    const {
-      cd,
-      total
-    } = calcProyecto(p, apus, recursos);
     return /*#__PURE__*/React.createElement("tr", {
       key: p.id
     }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
@@ -9677,19 +9673,7 @@ function ModuloProyectos({
         key: c,
         className: `tag tag-${c}`
       }, t === null || t === void 0 ? void 0 : t.icon, " ", t === null || t === void 0 ? void 0 : t.label);
-    }))), /*#__PURE__*/React.createElement("td", {
-      style: {
-        textAlign: "right",
-        fontFamily: "var(--mono)",
-        color: "var(--ink3)"
-      }
-    }, fmt(cd)), /*#__PURE__*/React.createElement("td", {
-      style: {
-        textAlign: "right",
-        fontFamily: "var(--mono)",
-        fontWeight: 700
-      }
-    }, fmt(total)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
+    }))),  /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 4,
