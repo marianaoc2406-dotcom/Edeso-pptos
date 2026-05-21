@@ -8720,9 +8720,9 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
               esValorFijo(tipo)
                 ? React.createElement('th', { style:{textAlign:'right',width:180} }, 'Valor')
                 : React.createElement(React.Fragment, null,
-                    React.createElement('th', { style:{textAlign:'right',width:90} }, 'Cantidad'),
+                    !(readOnly && tipo==='Personal') && React.createElement('th', { style:{textAlign:'right',width:90} }, 'Cantidad'),
                     React.createElement('th', { style:{textAlign:'right',width:80} }, 'Meses'),
-                    React.createElement('th', { style:{textAlign:'right',width:150} }, 'Valor Unitario'),
+                    !(readOnly && tipo==='Personal') && React.createElement('th', { style:{textAlign:'right',width:150} }, 'Valor Unitario'),
                     React.createElement('th', { style:{textAlign:'right',width:150} }, 'Total')
                   ),
               React.createElement('th', { style:{width:60} })
@@ -8737,9 +8737,9 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                   esValorFijo(tipo)
                     ? React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valor)||0))
                     : React.createElement(React.Fragment, null,
-                        React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, (Number(item.cantidad)||0)+" "+(item.unidad||'')),
+                        !(readOnly && tipo==='Personal') && React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, (Number(item.cantidad)||0)+" "+(item.unidad||'')),
                         React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, (Number(item.meses)||1)+" m"),
-                        React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valorUnit)||0)),
+                        !(readOnly && tipo==='Personal') && React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(Number(item.valorUnit)||0)),
                         React.createElement('td', { style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12,fontWeight:700} }, fmt(tot))
                       ),
                   React.createElement('td', { style:{textAlign:'right',paddingRight:8} },
@@ -8764,7 +8764,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
       ['Costos indirectos del proyecto', R.subtotalIndirecto, false],
       ['SUBTOTAL RECURSOS A ADMINISTRAR', R.totalRecursos, true],
       [null, null, false],
-      ['HONORARIOS A.D.R. ('+(pctHon*100).toFixed(0)+'%)', R.honorarios, false],
+      ['HONORARIOS A.D.R.'+(readOnly ? '' : ' ('+(pctHon*100).toFixed(0)+'%)'), R.honorarios, false],
       ['IVA 19%', R.iva, false],
       [null, null, false],
       ['TOTAL HONORARIOS POR ADMINISTRACIÓN', R.honorarios+R.iva, true],
@@ -8825,7 +8825,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                   React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, 'meses')
                 )
               ),
-              React.createElement('div', null,
+              !readOnly && React.createElement('div', null,
                 React.createElement('label', { className:'lbl' }, 'Honorarios EDESO'),
                 React.createElement('div', { style:{display:'flex',gap:8,alignItems:'center'} },
                   React.createElement('input', { className:'ifield', type:'number', min:0, max:100, step:0.1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700}, value:pctHon*100, disabled:readOnly, onChange:function(e){ setFF({pctHonoarios:(parseFloat(e.target.value)||8)/100}); } }),
@@ -8908,7 +8908,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
             React.createElement('td', { style:{padding:'11px 20px',textAlign:'right',fontFamily:'var(--mono)',fontWeight:800,color:'#1D4ED8',fontSize:14} }, fmt(R.totalRecursos))
           ),
           React.createElement('tr', null,
-            React.createElement('td', { style:{padding:'8px 20px',fontSize:12,color:'var(--ink3)'} }, 'Honorarios EDESO ('+(pctHon*100).toFixed(0)+'% sobre costos directos)'),
+            React.createElement('td', { style:{padding:'8px 20px',fontSize:12,color:'var(--ink3)'} }, readOnly ? 'Honorarios EDESO' : 'Honorarios EDESO ('+(pctHon*100).toFixed(0)+'% sobre costos directos)'),
             React.createElement('td', { style:{padding:'8px 20px',textAlign:'right',fontFamily:'var(--mono)',fontSize:12} }, fmt(R.honorarios))
           ),
           React.createElement('tr', null,
@@ -11752,119 +11752,42 @@ function ModuloUsuarios({perfil,session,proyectos}) {
 
 
 // ── Módulo Observaciones ──────────────────────────────────────────────────
-function ModuloObservaciones({proyectos}) {
-  const [obs, setObs]   = useState([]);
-  const [busy, setBusy] = useState(true);
-  const [q, setQ]       = useState("");
-  const [filtroProy, setFiltroProy] = useState("");
-
-  const obsCargarRef = React.useRef(null);
-  obsCargarRef.current = ()=>{
-    _sb.from("observaciones").select("*").order("created_at",{ascending:false}).limit(500)
-      .then(({data})=>{setObs(data||[]);setBusy(false);});
-  };
-
-  useEffect(()=>{
-    obsCargarRef.current();
-    const ch=_sb.channel("obs_all_live")
-      .on("postgres_changes",{event:"*",schema:"public",table:"observaciones"},
-        ()=>obsCargarRef.current()
-      ).subscribe();
-    return()=>_sb.removeChannel(ch);
-  },[]);
-
-  const cargar = ()=>obsCargarRef.current();
-
-  const proyNombre = pid => proyectos?.find(p=>String(p.id)===String(pid))?.nombre||pid||"—";
-
-  const TAB_LABELS = {
-    presupuesto:"Presupuesto Obra",
-    polizas_obra:"Pólizas Obra", polizas_interventoria:"Pólizas Interventoría",
-    polizas_consultoria:"Pólizas Consultoría",
-    estampillas:"Estampillas",
-    apu:"APU (general)", calculo_au:"Cálculo A+U",
-  };
-  const tabLabel = cid => {
-    if(!cid) return "—";
-    if(TAB_LABELS[cid]) return TAB_LABELS[cid];
-    if(cid.startsWith("apu_")) return "APU · "+cid.slice(4);
-    if(cid.startsWith("au_")) return "A+U · "+cid.slice(3);
-    if(cid.startsWith("presupInterv")) return "Presup. Interventoría";
-    if(cid.startsWith("presupConsult")) return "Presup. Consultoría";
-    return cid;
-  };
-
-  const fmtF = iso=>{
-    const d=new Date(iso);
-    return d.toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"numeric"})+
-           " · "+d.toLocaleTimeString("es-CO",{hour:"2-digit",minute:"2-digit"});
-  };
-
-  const filtered = obs.filter(o=>{
-    const txt=(o.texto||"").toLowerCase();
-    const usr=(o.user_nombre||o.user_email||"").toLowerCase();
-    const proy=proyNombre(o.proyecto_id).toLowerCase();
-    const matchQ = !q || txt.includes(q.toLowerCase())||usr.includes(q.toLowerCase())||proy.includes(q.toLowerCase());
-    const matchP = !filtroProy || String(o.proyecto_id)===filtroProy;
-    return matchQ && matchP;
-  });
+function ModuloObservaciones({proyectos, apus, recursos, perfil, session, catalogoEstampillas, plantillasAU}) {
+  const [proySelId, setProySelId] = useState("");
+  const proySel = (proyectos||[]).find(p=>String(p.id)===proySelId) || null;
 
   return React.createElement("div",{className:"page"},
     React.createElement("div",{className:"page-hdr"},
       React.createElement("div",null,
         React.createElement("div",{className:"page-title"},"Observaciones"),
-        React.createElement("div",{className:"page-sub"},"Comentarios por línea de todos los proyectos")
+        React.createElement("div",{className:"page-sub"},"Selecciona un proyecto para ver y comentar")
       )
     ),
-    React.createElement("div",{className:"card"},
-      React.createElement("div",{className:"card-header",style:{flexWrap:"wrap",gap:10}},
-        React.createElement("input",{
-          className:"ifield",style:{maxWidth:280},
-          placeholder:"🔍 Buscar observación, usuario o proyecto...",
-          value:q,onChange:e=>setQ(e.target.value)
-        }),
+    React.createElement("div",{className:"card",style:{marginBottom:16,padding:"16px 20px"}},
+      React.createElement("div",{style:{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}},
+        React.createElement("label",{className:"lbl",style:{margin:0,whiteSpace:"nowrap"}},"Proyecto:"),
         React.createElement("select",{
-          className:"ifield",style:{maxWidth:200},
-          value:filtroProy,onChange:e=>setFiltroProy(e.target.value)
+          className:"ifield",style:{maxWidth:480,flex:1},
+          value:proySelId,
+          onChange:e=>setProySelId(e.target.value)
         },
-          React.createElement("option",{value:""},"Todos los proyectos"),
+          React.createElement("option",{value:""},"— Selecciona un proyecto —"),
           (proyectos||[]).map(p=>React.createElement("option",{key:p.id,value:String(p.id)},p.nombre))
-        ),
-        React.createElement("span",{style:{fontSize:12,color:"var(--ink4)"}},filtered.length," observaciones")
-      ),
-      busy
-      ?React.createElement("div",{style:{padding:40,textAlign:"center",color:"var(--ink4)"}},"Cargando...")
-      :filtered.length===0
-        ?React.createElement("div",{style:{padding:40,textAlign:"center",color:"var(--ink4)"}},"Sin observaciones")
-        :React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:0}},
-          filtered.map((o,i)=>React.createElement("div",{
-            key:o.id||i,
-            style:{
-              padding:"16px 20px",
-              borderBottom:"1px solid var(--line)",
-              background:i%2===0?"#fff":"var(--line2)"
-            }},
-            React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8,flexWrap:"wrap",gap:6}},
-              React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}},
-                React.createElement("span",{style:{
-                  background:"var(--red-soft)",color:"var(--red)",
-                  borderRadius:6,padding:"2px 10px",fontSize:11,fontWeight:700
-                }},proyNombre(o.proyecto_id)),
-                React.createElement("span",{style:{
-                  background:"var(--line2)",color:"var(--ink3)",
-                  borderRadius:6,padding:"2px 10px",fontSize:11
-                }},tabLabel(o.capitulo_id)),
-                React.createElement("span",{style:{color:"var(--ink4)",fontSize:11}},"Línea #"+(o.item_index+1))
-              ),
-              React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--ink4)"}},fmtF(o.created_at))
-            ),
-            React.createElement("div",{style:{fontSize:14,color:"var(--ink)",lineHeight:1.6,marginBottom:6}},o.texto),
-            React.createElement("div",{style:{fontSize:12,color:"var(--ink3)",fontWeight:600}},
-              "👤 ",o.user_nombre||o.user_email||"—"
-            )
-          ))
         )
-    )
+      )
+    ),
+    proySel
+      ? React.createElement(TabObsView,{
+          proyecto:proySel, apus:apus||[], recursos:recursos||[],
+          perfil, session,
+          catalogoEstampillas:catalogoEstampillas||[],
+          plantillasAU:plantillasAU||[],
+          esVisor:false,
+          onClose:()=>setProySelId("")
+        })
+      : React.createElement("div",{style:{padding:60,textAlign:"center",color:"var(--ink4)",fontSize:14}},
+          "👆 Selecciona un proyecto arriba para ver su contenido y agregar observaciones"
+        )
   );
 }
 
@@ -12340,7 +12263,7 @@ function App() {
         perfil,session,guardarSeccion
       }),
       modulo==="Actividad"&&React.createElement(ModuloActividad),
-      modulo==="Observaciones"&&React.createElement(ModuloObservaciones,{proyectos}),
+      modulo==="Observaciones"&&React.createElement(ModuloObservaciones,{proyectos,apus,recursos,perfil,session,catalogoEstampillas,plantillasAU}),
       modulo==="Usuarios"&&React.createElement(ModuloUsuarios,{perfil,session,proyectos})
     )
   );
