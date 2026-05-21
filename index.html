@@ -993,6 +993,7 @@ function Sidebar({
       { id:"APUs",                 label:"APUs",                icon:"A",  count:counts.apus },
       { id:"Mano de Obra",        label:"Mano de Obra",        icon:"MO" },
       { id:"Plantillas AU",        label:"Plantillas AU",       icon:"P" },
+      { id:"Plantillas Ficha",     label:"Plantillas Ficha",    icon:"PF", count:counts.plantillasFicha||0 },
       { id:"Plantillas Interv.",   label:"Plantillas Interv.",  icon:"PI", count:counts.plantillasInt },
       { id:"Catálogo Pólizas",    label:"Catálogo Pólizas",   icon:"CP", count:counts.polizas },
       { id:"Catálogo Estampillas", label:"Catálogo Estampillas",icon:"CE", count:counts.estampillas },
@@ -2421,6 +2422,131 @@ function ModuloAPUs({
 // ═══════════════════════════════════════════════════════
 // MÓDULO PLANTILLAS AU
 // ═══════════════════════════════════════════════════════
+
+function ModuloPlantillasFicha({ plantillas, setPlantillas }) {
+  var [modal, setModal] = React.useState(false);
+  var [editIdx, setEditIdx] = React.useState(null);
+  var [form, setForm] = React.useState({ nombre:'', items:[] });
+  var [formItem, setFormItem] = React.useState({ descripcion:'', valorMesBase:0, dedicacion:1 });
+  var [showItemForm, setShowItemForm] = React.useState(false);
+  var [editItemIdx, setEditItemIdx] = React.useState(null);
+
+  var abrirNueva = function() {
+    setForm({ nombre:'', items:[] }); setEditIdx(null); setModal(true);
+  };
+  var abrirEditar = function(i) {
+    setForm(JSON.parse(JSON.stringify(plantillas[i]))); setEditIdx(i); setModal(true);
+  };
+  var guardar = function() {
+    var lista = plantillas.slice();
+    if (editIdx !== null) lista[editIdx] = form;
+    else lista.push(form);
+    setPlantillas(lista); setModal(false);
+  };
+  var eliminar = function(i) {
+    if (!window.confirm('¿Eliminar esta plantilla?')) return;
+    setPlantillas(plantillas.filter(function(_,j){return j!==i;}));
+  };
+  var addItem = function() {
+    var items = (form.items||[]).slice();
+    if (editItemIdx !== null) items[editItemIdx] = Object.assign({},formItem);
+    else items.push(Object.assign({},formItem));
+    setForm(function(f){return {...f, items};}); setShowItemForm(false); setEditItemIdx(null);
+    setFormItem({ descripcion:'', valorMesBase:0, dedicacion:1 });
+  };
+  var removeItem = function(i) {
+    setForm(function(f){return {...f, items:(f.items||[]).filter(function(_,j){return j!==i;})};});
+  };
+
+  return React.createElement('div', { className:'page' },
+    React.createElement('div', { className:'page-hdr' },
+      React.createElement('div', null,
+        React.createElement('div', { className:'page-title' }, 'Plantillas Ficha Financiera'),
+        React.createElement('div', { className:'page-sub' }, 'Cargos de personal reutilizables')
+      ),
+      React.createElement('button', { className:'btn-p', onClick:abrirNueva }, '+ Nueva plantilla')
+    ),
+    plantillas.length===0
+      ? React.createElement('div',{style:{padding:40,textAlign:'center',color:'var(--ink4)'}}, 'Sin plantillas. Crea una para reutilizar cargos de personal.')
+      : React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:12}},
+          plantillas.map(function(pl,i) {
+            return React.createElement('div',{key:i,className:'card',style:{padding:'14px 20px'}},
+              React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+                React.createElement('span',{style:{fontWeight:700,fontSize:14}},pl.nombre||'Sin nombre'),
+                React.createElement('div',{style:{display:'flex',gap:8}},
+                  React.createElement('button',{className:'btn-s',onClick:function(){abrirEditar(i);}},'Editar'),
+                  React.createElement('button',{className:'btn-s',style:{color:'var(--red)'},onClick:function(){eliminar(i);}},'Eliminar')
+                )
+              ),
+              React.createElement('div',{style:{fontSize:12,color:'var(--ink3)'}},
+                (pl.items||[]).length + ' cargos: ' + (pl.items||[]).map(function(it){return it.descripcion;}).join(', ').slice(0,80)
+              )
+            );
+          })
+        ),
+    modal && React.createElement('div',{className:'modal-bg',onClick:function(e){if(e.target===e.currentTarget)setModal(false);}},
+      React.createElement('div',{className:'modal',style:{maxWidth:700,width:'95%'}},
+        React.createElement('div',{className:'modal-hdr'},
+          React.createElement('span',{className:'modal-title'}, editIdx!==null?'Editar plantilla':'Nueva plantilla'),
+          React.createElement('button',{className:'modal-close',onClick:function(){setModal(false);}}, '×')
+        ),
+        React.createElement('div',{style:{padding:20}},
+          React.createElement('label',{className:'lbl'},'Nombre de la plantilla'),
+          React.createElement('input',{className:'ifield',style:{marginBottom:16},value:form.nombre,
+            onChange:function(e){setForm(function(f){return {...f,nombre:e.target.value};});}, placeholder:'Ej: Personal Interventoría Tipo A'}),
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+            React.createElement('span',{style:{fontWeight:600,fontSize:13}},'Cargos de personal'),
+            React.createElement('button',{className:'btn-s',style:{fontSize:11},onClick:function(){setShowItemForm(true);setEditItemIdx(null);setFormItem({descripcion:'',valorMesBase:0,dedicacion:1});}}, '+ Agregar cargo')
+          ),
+          (form.items||[]).length===0
+            ? React.createElement('div',{style:{padding:'8px 0',fontSize:12,color:'var(--ink4)',fontStyle:'italic'}},'Sin cargos')
+            : React.createElement('table',{className:'tbl',style:{marginBottom:12}},
+                React.createElement('thead',null,React.createElement('tr',null,
+                  ['Descripción','Salario/mes','Dedicación',''].map(function(h,i){return React.createElement('th',{key:i,style:{textAlign:i>=1&&i<=2?'right':'left'}},h);})
+                )),
+                React.createElement('tbody',null,
+                  (form.items||[]).map(function(it,i){
+                    return React.createElement('tr',{key:i},
+                      React.createElement('td',{style:{fontSize:12}},it.descripcion),
+                      React.createElement('td',{style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12}},fmt(it.valorMesBase||0)),
+                      React.createElement('td',{style:{textAlign:'right',fontFamily:'var(--mono)',fontSize:12}},fmtN((it.dedicacion||1)*100,0)+'%'),
+                      React.createElement('td',null,
+                        React.createElement('button',{className:'btn-s',style:{fontSize:10},onClick:function(){setEditItemIdx(i);setFormItem(Object.assign({},it));setShowItemForm(true);}}, '✏'),
+                        React.createElement('button',{className:'btn-s',style:{fontSize:10,color:'var(--red)'},onClick:function(){removeItem(i);}}, '×')
+                      )
+                    );
+                  })
+                )
+              ),
+          showItemForm && React.createElement('div',{style:{background:'#F9FAFB',border:'1px solid #E5E7EB',borderRadius:8,padding:12,marginBottom:12}},
+            React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 150px 120px',gap:8,marginBottom:8}},
+              React.createElement('div',null,
+                React.createElement('label',{className:'lbl'},'Descripción del cargo'),
+                React.createElement('input',{className:'ifield',value:formItem.descripcion,onChange:function(e){setFormItem(function(f){return {...f,descripcion:e.target.value};});},placeholder:'Ej: Ingeniero Director Residente'})
+              ),
+              React.createElement('div',null,
+                React.createElement('label',{className:'lbl'},'Salario/mes ($)'),
+                React.createElement('input',{className:'ifield',type:'number',value:formItem.valorMesBase||'',onChange:function(e){setFormItem(function(f){return {...f,valorMesBase:parseFloat(e.target.value)||0};});},placeholder:'0'})
+              ),
+              React.createElement('div',null,
+                React.createElement('label',{className:'lbl'},'Dedicación (%)'),
+                React.createElement('input',{className:'ifield',type:'number',min:0,max:100,value:Math.round((formItem.dedicacion||1)*100),onChange:function(e){setFormItem(function(f){return {...f,dedicacion:(parseFloat(e.target.value)||100)/100};});},placeholder:'100'})
+              )
+            ),
+            React.createElement('div',{style:{display:'flex',gap:8}},
+              React.createElement('button',{className:'btn-p',onClick:addItem},editItemIdx!==null?'Actualizar':'Agregar cargo'),
+              React.createElement('button',{className:'btn-s',onClick:function(){setShowItemForm(false);setEditItemIdx(null);}}, 'Cancelar')
+            )
+          ),
+          React.createElement('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:8}},
+            React.createElement('button',{className:'btn-s',onClick:function(){setModal(false);}}, 'Cancelar'),
+            React.createElement('button',{className:'btn-p',onClick:guardar}, 'Guardar plantilla')
+          )
+        )
+      )
+    )
+  );
+}
 function ModuloPlantillasAU({
   plantillas,
   setPlantillas
@@ -2832,6 +2958,10 @@ function TabAU({
   plantillasAU,
   readOnly
 }) {
+  // PMA/PMT/SST/GS se guardan en au.extras
+  const extras = (auProp||{}).extras || { sgSst:0, pma:0, pmt:0, gestionSocial:0 };
+  const totalExtras = (extras.sgSst||0)+(extras.pma||0)+(extras.pmt||0)+(extras.gestionSocial||0);
+  const setExtras = (field,val) => setAu(prev => ({...prev, extras:{...(prev.extras||{}), [field]:val}}));
   const au = auProp || auVacio();
   const [modalItem, setModalItem] = useState(null);
   const [formItem, setFormItem] = useState({});
@@ -3077,9 +3207,39 @@ function TabAU({
   }), /*#__PURE__*/React.createElement(MetricCard, {
     label: "Costo Total C.D.+C.I.",
     value: fmt(cd + totalAU),
-    sub: "Sin incluir p\xF3lizas externas",
+    sub: "Sin incluir pólizas externas",
     accent: C.rojoOsc
-  })), /*#__PURE__*/React.createElement("div", {
+  }),
+  React.createElement(MetricCard, {
+    label: "COSTOS TOTALES",
+    value: fmt(cd + totalAU + totalExtras),
+    sub: "C.D. + C.I. + PMA/PMT/SST",
+    accent: "#7C3AED"
+  })),
+  // ── Sección PMA / PMT / SG-SST / Gestión Social ────────────────
+  React.createElement("div",{className:"card",style:{padding:"16px 20px",marginBottom:8}},
+    React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+      React.createElement("span",{style:{fontWeight:700,fontSize:13,color:"#7C3AED"}},"PMA · PMT · SG-SST · Gestión Social"),
+      React.createElement("span",{style:{fontFamily:"var(--mono)",fontWeight:700,color:"#7C3AED",fontSize:13}},fmt(totalExtras))
+    ),
+    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}},
+      [["SG-SST","sgSst"],["PMA","pma"],["PMT","pmt"],["Gestión Social","gestionSocial"]].map(function(pair){ var label=pair[0],key=pair[1];
+        return React.createElement("div",{key,style:{display:"flex",alignItems:"center",gap:8,background:"#F5F3FF",borderRadius:8,padding:"8px 12px"}},
+          React.createElement("span",{style:{fontSize:12,color:"#7C3AED",fontWeight:600,minWidth:100}},label),
+          React.createElement("input",{className:"ifield",type:"number",min:0,disabled:readOnly,
+            style:{fontFamily:"var(--mono)",fontWeight:700,textAlign:"right",flex:1},
+            value:extras[key]||"",
+            placeholder:"$ 0",
+            onChange:function(e){setExtras(key, parseFloat(e.target.value)||0);}
+          }),
+          React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",minWidth:40,textAlign:"right"}},
+            cd>0?fmtN((extras[key]||0)/cd*100,3)+"%":""
+          )
+        );
+      })
+    )
+  ),
+  /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
       overflow: "hidden"
@@ -8030,7 +8190,7 @@ function calcFichaFinanciera(proyecto, obraTotal, intervTotal, consultTotal, max
   var duracion = Number(ff.duracion) || 0;
 
   // Componentes manuales
-  var totalPersonal  = (ff.componentesPersonal  || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
+  var totalPersonal  = (ff.componentesPersonal  || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
   var totalSocial    = (ff.componentesSocial    || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
   var totalLogistico = (ff.componentesLogistico || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
   var totalDiseno    = (ff.componentesDiseno    || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
@@ -8418,7 +8578,7 @@ function TabPresupuestoConsultoria({ proyecto, setPActivo, readOnly, perfil, ses
 // ═══════════════════════════════════════════════════════
 // TAB FICHA FINANCIERA
 // ═══════════════════════════════════════════════════════
-function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervTotal, consultTotal, catalogoPolizas }) {
+function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervTotal, consultTotal, catalogoPolizas, plantillasFicha, cd }) {
   var ff = proyecto.fichaFinanciera || {};
   var setFF = function(next) {
     if (readOnly) return;
@@ -8431,6 +8591,56 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
 
   var [modalComp, setModalComp] = React.useState(null);
   var [formComp,  setFormComp]  = React.useState({});
+  var [showPlantModal, setShowPlantModal] = React.useState(false);
+
+  // Aplicar plantilla de personal
+  var aplicarPlantilla = function(pl) {
+    var meses = Number(ff.duracion) || 1;
+    var items = (pl.items||[]).map(function(it) {
+      return { descripcion:it.descripcion, valorMesBase:it.valorMesBase||0,
+               dedicacion:it.dedicacion||1, cantidad:1, meses:meses, activo:true };
+    });
+    setFF({ componentesPersonal: items });
+    setShowPlantModal(false);
+  };
+
+  // Calcular cantidades para que Personal = 3% × CD
+  var calcular3pct = function() {
+    var personas = (ff.componentesPersonal||[]).filter(function(it){return it.activo!==false;});
+    if (!personas.length) return;
+    var cdBase = Math.round(obraTotal + intervTotal + (consultTotal||0));
+    var target3pct = cdBase * 0.03;
+
+    // Restar los demás componentes fijos
+    var totalSocial    = (ff.componentesSocial    || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
+    var totalLogistico = (ff.componentesLogistico || []).reduce(function(s,i){ return s + (Number(i.cantidad)||0)*(Number(i.meses)||1)*(Number(i.valorUnit)||0); }, 0);
+    var totalDiseno    = (ff.componentesDiseno    || []).reduce(function(s,i){ return s + (Number(i.valor)||0); }, 0);
+    var polD = ((proyecto.polizasPorComp||{})["edeso"]) || {};
+    var polizasEdeso = calcPolizasEDESO(polD.polizasActivas||[], cdBase, Number(polD.plazoContractual)||Number(ff.duracion)||0);
+
+    var targetPersonal = target3pct - totalSocial - totalLogistico - totalDiseno - polizasEdeso;
+    if (targetPersonal <= 0) { alert('Los demás componentes ya superan el 3% del CD. No hay margen para Personal.'); return; }
+
+    var n = personas.length;
+    var sumPesos = n*(n+1)/2;
+    var meses = Number(ff.duracion)||1;
+    var nuevas = personas.map(function(it, i) {
+      var peso = n - i;
+      var targetPersona = (peso/sumPesos) * targetPersonal;
+      var mesesItem = Number(it.meses) || meses;
+      var base = (it.valorUnit||it.valorMesBase||0) * mesesItem * (it.dedicacion||1);
+      var cantidad = base > 0 ? targetPersona/base : 0;
+      return Object.assign({},it,{cantidad:Math.round(cantidad*10000)/10000});
+    });
+    // Actualizar componentesPersonal manteniendo los inactivos
+    var allPersonal = (ff.componentesPersonal||[]).map(function(it) {
+      if (it.activo===false) return it;
+      var found = nuevas.shift();
+      return found || it;
+    });
+    setFF({ componentesPersonal: allPersonal });
+  };
+
 
   var pctHon     = Number(ff.pctHonoarios !== undefined ? ff.pctHonoarios : 0.08);
   var intervPlazo= Number((proyecto.presupInterv||{}).plazo)||0;
@@ -8487,7 +8697,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
 
   var secColor = { Personal:'#1D4ED8', Social:'#15803D', Logistico:'#7C3AED', Diseno:'#B45309' };
   var secLabel = { Personal:'Componente de Personal', Social:'Social y Comunicaciones', Logistico:'Apoyo Logístico (Gastos reembolsables)', Diseno:'Honorarios de Diseño' };
-  var esValorFijo = function(tipo) { return tipo === 'Personal' || tipo === 'Diseno'; };
+  var esValorFijo = function(tipo) { return tipo === 'Diseno'; };
 
   var renderSeccion = function(tipo, subtotal) {
     var lista = ff['componentes'+tipo] || [];
@@ -8496,7 +8706,11 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
       React.createElement('div', { className:'card-header', style:{background:col+'11',borderBottom:'2px solid '+col+'33'} },
         React.createElement('span', { style:{fontWeight:700,color:col,fontSize:13} }, secLabel[tipo]),
         React.createElement('span', { style:{fontFamily:'var(--mono)',fontWeight:700,color:col,marginLeft:'auto'} }, fmt(subtotal)),
-        !readOnly && React.createElement('button', { className:'btn-s', style:{marginLeft:12,fontSize:11}, onClick:function(){ abrirNuevo(tipo); } }, '+ Agregar')
+        !readOnly && React.createElement('button', { className:'btn-s', style:{marginLeft:12,fontSize:11}, onClick:function(){ abrirNuevo(tipo); } }, '+ Agregar'),
+        tipo==='Personal' && !readOnly && React.createElement(React.Fragment, null,
+          plantillasFicha && plantillasFicha.length>0 && React.createElement('button',{className:'btn-s',style:{marginLeft:4,fontSize:11,background:'#1D4ED8',color:'#fff',border:'none'},onClick:function(){setShowPlantModal(true);}}, '📋 Plantilla'),
+          React.createElement('button',{className:'btn-s',style:{marginLeft:4,fontSize:11,background:'#065F46',color:'#fff',border:'none'},onClick:calcular3pct}, '🎯 Calcular 3%')
+        )
       ),
       lista.length === 0
         ? React.createElement('div', { style:{padding:'10px 20px',fontSize:12,color:'var(--ink4)',fontStyle:'italic'} }, 'Sin ítems')
@@ -9178,6 +9392,7 @@ function ModuloProyectos({
   catalogoPolizas,
   catalogoEstampillas,
   plantillasInt,
+  plantillasFicha,
   perfil,
   session,
   guardarSeccion
@@ -9272,52 +9487,70 @@ function ModuloProyectos({
   const mergeCapExterno = React.useCallback((event, row) => {
     setPActivo(p => {
       if(!p || String(p.id)!==String(row.proyecto_id)) return p;
+      const updCap = c => String(c.id)===String(row.id) ? {...c, numero:row.numero, nombre:row.nombre, tipo:row.tipo} : c;
       if(event==="DELETE") {
-        return {...p, capitulos: p.capitulos.filter(c=>String(c.id)!==String(row.id))};
+        return {...p,
+          capitulos: (p.capitulos||[]).filter(c=>String(c.id)!==String(row.id)),
+          presupuestosObra: (p.presupuestosObra||[]).map(ps=>({...ps,capitulos:(ps.capitulos||[]).filter(c=>String(c.id)!==String(row.id))}))
+        };
       }
-      const existe = p.capitulos.find(c=>String(c.id)===String(row.id));
-      if(existe) {
-        return {...p, capitulos: p.capitulos.map(c=>String(c.id)===String(row.id)
-          ? {...c, numero:row.numero, nombre:row.nombre, tipo:row.tipo} : c)};
-      }
-      return {...p, capitulos: [...p.capitulos,
-        {id:row.id, numero:row.numero, nombre:row.nombre, tipo:row.tipo||"obra", items:[]}]};
+      const existeLeg = (p.capitulos||[]).find(c=>String(c.id)===String(row.id));
+      const existePs  = (p.presupuestosObra||[]).some(ps=>(ps.capitulos||[]).find(c=>String(c.id)===String(row.id)));
+      return {
+        ...p,
+        capitulos: existeLeg ? (p.capitulos||[]).map(updCap) : (p.capitulos||[]),
+        presupuestosObra: (p.presupuestosObra||[]).map(ps=>({...ps,
+          capitulos: existePs ? (ps.capitulos||[]).map(updCap) : (ps.capitulos||[])
+        }))
+      };
     });
   },[]);
 
-  const mergeItemExterno = React.useCallback((event, row) => {
+  // Flag: usuario está escribiendo activamente → ignorar updates externos
+  const _editingRef = React.useRef(false);
+  const _markEditing = React.useCallback(() => {
+    _editingRef.current = true;
+    clearTimeout(window.__editingTimer__);
+    window.__editingTimer__ = setTimeout(() => { _editingRef.current = false; }, 2000);
+  }, []);
+const mergeItemExterno = React.useCallback((event, row) => {
+    if (_editingRef.current) return; // usuario escribiendo, ignorar update externo
     setPActivo(p => {
       if(!p || String(p.id)!==String(row.proyecto_id)) return p;
-      return {...p, capitulos: p.capitulos.map(cap => {
+      const newItem = {
+        id:row.id, apuId:row.apu_id,
+        descripcion:row.descripcion||"",
+        unidad:row.unidad||"",
+        cantidad:Number(row.cantidad)||0,
+      };
+      const mergeCaps = (caps) => (caps||[]).map(cap => {
         if(String(cap.id)!==String(row.capitulo_id)) return cap;
-        if(event==="DELETE") {
-          return {...cap, items: cap.items.filter(i=>String(i.id)!==String(row.id))};
-        }
-        const existe = cap.items.find(i=>String(i.id)===String(row.id));
-        const newItem = {
-          id:row.id, apuId:row.apu_id,
-          descripcion:row.descripcion||"",
-          unidad:row.unidad||"",
-          cantidad:Number(row.cantidad)||0,
-        };
-        if(existe) {
-          return {...cap, items: cap.items.map(i=>String(i.id)===String(row.id)?{...i,...newItem}:i)};
-        }
-        return {...cap, items: [...cap.items, newItem]};
-      })};
+        if(event==="DELETE") return {...cap, items: (cap.items||[]).filter(i=>String(i.id)!==String(row.id))};
+        const existe = (cap.items||[]).find(i=>String(i.id)===String(row.id));
+        if(existe) return {...cap, items: cap.items.map(i=>String(i.id)===String(row.id)?{...i,...newItem}:i)};
+        return {...cap, items: [...(cap.items||[]), newItem]};
+      });
+      // Merge en capitulos legacy Y en presupuestosObra
+      return {
+        ...p,
+        capitulos: mergeCaps(p.capitulos),
+        presupuestosObra: (p.presupuestosObra||[]).map(ps => ({...ps, capitulos: mergeCaps(ps.capitulos||[])}))
+      };
     });
   },[]);
 
   // Suscripción a cambios de caps e items del proyecto activo
   useEffect(()=>{
-    if(!pActivo?.id || vista!=="editor") return;
+    if(!pActivo?.id || (vista!=="editor" && vista!=="detalle")) return;
     const pid = String(pActivo.id);
     const myEmail = session?.user?.email;
     const ch = _sb.channel("caps_items_"+pid)
-      .on("postgres_changes",{event:"*",schema:"public",table:"capitulos_presupuesto"},
+      .on("postgres_changes",{event:"*",schema:"public",table:"capitulos_presupuesto",
+        filter:`proyecto_id=eq.${pid}`},
         p=>{ if(p.new?.updated_by_email===myEmail||p.old?.updated_by_email===myEmail) return;
              mergeCapExterno(p.eventType, p.eventType==="DELETE"?p.old:p.new); })
-      .on("postgres_changes",{event:"*",schema:"public",table:"items_presupuesto"},
+      .on("postgres_changes",{event:"*",schema:"public",table:"items_presupuesto",
+        filter:`proyecto_id=eq.${pid}`},
         p=>{ if(p.new?.updated_by_email===myEmail||p.old?.updated_by_email===myEmail) return;
              mergeItemExterno(p.eventType, p.eventType==="DELETE"?p.old:p.new); })
       .subscribe();
@@ -9584,6 +9817,7 @@ const sincronizarPolizasAU = (proyecto) => {
     dbDelItem(itemId, pActivo.id);
   };
   const updIt = (capId, itemId, campo, val) => {
+    _markEditing();
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,[campo]:val}:i)} : c)));
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
@@ -9871,7 +10105,7 @@ const sincronizarPolizasAU = (proyecto) => {
     }, t.l));
   })()), (tabEditor === "apus_usados") && React.createElement(DetalleAPUsUsados, { apusUsados: apusUsados, apus: apus, recursos: recursos, proyecto: pActivo, perfil: perfil, session: session, esLectura: false }),
   (tabEditor === "fichaFinanciera") && (() => {
-    const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
+    const _extrasObra = (pActivo.au||{}).extras||{}; const _obraTotal = calcProyecto(pActivo, apus, recursos).total + ((_extrasObra.sgSst||0)+(_extrasObra.pma||0)+(_extrasObra.pmt||0)+(_extrasObra.gestionSocial||0));
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
     const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
     const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
@@ -9882,7 +10116,7 @@ const sincronizarPolizasAU = (proyecto) => {
       const _consultEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
       const _consultPlazo= Number(_consultPolD.plazoContractual)||Number((pActivo.presupConsult||{}).plazo)||0;
       const _consultTotal= _consultSub > 0 ? calcResumenInterv(_consultSub, _consultEst, _consultPolD.polizasActivas||[], _consultPlazo).valorTotal : 0;
-      return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo, readOnly: false, obraTotal: _obraTotal, intervTotal: _intervTotal, consultTotal: _consultTotal, catalogoPolizas: catalogoPolizas || [] });
+      return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo, readOnly: false, obraTotal: _obraTotal, intervTotal: _intervTotal, consultTotal: _consultTotal, catalogoPolizas: catalogoPolizas || [], plantillasFicha: plantillasFicha||[], cd: calcCD(pActivo,apus,recursos) });
   })(), (tabEditor === "polizas_edeso") && (() => {
     const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
@@ -10537,7 +10771,7 @@ const sincronizarPolizasAU = (proyecto) => {
     }, t.label))),
     (tabDetalle === "resumen_obra") && renderResumenObra(),
     (tabDetalle === "fichaFinanciera") && (() => {
-      const _obraTotal  = calcProyecto(pActivo, apus, recursos).total;
+      const _extrasObra = (pActivo.au||{}).extras||{}; const _obraTotal = calcProyecto(pActivo, apus, recursos).total + ((_extrasObra.sgSst||0)+(_extrasObra.pma||0)+(_extrasObra.pmt||0)+(_extrasObra.gestionSocial||0));
       const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
       const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
       const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
@@ -11743,6 +11977,7 @@ function App() {
   const [catalogoPolizas,    setCatalogoPolizasRaw]     = useState([]);
   const [catalogoEstampillas,setCatalogoEstampillasRaw] = useState([]);
   const [plantillasInt,      setPlantillasIntRaw]       = useState([]);
+  const [plantillasFichaRaw, setPlantillasFichaRaw]    = useState([]);
   const [moData,             setMODataRaw]              = useState({ smmlv: 1750905, trabajadores: [], cuadrillas: [] });
   const [subTitle,           setSubTitle]               = useState(null);
 
@@ -11758,6 +11993,7 @@ function App() {
       if(row.key==="recursos")            setRecursosRaw(row.value||[]);
       if(row.key==="apus")                setApusRaw(row.value||[]);
       if(row.key==="plantillas")          setPlantillasRaw(row.value||PLANTILLAS_AU_INIT);
+      if(row.key==="plantillas_ficha")    setPlantillasFichaRaw(row.value||[]);
       if(row.key==="proyectos")           { proyBase=migrarProyectos(row.value||[]); }
       if(row.key==="catalogoPolizas")     setCatalogoPolizasRaw(row.value||[]);
       if(row.key==="catalogoEstampillas") setCatalogoEstampillasRaw(row.value||[]);
@@ -11972,6 +12208,11 @@ function App() {
     const d=typeof v==="function"?v(plantillasAU):v;
     setPlantillasRaw(d); guardar("plantillas",d,"Plantillas AU","Actualizó Plantillas AU");
   };
+  const plantillasFicha = plantillasFichaRaw;
+  const setPlantillasFicha = v=>{
+    const d=typeof v==="function"?v(plantillasFicha):v;
+    setPlantillasFichaRaw(d); guardar("plantillas_ficha",d,"Plantillas Ficha","Actualizó Plantillas Ficha Financiera");
+  };
   const setProyectos = v=>{
     const d=typeof v==="function"?v(proyectos):v;
     const a=inferirAccion("Proyectos",proyectos,d);
@@ -11998,7 +12239,8 @@ function App() {
   const counts={
     recursos:recursos.length, apus:apus.length, proyectos:proyectos.length,
     polizas:catalogoPolizas.length, estampillas:catalogoEstampillas.length,
-    plantillasInt:(plantillasInt||[]).length
+    plantillasInt:(plantillasInt||[]).length,
+    plantillasFicha:(plantillasFicha||[]).length
   };
 
   const onExportar=()=>{
@@ -12083,6 +12325,7 @@ function App() {
       modulo==="Recursos"&&React.createElement(ModuloRecursos,{recursos,setRecursos}),
       modulo==="APUs"&&React.createElement(ModuloAPUs,{recursos,apus,setApus}),
       modulo==="Plantillas AU"&&React.createElement(ModuloPlantillasAU,{plantillas:plantillasAU,setPlantillas:setPlantillasAU}),
+      modulo==="Plantillas Ficha"&&React.createElement(ModuloPlantillasFicha,{plantillas:plantillasFicha,setPlantillas:setPlantillasFicha}),
       modulo==="Catálogo Pólizas"&&React.createElement(ModuloCatalogoPolizas,{catalogoPolizas,setCatalogoPolizas}),
       modulo==="Catálogo Estampillas"&&React.createElement(ModuloCatalogoEstampillas,{catalogoEstampillas,setCatalogoEstampillas}),
       modulo==="Plantillas Interv."&&React.createElement(ModuloPlantillasInterventoria,{plantillasInt,setPlantillasInt}),
@@ -12093,6 +12336,7 @@ function App() {
       modulo==="Proyectos"&&React.createElement(ModuloProyectos,{
         recursos,apus,plantillasAU,proyectos,setProyectos,
         catalogoPolizas,catalogoEstampillas,plantillasInt,
+        plantillasFicha,
         perfil,session,guardarSeccion
       }),
       modulo==="Actividad"&&React.createElement(ModuloActividad),
