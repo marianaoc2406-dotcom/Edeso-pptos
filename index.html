@@ -6572,6 +6572,17 @@ function descargarExcel(wb, filename) {
   }
 }
 
+function calcPol(p, vBase, plazo) {
+    var pct=Number(p.pct)||0, pctP=Number(p.pctPrima)||0, mEx=Number(p.mesesExtra)||0;
+    var va=Math.round(vBase*pct/100);
+    var valor=Math.round(va*pctP/100);
+    var tt=plazo+mEx;
+    var dias=Math.round(tt*365/12);
+    var siva=dias>0?Math.round(valor*dias/365):0;
+    var civa=Math.round(siva*1.19);
+    return {va:va,valor:valor,tt:tt,dias:dias,siva:siva,civa:civa};
+  }
+
 function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   proyecto = Object.assign({}, proyecto, { _catalogoEst: catEst || [] });
   var res      = calcProyecto(proyecto, apus, recursos);
@@ -6586,7 +6597,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     : [{ id:'p0', nombre:'Presupuesto Obra', capitulos: proyecto.capitulos||[] }];
 
   // ── Helpers ──────────────────────────────────────────────────────────────
-  function fmtN(n) { return Math.round(n||0); }
+  function fmtN(n) { return n||0; }
   function safe(s) { return String(s||''); }
   function sheetName(n) {
     return n.replace(/[\/\\?\*\[\]:]/g,'').slice(0,31).trim() || 'Hoja';
@@ -6599,7 +6610,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   }
   function n(ws, r, c, val, fmt) {
     var cell = XLSX.utils.encode_cell({r:r,c:c});
-    ws[cell] = {v:fmtN(val), t:'n', z:fmt||'#,##0'};
+    ws[cell] = {v:Math.round(val||0), t:'n', z:fmt||'$#,##0'};
   }
   function nDec(ws, r, c, val) {
     var cell = XLSX.utils.encode_cell({r:r,c:c});
@@ -6637,7 +6648,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     info: function(){ return {font:FT("1E40AF",false),fill:FG("EFF6FF"),border:brd}; },
   };
   function sc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:safe(val),t:"s",s:st||ST.rowA()}; }
-  function nc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:fmtN(val),t:"n",z:"$#,##0",s:st||ST.mon()}; }
+  function nc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:Math.round(val||0),t:"n",z:"$#,##0",s:st||ST.mon()}; }
   function ndc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:val||0,t:"n",z:"#,##0.0000",s:st||ST.rowA()}; }
   function pc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:safe(val),t:"s",s:st||{fill:FG("F3F4F6"),border:brd,alignment:C_AL}}; }
 
@@ -6672,8 +6683,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       r++;
       (cap.items||[]).forEach(function(item, ii) {
         var apu = apus.find(function(a){ return a.id===item.apuId; });
-        var vu = apu ? calcAPUTotal(apu,recursos) : 0;
-        var vt = (item.cantidad||0)*vu;
+        var vu = apu ? Math.round(calcAPUTotal(apu,recursos)) : 0;
+        var vt = Math.round((item.cantidad||0)*vu);
         var pct2 = cdPs>0?(vt/cdPs*100).toFixed(2):'0.00';
         var st2=ii%2===0?ST.rowA():ST.rowB();
         sc(ws,r,0,safe(cap.numero)+'.'+(ii+1),{font:{color:{rgb:'B91C1C'},bold:true},fill:st2.fill,border:brd});
@@ -6695,7 +6706,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var prop = cd>0 ? cdPs/cd : 0;
     var aEste = Math.round((res.auGastos||0)*prop);
     var uEste = Math.round(cd*(pctU||0)/100*prop);
-    var costoTotal = Math.round(cdPs)+aEste+uEste;
+    var costoTotal = cdPs+aEste+uEste;
     var extras = (proyecto.au||{}).extras||{};
     var totalExtras = (extras.sgSst||0)+(extras.pma||0)+(extras.pmt||0)+(extras.gestionSocial||0);
 
@@ -6735,7 +6746,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         if(!(sub.items||[]).length) return;
         var fc = sub.id==='s1_1'?1.45:sub.id==='s1_3'?1.70:1;
         var sv = calcAUSubseccion(sub,cd,res.total);
-        sc(wsAU,r,0,(sub.numero||'')+' '+safe(sub.titulo),ST.cap()); sc(wsAU,r,1,'',ST.cap()); nc(wsAU,r,2,Math.round(sv*fc),ST.tot());
+        sc(wsAU,r,0,(sub.numero||'')+' '+safe(sub.titulo),ST.cap()); sc(wsAU,r,1,'',ST.cap()); nc(wsAU,r,2,sv*fc,ST.tot());
         r++;
         (sub.items||[]).forEach(function(it) {
           var v = Math.round(calcAUItem(it,sub.tipo,cd,res.total)*fc);
@@ -6749,14 +6760,14 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       });
     });
     r++;
-    sc(wsAU,r,0,'TOTAL A+U',ST.cap()); sc(wsAU,r,1,'',ST.cap()); nc(wsAU,r,2,Math.round(res.total-cd),ST.tot()); r++;
-    sc(wsAU,r,0,'Costo Directo (C.D.)',ST.rowA()); sc(wsAU,r,1,'',ST.rowA()); nc(wsAU,r,2,Math.round(cd),ST.mon()); r++;
-    sc(wsAU,r,0,'COSTO TOTAL (C.D. + C.I.)',ST.tot2()); sc(wsAU,r,1,'',ST.tot2()); nc(wsAU,r,2,Math.round(res.total),ST.tot2()); r++;
+    sc(wsAU,r,0,'TOTAL A+U',ST.cap()); sc(wsAU,r,1,'',ST.cap()); nc(wsAU,r,2,res.total-cd,ST.tot()); r++;
+    sc(wsAU,r,0,'Costo Directo (C.D.)',ST.rowA()); sc(wsAU,r,1,'',ST.rowA()); nc(wsAU,r,2,cd,ST.mon()); r++;
+    sc(wsAU,r,0,'COSTO TOTAL (C.D. + C.I.)',ST.tot2()); sc(wsAU,r,1,'',ST.tot2()); nc(wsAU,r,2,res.total,ST.tot2()); r++;
     if(extras.sgSst>0){ s(wsAU,r,0,'SG-SST'); n(wsAU,r,2,extras.sgSst); r++; }
     if(extras.pma>0){   s(wsAU,r,0,'PMA');    n(wsAU,r,2,extras.pma);   r++; }
     if(extras.pmt>0){   s(wsAU,r,0,'PMT');    n(wsAU,r,2,extras.pmt);   r++; }
     if(extras.gestionSocial>0){ s(wsAU,r,0,'Gestión Social'); n(wsAU,r,2,extras.gestionSocial); r++; }
-    if(totalExtras>0){ s(wsAU,r,0,'COSTOS TOTALES'); n(wsAU,r,2,Math.round(res.total)+totalExtras); r++; }
+    if(totalExtras>0){ s(wsAU,r,0,'COSTOS TOTALES'); n(wsAU,r,2,res.total+totalExtras); r++; }
 
     setRange(wsAU,[{wch:55},{wch:40},{wch:20}]);
     XLSX.utils.book_append_sheet(wb, wsAU, 'Cálculo A+U');
@@ -6774,14 +6785,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     r++;
     var totP = 0;
     polizas.forEach(function(p) {
-      var pct=Number(p.pct)||0, pctP=Number(p.pctPrima)||0, mEx=Number(p.mesesExtra)||0;
-      var va=Math.round(vb*pct/100), valor=Math.round(va*pctP/100);
-      var tt=plz+mEx, dias=Math.round(tt*365/12);
-      var siva=dias>0?Math.round(valor*dias/365):0, civa=Math.round(siva*1.19);
-      totP+=civa;
-      s(wsP,r,0,safe(p.nombre)); n(wsP,r,1,pct); n(wsP,r,2,va); n(wsP,r,3,pctP);
-      n(wsP,r,4,valor); s(wsP,r,5,plz+'m'); s(wsP,r,6,mEx+'m'); s(wsP,r,7,dias+'d');
-      n(wsP,r,8,siva); n(wsP,r,9,civa); r++;
+      var c2=calcPol(p,vb,plz);
+      totP+=c2.civa;
+      sc(wsP,r,0,safe(p.nombre||'')); sc(wsP,r,1,(p.pct||0)+'%',ST.rowA()); n(wsP,r,2,c2.va); sc(wsP,r,3,(p.pctPrima||0)+'%',ST.rowA());
+      n(wsP,r,4,c2.valor); s(wsP,r,5,plz+'m'); s(wsP,r,6,(p.mesesExtra||0)+'m'); s(wsP,r,7,c2.dias+'d');
+      n(wsP,r,8,c2.siva); n(wsP,r,9,c2.civa); r++;
     });
     s(wsP,r,0,'TOTAL PÓLIZAS c/IVA'); n(wsP,r,9,totP);
     setRange(wsP,[{wch:35},{wch:10},{wch:16},{wch:10},{wch:16},{wch:8},{wch:8},{wch:8},{wch:16},{wch:16}]);
@@ -6812,65 +6820,104 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   if(tieneInt) {
     var wsI = {}, r = 0;
     var pi = proyecto.presupInterv||{};
-    var tiInt = calcTotalPresupInterv(pi);
-    var fmDef = {prima:8.33,cesantias:8.33,intCesantias:1,vacaciones:4.17,salud:0,pension:12,subsidioFamiliar:4,sena:0,icbf:0,arl:2.436};
-    var fmD = pi.fmData||fmDef;
-    var fmSum = Object.keys(fmD).reduce(function(ss,k){ return ss+(Number(fmD[k])||0); },0);
-    var fm = parseFloat((1+fmSum/100).toFixed(4));
+    var fmD = pi.fmData||{};
+    var fm = calcFMdesdeData(fmD);
+    var _piPlazo = Number((((proyecto.polizasPorComp||{}).interventoria)||{}).plazoContractual)||Number(pi.plazo)||0;
+    var _piPolD  = ((proyecto.polizasPorComp||{}).interventoria)||{};
+    var _piEst   = getEstampillasMunicipio(catEst||[], proyecto.municipioId, "interv");
+    var subtotal12 = calcTotalPresupInterv(pi);
+    var RR = calcResumenInterv(subtotal12, _piEst, _piPolD.polizasActivas||[], _piPlazo);
 
-    s(wsI,r,0,'Factor Multiplicador (FM)'); n(wsI,r,1,fm); r++; r++;
-    ['Sección / Ítem','Detalle','Factor','Total'].forEach(function(h,c){ s(wsI,r,c,h); }); r++;
+    // Título
+    sc(wsI,r,0,"PRESUPUESTO INTERVENTORÍA",{font:FT("FFFFFF",true,13),fill:FG("1D4ED8"),border:brd});
+    [1,2,3,4].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("1D4ED8"),border:brd}); });
+    r++; r++;
 
+    // Factor Multiplicador desglose
+    sc(wsI,r,0,"Factor Multiplicador (FM)",ST.hdr()); sc(wsI,r,1,String(fm),ST.hdr()); r++;
+    var fmKeys = Object.keys(FM_DEFAULTS||{});
+    fmKeys.forEach(function(k) {
+      var val = Number((pi.fmData||{})[k])||Number((FM_DEFAULTS||{})[k])||0;
+      if(!val) return;
+      sc(wsI,r,0,"  "+k,ST.rowA()); sc(wsI,r,1,val+"%",{fill:FG("FFFFFF"),border:brd,alignment:C_AL}); r++;
+    });
+    r++;
+
+    // Column headers
+    ["Ítem","Und","Cantidad","V. Mes Base","Ded.","Meses","Factor","Total"].forEach(function(h,ci){
+      sc(wsI,r,ci,h,ST.hdr());
+    }); r++;
+
+    // Capítulos e ítems
     (pi.capitulos||[]).forEach(function(cap) {
       var subT = (cap.items||[]).reduce(function(ss,it){
-        return ss+(cap.tipo==='personal'
+        return ss+(cap.tipo==="personal"
           ?(Number(it.valorMesBase)||0)*(Number(it.cantidad)||0)*(Number(it.dedicacion)||1)*(Number(it.meses)||0)
           :(Number(it.cantidad)||0)*(Number(it.valorUnitario)||0)*(Number(it.meses)||1));
       },0);
-      var capT = cap.tipo==='personal'?subT*fm:subT;
-      s(wsI,r,0,safe(cap.titulo||cap.nombre));
-      s(wsI,r,2,cap.tipo==='personal'?'×'+fm:'');
-      n(wsI,r,3,capT); r++;
-      (cap.items||[]).forEach(function(it) {
-        var itV = cap.tipo==='personal'
-          ?(Number(it.valorMesBase)||0)*(Number(it.cantidad)||0)*(Number(it.dedicacion)||1)*(Number(it.meses)||0)*fm
-          :(Number(it.cantidad)||0)*(Number(it.valorUnitario)||0)*(Number(it.meses)||1);
-        var det = cap.tipo==='personal'
-          ?(it.valorMesBase||0)+'/mes × '+(it.cantidad||0)+' × '+(it.dedicacion||1)+'ded × '+(it.meses||0)+'m × FM'
-          :(it.cantidad||0)+' × '+(it.valorUnitario||0);
-        s(wsI,r,0,'  '+safe(it.descripcion)); s(wsI,r,1,det); n(wsI,r,3,Math.round(itV)); r++;
+      var capT = cap.tipo==="personal"?subT*fm:subT;
+      [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.cap()); });
+      sc(wsI,r,0,safe(cap.titulo||cap.nombre||""),ST.cap());
+      if(cap.tipo==="personal") sc(wsI,r,6,"×"+fm,ST.cap());
+      nc(wsI,r,7,capT,ST.tot()); r++;
+      (cap.items||[]).forEach(function(it,ii) {
+        var itV = cap.tipo==="personal"
+          ?Math.round((Number(it.valorMesBase)||0)*(Number(it.cantidad)||0)*(Number(it.dedicacion)||1)*(Number(it.meses)||0)*fm)
+          :Math.round((Number(it.cantidad)||0)*(Number(it.valorUnitario)||0)*(Number(it.meses)||1));
+        var stR = ii%2===0?ST.rowA():ST.rowB();
+        sc(wsI,r,0,safe(it.descripcion||""),stR);
+        sc(wsI,r,1,safe(it.unidad||""),{fill:stR.fill,border:brd,alignment:C_AL});
+        ndc(wsI,r,2,it.cantidad||0,{fill:stR.fill,border:brd,alignment:R_AL});
+        nc(wsI,r,3,it.valorMesBase||it.valorUnitario||0,ST.mon(stR));
+        ndc(wsI,r,4,it.dedicacion||1,{fill:stR.fill,border:brd,alignment:R_AL});
+        sc(wsI,r,5,String(it.meses||1),{fill:stR.fill,border:brd,alignment:C_AL});
+        sc(wsI,r,6,cap.tipo==="personal"?"×"+fm:"",{fill:stR.fill,border:brd,alignment:C_AL});
+        nc(wsI,r,7,itV,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL}); r++;
       });
     });
     r++;
-    s(wsI,r,0,'TOTAL INTERVENTORÍA'); n(wsI,r,3,tiInt);
-    setRange(wsI,[{wch:50},{wch:40},{wch:12},{wch:18}]);
-    XLSX.utils.book_append_sheet(wb, wsI, 'Presupuesto Interventoría');
-  }
 
-  // ── 6. PÓLIZAS INTERVENTORÍA ─────────────────────────────────────────────
-  if(tieneInt) {
-    var wsPI = {}, r = 0;
-    var polInt = ((proyecto.polizasPorComp||{}).interventoria)||{};
-    var polizasI = polInt.polizasActivas||[];
-    var plzI = Number(polInt.plazoContractual)||0;
-    var tiInt2 = calcTotalPresupInterv(proyecto.presupInterv);
+    // Resumen final
+    [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.cap()); });
+    sc(wsI,r,0,"SUBTOTAL (1+2)",ST.cap()); nc(wsI,r,7,subtotal12,ST.tot()); r++;
 
-    ['Póliza','% Valor','V.Asegurar','% Prima','VA×%Prima','Plazo','+ Meses','Días','Prima s/IVA','Prima c/IVA'].forEach(function(h,ci){ sc(wsPI,r,ci,h,ST.hdr()); });
+    // Estampillas
+    if(_piEst.length) {
+      [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.lbl()); });
+      sc(wsI,r,0,"COSTOS DE PERFECCIONAMIENTO (IMPUESTOS)",ST.lbl()); r++;
+      _piEst.forEach(function(e,ii) {
+        var val = Math.round(RR.subtotalGeneral*(Number(e.pctDef)||0)/100);
+        var stR = ii%2===0?ST.rowA():ST.rowB();
+        sc(wsI,r,0,"  Estampilla "+safe(e.nombre||e.tipo||""),stR);
+        sc(wsI,r,6,safe((e.pctDef||0)+"%"),{fill:stR.fill,border:brd,alignment:C_AL});
+        nc(wsI,r,7,val,ST.mon(stR)); r++;
+      });
+      sc(wsI,r,0,"Total Estampillas",ST.rowA());
+      nc(wsI,r,7,RR.impuestos,ST.mon()); r++;
+    }
+
+    // Pólizas interventoría
+    var nPols = (_piPolD.polizasActivas||[]).length;
+    if(nPols) {
+      [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.lbl()); });
+      sc(wsI,r,0,"COSTOS DE PERFECCIONAMIENTO (PÓLIZAS Y TRANSACCIONES BANCARIAS)",ST.lbl()); r++;
+      sc(wsI,r,0,"  Pólizas y garantías ("+nPols+" pólizas · plazo "+_piPlazo+" meses)",ST.rowA());
+      nc(wsI,r,7,RR.primasTotal,ST.mon()); r++;
+      sc(wsI,r,0,"  50% Impuesto 4/1000 (0.2% sobre valor total)",ST.rowB());
+      nc(wsI,r,7,RR.tb,ST.mon()); r++;
+    }
+
+    // Totales finales
     r++;
-    var totPI = 0;
-    polizasI.forEach(function(p) {
-      var pct=Number(p.pct)||0, pctP=Number(p.pctPrima)||0, mEx=Number(p.mesesExtra)||0;
-      var va=Math.round(tiInt2*pct/100), valor=Math.round(va*pctP/100);
-      var tt=plzI+mEx, dias=Math.round(tt*365/12);
-      var siva=dias>0?Math.round(valor*dias/365):0, civa=Math.round(siva*1.19);
-      totPI+=civa;
-      s(wsPI,r,0,safe(p.nombre)); n(wsPI,r,1,pct); n(wsPI,r,2,va); n(wsPI,r,3,pctP);
-      n(wsPI,r,4,valor); s(wsPI,r,5,plzI+'m'); s(wsPI,r,6,mEx+'m'); s(wsPI,r,7,dias+'d');
-      n(wsPI,r,8,siva); n(wsPI,r,9,civa); r++;
-    });
-    s(wsPI,r,0,'TOTAL PÓLIZAS c/IVA'); n(wsPI,r,9,totPI);
-    setRange(wsPI,[{wch:35},{wch:10},{wch:16},{wch:10},{wch:16},{wch:8},{wch:8},{wch:8},{wch:16},{wch:16}]);
-    XLSX.utils.book_append_sheet(wb, wsPI, 'Pólizas Interventoría');
+    [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.cap()); });
+    sc(wsI,r,0,"SUBTOTAL GENERAL",ST.cap()); nc(wsI,r,7,RR.subtotalGeneral,ST.tot()); r++;
+    sc(wsI,r,0,"IVA 19% — Base antes de impuestos y pólizas",ST.rowA());
+    nc(wsI,r,7,RR.iva,ST.mon()); r++;
+    [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.tot2()); });
+    sc(wsI,r,0,"VALOR TOTAL INTERVENTORÍA",ST.tot2()); nc(wsI,r,7,RR.valorTotal,ST.tot2()); r++;
+
+    setRange(wsI,[{wch:50},{wch:8},{wch:10},{wch:18},{wch:8},{wch:8},{wch:8},{wch:18}]);
+    XLSX.utils.book_append_sheet(wb, wsI, "Presupuesto Interventoría");
   }
 
   // ── Calcular totales correctos (igual que VER) ──────────────────────────
@@ -6879,9 +6926,31 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var _intervSub  = calcTotalPresupInterv(proyecto.presupInterv);
   var _intervPolD = ((proyecto.polizasPorComp||{}).interventoria)||{};
   var _intervPlazo= Number(_intervPolD.plazoContractual)||Number((proyecto.presupInterv||{}).plazo)||0;
-  // Usar calcResumenInterv igual que el editor
-  var _intervEst  = []; // sin estampillas interventoria en export (no disponibles)
-  var _intervTotal = calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
+  var _intervEst  = getEstampillasMunicipio(catEst||[], proyecto.municipioId, "interv");
+  var _intervTotal = Math.round(calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal);
+
+  // ── 6. PÓLIZAS INTERVENTORÍA ─────────────────────────────────────────────
+  if(tieneInt) {
+    var wsPI = {}, r = 0;
+    var polInt = ((proyecto.polizasPorComp||{}).interventoria)||{};
+    var polizasI = polInt.polizasActivas||[];
+    var plzI = Number(polInt.plazoContractual)||0;
+    var tiInt2 = _intervTotal;
+
+    ['Póliza','% Valor','V.Asegurar','% Prima','VA×%Prima','Plazo','+ Meses','Días','Prima s/IVA','Prima c/IVA'].forEach(function(h,ci){ sc(wsPI,r,ci,h,ST.hdr()); });
+    r++;
+    var totPI = 0;
+    polizasI.forEach(function(p) {
+      var ci2=calcPol(p,tiInt2,plzI);
+      totPI+=ci2.civa;
+      sc(wsPI,r,0,safe(p.nombre||'')); sc(wsPI,r,1,(p.pct||0)+'%',ST.rowA()); n(wsPI,r,2,ci2.va); sc(wsPI,r,3,(p.pctPrima||0)+'%',ST.rowA());
+      n(wsPI,r,4,ci2.valor); s(wsPI,r,5,plzI+'m'); s(wsPI,r,6,(p.mesesExtra||0)+'m'); s(wsPI,r,7,ci2.dias+'d');
+      n(wsPI,r,8,ci2.siva); n(wsPI,r,9,ci2.civa); r++;
+    });
+    s(wsPI,r,0,'TOTAL PÓLIZAS c/IVA'); n(wsPI,r,9,totPI);
+    setRange(wsPI,[{wch:35},{wch:10},{wch:16},{wch:10},{wch:16},{wch:8},{wch:8},{wch:8},{wch:16},{wch:16}]);
+    XLSX.utils.book_append_sheet(wb, wsPI, 'Pólizas Interventoría');
+  }
   var _fichaR = calcFichaFinanciera(proyecto, _obraTotal, _intervTotal, 0, 50);
   var _fichaBase = _fichaR.totalRecursos || _obraTotal; // SUBTOTAL RECURSOS A ADMINISTRAR
 
@@ -6895,14 +6964,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   r++;
   var totEd = 0;
   polizasEd.forEach(function(p) {
-    var pct=Number(p.pct)||0, pctP=Number(p.pctPrima)||0, mEx=Number(p.mesesExtra)||0;
-    var va=Math.round(_fichaBase*pct/100), valor=Math.round(va*pctP/100);
-    var tt=plzEd+mEx, dias=Math.round(tt*365/12);
-    var siva=dias>0?Math.round(valor*dias/365):0, civa=Math.round(siva*1.19);
-    totEd+=civa;
-    s(wsEdeso,r,0,safe(p.nombre)); n(wsEdeso,r,1,pct); n(wsEdeso,r,2,va); n(wsEdeso,r,3,pctP);
-    n(wsEdeso,r,4,valor); s(wsEdeso,r,5,plzEd+'m'); s(wsEdeso,r,6,mEx+'m'); s(wsEdeso,r,7,dias+'d');
-    n(wsEdeso,r,8,siva); n(wsEdeso,r,9,civa); r++;
+    var ce2=calcPol(p,_fichaBase,plzEd);
+    totEd+=ce2.civa;
+    sc(wsEdeso,r,0,safe(p.nombre||'')); sc(wsEdeso,r,1,(p.pct||0)+'%',ST.rowA()); n(wsEdeso,r,2,ce2.va); sc(wsEdeso,r,3,(p.pctPrima||0)+'%',ST.rowA());
+    n(wsEdeso,r,4,ce2.valor); s(wsEdeso,r,5,plzEd+'m'); s(wsEdeso,r,6,(p.mesesExtra||0)+'m'); s(wsEdeso,r,7,ce2.dias+'d');
+    n(wsEdeso,r,8,ce2.siva); n(wsEdeso,r,9,ce2.civa); r++;
   });
   s(wsEdeso,r,0,'TOTAL PÓLIZAS c/IVA'); n(wsEdeso,r,9,totEd);
   setRange(wsEdeso,[{wch:35},{wch:10},{wch:16},{wch:10},{wch:16},{wch:8},{wch:8},{wch:8},{wch:16},{wch:16}]);
@@ -6920,8 +6986,9 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     {l:'Costo de Obra (C.D.+C.I.)', v:R.obraTotal, tot:false},
     {l:'Interventoría', v:R.intervTotal, tot:false},
     {l:'Costos Indirectos del Proyecto', v:R.subtotalIndirecto, tot:false},
+    {l:'Pólizas y Garantías EDESO', v:R.polizasEdeso||0, tot:false},
     {l:'SUBTOTAL RECURSOS A ADMINISTRAR', v:R.totalRecursos, tot:true},
-    {l:'Honorarios A.D.R. ('+(pctHon*100).toFixed(0)+'%)', v:R.honorarios, tot:false},
+    {l:'Honorarios A.D.R.', v:R.honorarios, tot:false},
     {l:'IVA 19%', v:R.iva, tot:false},
     {l:'TOTAL HONORARIOS POR ADMINISTRACIÓN', v:R.honorarios+R.iva, tot:true},
     {l:'VALOR TOTAL DE RECURSOS A INVERTIR', v:R.totalContrato, tot:true},
@@ -7018,7 +7085,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     sc(wsAPU,r,0,safe(apu.codigo),ST.cap());
     sc(wsAPU,r,1,safe(apu.nombre),ST.cap());
     sc(wsAPU,r,2,'',ST.cap()); sc(wsAPU,r,3,'',ST.cap()); sc(wsAPU,r,4,safe(apu.unidad),ST.cap());
-    sc(wsAPU,r,5,'',ST.cap()); sc(wsAPU,r,6,'V. UNITARIO',ST.cap()); n(wsAPU,r,7,Math.round(vu));
+    sc(wsAPU,r,5,'',ST.cap()); sc(wsAPU,r,6,'V. UNITARIO',ST.cap()); n(wsAPU,r,7,vu);
     r++;
 
     lineas.forEach(function(l) {
@@ -7039,7 +7106,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       s(wsAPU,r,2,'Herramienta menor (5% MO)');
       sc(wsAPU,r,2,'Herramienta menor (5% MO)',ST.info());
       [0,1,3,4,5,6].forEach(function(ci){ sc(wsAPU,r,ci,'',ST.info()); });
-      nc(wsAPU,r,7,Math.round(totalMO*0.05),{font:FT('1E40AF',true),fill:FG('EFF6FF'),border:brd,alignment:R_AL});
+      nc(wsAPU,r,7,totalMO*0.05,{font:FT('1E40AF',true),fill:FG('EFF6FF'),border:brd,alignment:R_AL});
       r++;
     }
     r++;
@@ -7049,6 +7116,69 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   XLSX.utils.book_append_sheet(wb, wsAPU, 'APUs Proyectos');
 
   // ── EXPORT ───────────────────────────────────────────────────────────────
+  // ── EXTRAS: SG-SST / PMA / PMT / GESTIÓN SOCIAL ─────────────────────────
+  var extrasDefs = [
+    { campo:"sgSst",          titulo:"SG-SST" },
+    { campo:"pma",            titulo:"PMA" },
+    { campo:"pmt",            titulo:"PMT" },
+    { campo:"gestionSocial",  titulo:"Gestion Social" }
+  ];
+  extrasDefs.forEach(function(ed) {
+    var secs = proyecto["extras_"+ed.campo];
+    if(!secs || !secs.length) return;
+    var wsEx = {}, r = 0;
+
+    // Título
+    sc(wsEx,r,0,ed.titulo,{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,1,"",{fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,2,"",{fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,3,"",{fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,4,"",{fill:FG("1F2937"),border:brd}); r++; r++;
+
+    // Headers
+    ["Sección / Ítem","Und","Cantidad","V. Unitario","Factor","Total"].forEach(function(h,ci){
+      sc(wsEx,r,ci,h,ST.hdr());
+    }); r++;
+
+    var grandTotal = 0;
+    secs.forEach(function(sec) {
+      var factor = sec.factorPrestacional||1;
+      var subT = (sec.items||[]).reduce(function(ss,it){
+        return ss + (it.cantidad||0)*(it.valorUnitario||0);
+      },0);
+      var secTotal = subT * factor;
+      grandTotal += secTotal;
+
+      // Section header
+      [0,1,2,3,4,5].forEach(function(ci){ sc(wsEx,r,ci,"",ST.cap()); });
+      sc(wsEx,r,0,safe(sec.titulo||sec.nombre||""),ST.cap());
+      if(factor !== 1) sc(wsEx,r,4,"x"+factor,ST.cap());
+      nc(wsEx,r,5,secTotal,ST.tot()); r++;
+
+      // Items
+      (sec.items||[]).forEach(function(it,ii) {
+        var vt = Math.round((it.cantidad||0)*(it.valorUnitario||0)*factor);
+        var stR = ii%2===0?ST.rowA():ST.rowB();
+        sc(wsEx,r,0,safe(it.descripcion||it.desc||""),stR);
+        sc(wsEx,r,1,safe(it.unidad||""),{fill:stR.fill,border:brd,alignment:C_AL});
+        ndc(wsEx,r,2,it.cantidad||0,{fill:stR.fill,border:brd,alignment:R_AL});
+        nc(wsEx,r,3,it.valorUnitario||0,ST.mon(stR));
+        sc(wsEx,r,4,factor!==1?"x"+factor:"",{fill:stR.fill,border:brd,alignment:C_AL});
+        nc(wsEx,r,5,vt,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+        r++;
+      });
+    });
+
+    // Grand total
+    r++;
+    [0,1,2,3,4].forEach(function(ci){ sc(wsEx,r,ci,"",ST.tot2()); });
+    sc(wsEx,r,0,"TOTAL "+ed.titulo,ST.tot2());
+    nc(wsEx,r,5,grandTotal,ST.tot2()); r++;
+
+    setRange(wsEx,[{wch:50},{wch:8},{wch:10},{wch:18},{wch:8},{wch:18}]);
+    XLSX.utils.book_append_sheet(wb, wsEx, ed.titulo.slice(0,31));
+  });
+
   XLSX.writeFile(wb, (proyecto.nombre||'Proyecto').replace(/[\/\\?*\[\]:]/g,'').slice(0,50)+'.xlsx');
 }
 
@@ -12397,16 +12527,7 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
   }
 
   // Poliza calculation (same formula as system)
-  function calcPol(p, vBase, plazo) {
-    var pct=Number(p.pct)||0, pctP=Number(p.pctPrima)||0, mEx=Number(p.mesesExtra)||0;
-    var va=Math.round(vBase*pct/100);
-    var valor=Math.round(va*pctP/100);
-    var tt=plazo+mEx;
-    var dias=Math.round(tt*365/12);
-    var siva=dias>0?Math.round(valor*dias/365):0;
-    var civa=Math.round(siva*1.19);
-    return {va:va,valor:valor,tt:tt,dias:dias,siva:siva,civa:civa};
-  }
+  // calcPol moved to global scope
 
   function polTable(polData, vBase, plazo) {
     var polizas=(polData&&polData.polizasActivas)||[];
@@ -12440,9 +12561,9 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
 
   // ── 1. PRESUPUESTOS DE OBRA ──────────────────────────────────────
   presups.forEach(function(ps) {
-    var cdPs=(ps.capitulos||[]).reduce(function(s,cap){
+    var cdPs=Math.round((ps.capitulos||[]).reduce(function(s,cap){
       return s+(cap.items||[]).reduce(function(s2,it){return s2+calcItem(it,apus,recursos);},0);
-    },0);
+    },0));
     var rows='';
     (ps.capitulos||[]).forEach(function(cap) {
       var cdC=(cap.items||[]).reduce(function(s,it){return s+calcItem(it,apus,recursos);},0);
@@ -12452,7 +12573,7 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
       (cap.items||[]).forEach(function(item,ii) {
         var apu=apus.find(function(a){return a.id===item.apuId;});
         var vu=apu?calcAPUTotal(apu,recursos):0;
-        var vt=(item.cantidad||0)*vu;
+        var vt=Math.round((item.cantidad||0)*vu);
         var pct2=cdPs>0?(vt/cdPs*100).toFixed(2):'0.00';
         rows+='<tr>'
           +'<td class="in">'+esc(cap.numero)+'.'+(ii+1)+'</td>'
@@ -12481,7 +12602,7 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
       (sec.subsecciones||[]).forEach(function(sub) {
         if(!(sub.items||[]).length) return;
         var fc=sub.id==='s1_1'?1.45:sub.id==='s1_3'?1.70:1;
-        var sv=calcAUSubseccion(sub,res.cd,res.total);
+        var sv=Math.round(calcAUSubseccion(sub,res.cd,res.total));
         aur+='<tr class="cr"><td colspan="4">'+(sub.numero||'')+' '+esc(sub.titulo)+'</td><td class="r">'+fP(Math.round(sv*fc))+'</td></tr>';
         (sub.items||[]).forEach(function(it) {
           var v=Math.round(calcAUItem(it,sub.tipo,res.cd,res.total)*fc);
