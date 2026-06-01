@@ -1716,22 +1716,38 @@ function ModuloRecursos({
 function ModuloAPUs({
   recursos,
   apus,
-  setApus
+  setApus,
+  setRecursos
 }) {
   var _SECCIONES_APU$find;
   const [vista, setVista] = useState("lista");
   const [apuActivo, setApuActivo] = useState(null);
   const [busq, setBusq] = useState("");
+  const [sortApus, setSortApus] = useState({campo: null, dir: "asc"});
   const [showRecModal, setShowRecModal] = useState(null);
   const [busqRec, setBusqRec] = useState("");
   const [importApuError, setImportApuError] = useState("");
   const [importApuOk, setImportApuOk] = useState("");
   const [delItem, setDelItem] = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importPrefijo, setImportPrefijo] = useState("");
+  const [importPrefijoError, setImportPrefijoError] = useState("");
+  const toggleSort = campo => setSortApus(prev =>
+    prev.campo === campo ? {campo, dir: prev.dir === "asc" ? "desc" : "asc"} : {campo, dir: "asc"}
+  );
   const filtered = useMemo(() => {
-    if (!busq.trim()) return apus;
-    const q = busq.toLowerCase();
-    return apus.filter(a => a.nombre.toLowerCase().includes(q) || a.codigo.toLowerCase().includes(q));
-  }, [apus, busq]);
+    let list = busq.trim()
+      ? apus.filter(a => a.nombre.toLowerCase().includes(busq.toLowerCase()) || a.codigo.toLowerCase().includes(busq.toLowerCase()))
+      : [...apus];
+    if (sortApus.campo) {
+      const c = sortApus.campo;
+      list = [...list].sort((a,b) => {
+        const r = a[c].localeCompare(b[c], "es", {sensitivity:"base"});
+        return sortApus.dir === "asc" ? r : -r;
+      });
+    }
+    return list;
+  }, [apus, busq, sortApus]);
   const abrirEditor = a => {
     setApuActivo(JSON.parse(JSON.stringify(a)));
     setVista("editor");
@@ -1845,6 +1861,384 @@ function ModuloAPUs({
           return mapa;
         });
       } catch(err) { setImportApuError("Error leyendo el archivo. Usa el formato .xlsx de la plantilla"); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // ── IMPORTAR DESDE FORMATO EDESO (APUs nativos) ──────────────────
+  const SECCIONES_EDESO = {
+    "mano de obra": "mano_obra",
+    "maquinaria - equipo - herramienta": "maquinaria",
+    "maquinaria equipo herramienta": "maquinaria",
+    "maquinaria": "maquinaria",
+    "materiales": "material",
+    "transporte": "transporte",
+  };
+
+  const importarDesdeEdeso = (e, prefijo) => {
+    setImportApuError(""); setImportApuOk("");
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    if (!prefijo.trim()) { setImportPrefijoError("Escribe un prefijo antes de seleccionar el archivo"); return; }
+    setImportPrefijoError("");
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const filas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+        const apusParsed = [];
+        let apuActualLocal = null;
+        let seccionActual = null;
+
+        // Detectar categoría desde nombre de sección
+        const detectarCategoria = (texto) => {
+          if (!texto) return null;
+          const t = String(texto).toLowerCase().trim()
+            .replace(/[-–—]/g, " ").replace(/\s+/g, " ").trim();
+          for (const [key, cat] of Object.entries(SECCIONES_EDESO)) {
+            if (t.includes(key)) return cat;
+          }
+          return null;
+        };
+
+        for (let i = 1; i < filas.length; i++) {
+          const f = filas[i];
+          if (!f || f.every(c => c === null || c === "")) continue;
+
+          const col0 = f[0]; // CODIGO
+          const col1 = f[1]; // DESCRIPCIÓN
+          const col2 = f[2]; // UN
+          const col3 = f[3]; // CANTIDAD
+          const col4 = f[4]; // VALOR UNITARIO
+          const col5 = f[5]; // VALOR UNITARIO TOTAL
+
+          // Fila de APU: tiene código en col0 (ej. "1.1", "2.3")
+          if (col0 !== null && col0 !== "" && col1) {
+            const codStr = String(col0).trim();
+            if (codStr.toLowerCase() === "codigo") continue; // header
+            apuActualLocal = {
+              _codOrig: codStr,
+              nombre: String(col1).trim(),
+              unidad: col2 ? String(col2).trim() : "un",
+              lineas: []
+            };
+            apusParsed.push(apuActualLocal);
+            seccionActual = null;
+            continue;
+          }
+
+          if (!apuActualLocal) continue;
+
+          // Fila de sección (col0 null, col1 tiene nombre de sección, sin cantidad/precio)
+          if (col0 === null && col1 && col3 === null && col4 === null) {
+            const cat = detectarCategoria(col1);
+            if (cat) { seccionActual = cat; continue; }
+          }
+
+          // Fila de recurso
+          if (col0 === null && col1 && seccionActual) {
+            const nombre = String(col1).trim();
+            const cantidad = col3 !== null ? Number(col3) : null;
+            const precio = col4 !== null ? Number(col4) : 0;
+            const unidadRec = col2 ? String(col2).trim() : null;
+            const esHerramientaMenor = nombre.toLowerCase().includes("herramienta menor");
+
+            // Herramienta menor (5% MO) — la manejamos como línea especial
+            apuActualLocal.lineas.push({
+              _nombre: nombre,
+              _categoria: seccionActual,
+              _esHerramientaMenor: esHerramientaMenor,
+              _cantidad: cantidad,
+              _precio: precio,
+              _unidad: unidadRec
+            });
+          }
+        }
+
+        if (!apusParsed.length) {
+          setImportApuError("No se encontraron APUs. Verifica que el archivo tenga el formato correcto.");
+          return;
+        }
+
+        // Ahora construir recursos y APUs
+        const pref = prefijo.trim().toUpperCase();
+        const nuevosRecursos = [];
+        const nuevosApus = [];
+        const recursosMapa = {}; // nombre_lower → id
+
+        // Inicializar mapa con recursos existentes
+        recursos.forEach(r => { recursosMapa[r.nombre.toLowerCase()] = r.id; });
+
+        apusParsed.forEach((ap, idx) => {
+          const numStr = String(idx + 1).padStart(2, "0");
+          const codigo = `${pref}-${numStr}`;
+          const lineasApu = [];
+
+          ap.lineas.forEach(l => {
+            if (l._esHerramientaMenor) {
+              // Crear recurso especial herramienta menor si no existe
+              const nomH = "Herramienta menor (5%)";
+              const keyH = nomH.toLowerCase();
+              if (!recursosMapa[keyH]) {
+                const idH = Date.now() + Math.random();
+                nuevosRecursos.push({ id: idH, nombre: nomH, codigo: "HM-01", unidad: "%M.O.", precio: 0, categoria: "maquinaria" });
+                recursosMapa[keyH] = idH;
+              }
+              lineasApu.push({
+                id: Date.now() + Math.random(),
+                recursoId: recursosMapa[keyH],
+                _sec: "maquinaria",
+                _esHerramienta5: true,
+                rendimiento: 0.05,
+                cantidad: null
+              });
+              return;
+            }
+
+            const key = l._nombre.toLowerCase();
+            if (!recursosMapa[key]) {
+              // Crear nuevo recurso
+              const idR = Date.now() + Math.random();
+              const sec = SECCIONES_APU.find(s => s.id === l._categoria);
+              const unidadR = l._unidad || (l._categoria === "mano_obra" ? "día" : l._categoria === "maquinaria" ? "hr" : l._categoria === "transporte" ? "viaje" : "un");
+              nuevosRecursos.push({
+                id: idR,
+                nombre: l._nombre,
+                codigo: `REC-${Date.now()}`.slice(-8),
+                unidad: unidadR,
+                precio: l._precio || 0,
+                categoria: l._categoria
+              });
+              recursosMapa[key] = idR;
+            }
+
+            const recId = recursosMapa[key];
+            const sec = SECCIONES_APU.find(s => s.id === l._categoria);
+            const usaCantidad = sec ? sec.usa === "cantidad" : false;
+            lineasApu.push({
+              id: Date.now() + Math.random(),
+              recursoId: recId,
+              _sec: l._categoria,
+              cantidad: usaCantidad ? (l._cantidad !== null ? l._cantidad : 1) : null,
+              rendimiento: !usaCantidad ? (l._cantidad !== null ? l._cantidad : 1) : null
+            });
+          });
+
+          nuevosApus.push({
+            id: Date.now() + Math.random(),
+            codigo,
+            nombre: ap.nombre,
+            unidad: ap.unidad,
+            lineas: lineasApu
+          });
+        });
+
+        // Aplicar recursos nuevos
+        if (nuevosRecursos.length) {
+          setRecursos(prev => [...prev, ...nuevosRecursos]);
+        }
+
+        // Luego APUs
+        setApus(prev => {
+          let agregados = 0, actualizados = 0;
+          const mapa = [...prev];
+          nuevosApus.forEach(a => {
+            const idx2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            if (idx2 >= 0) { mapa[idx2] = { ...mapa[idx2], nombre: a.nombre, unidad: a.unidad, lineas: a.lineas }; actualizados++; }
+            else { mapa.push(a); agregados++; }
+          });
+          const totalLineas = nuevosApus.reduce((s,a) => s + a.lineas.length, 0);
+          setImportApuOk(`✓ ${agregados} APUs creados · ${nuevosRecursos.length} recursos nuevos · ${totalLineas} líneas`);
+          return mapa;
+        });
+
+        setShowImportModal(false);
+        setImportPrefijo("");
+      } catch(err) {
+        console.error(err);
+        setImportApuError("Error leyendo el archivo: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // ── IMPORTAR DESDE FORMATO CCE (Colombia Compra Eficiente) ────────
+  // Cada APU está en su propia hoja. Secciones fijas:
+  // Equipo: filas 30-38 (col C=nombre, L=tarifa/hr, M=rendimiento, O=vr)
+  // Fila 39: Herramienta menor 5%
+  // Materiales: filas 45-54 (col C=nombre, K=unidad, L=cant, M=precio, O=vr)
+  // Transporte: filas 60-62 (col C=material, O=vr)
+  // Mano de obra: filas 68-73 (col D=nombre, J=jornal, L=factor, M=rendimiento, O=vr)
+
+  const importarDesdeCCE = (e, prefijo) => {
+    setImportApuError(""); setImportApuOk("");
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    if (!prefijo.trim()) { setImportPrefijoError("Escribe un prefijo antes de seleccionar el archivo"); return; }
+    setImportPrefijoError("");
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: "array" });
+
+        // Identify APU sheets: those with commas in name and not known non-APU sheets
+        const NON_APU = ["DATOS ENTRADA ITEM ", "AU", "PROPUESTA ECONOMICA OBRA", "INTERVENTORÍA", "FM"];
+        const apuSheetNames = wb.SheetNames.filter(s => s.includes(",") && !NON_APU.includes(s));
+
+        if (!apuSheetNames.length) {
+          setImportApuError("No se encontraron hojas de APU. Verifica que el archivo sea formato CCE con hojas nombradas como '1,1', '2,3', etc.");
+          return;
+        }
+
+        const pref = prefijo.trim().toUpperCase();
+        const nuevosRecursos = [];
+        const nuevosApus = [];
+        const recursosMapa = {};
+        recursos.forEach(r => { recursosMapa[r.nombre.toLowerCase().trim()] = r.id; });
+
+        const getOrCreateRecurso = (nombre, categoria, unidad, precio) => {
+          const key = nombre.toLowerCase().trim();
+          if (!recursosMapa[key]) {
+            const idR = Date.now() + Math.random();
+            nuevosRecursos.push({ id: idR, nombre, codigo: `R${Date.now()}`.slice(-6), unidad: unidad || "un", precio: precio || 0, categoria });
+            recursosMapa[key] = idR;
+          }
+          return recursosMapa[key];
+        };
+
+        apuSheetNames.forEach((sheetName, idx) => {
+          const ws = wb.Sheets[sheetName];
+
+          // Helper: get cell value by address (e.g. "D25")
+          const cv = (addr) => {
+            const cell = ws[addr];
+            if (!cell) return null;
+            return cell.v !== undefined ? cell.v : null;
+          };
+          const cvStr = (addr) => { const v = cv(addr); return v != null ? String(v).trim() : null; };
+          const cvNum = (addr) => { const v = cv(addr); return typeof v === "number" ? v : null; };
+
+          // Row 25: C25=código, D25=descripción, M25=unidad, O25=cantidad
+          const desc = cvStr("D25") || sheetName;
+          const unidad = cvStr("M25") || "un";
+
+          const numStr = String(idx + 1).padStart(2, "0");
+          const codigo = `${pref}-${numStr}`;
+          const lineas = [];
+
+          // ── EQUIPO (filas 30-38) ──
+          // C=nombre, L=tarifa/hora, M=rendimiento
+          for (let row = 30; row <= 38; row++) {
+            const nombre = cvStr(`C${row}`);
+            const rendimiento = cvNum(`M${row}`);
+            const tarifa = cvNum(`L${row}`) || 0;
+            if (!nombre || rendimiento == null) continue;
+            const recId = getOrCreateRecurso(nombre, "maquinaria", "hr", tarifa);
+            lineas.push({ id: Date.now()+Math.random(), recursoId: recId, _sec: "maquinaria", rendimiento, cantidad: null });
+          }
+
+          // Herramienta menor 5% MO (fila 39)
+          const hmNombre = "Herramienta menor (5%)";
+          const hmKey = hmNombre.toLowerCase();
+          if (!recursosMapa[hmKey]) {
+            const idH = Date.now()+Math.random();
+            nuevosRecursos.push({ id: idH, nombre: hmNombre, codigo: "HM-01", unidad: "%M.O.", precio: 0, categoria: "maquinaria" });
+            recursosMapa[hmKey] = idH;
+          }
+          lineas.push({ id: Date.now()+Math.random(), recursoId: recursosMapa[hmKey], _sec: "maquinaria", _esHerramienta5: true, rendimiento: 0.05, cantidad: null });
+
+          // ── MATERIALES ──
+          // Buscar encabezado "II. MATERIALES" entre filas 34-50, datos empiezan 4 filas después
+          let matHeaderRow = -1;
+          for (let row = 34; row <= 50; row++) {
+            const v = cvStr(`C${row}`);
+            if (v && v.includes("II.")) { matHeaderRow = row; break; }
+          }
+          if (matHeaderRow > 0) {
+            const matDataStart = matHeaderRow + 4; // header + 3 rows de encabezados
+            for (let row = matDataStart; row < matDataStart + 12; row++) {
+              const nombre = cvStr(`C${row}`);
+              if (!nombre || nombre.includes("SUBTOTAL") || nombre.includes("III.")) break;
+              const cant = cvNum(`L${row}`);
+              const precio = cvNum(`M${row}`) || 0;
+              const und = cvStr(`K${row}`) || "un";
+              if (cant == null) continue;
+              const recId = getOrCreateRecurso(nombre, "material", und, precio);
+              lineas.push({ id: Date.now()+Math.random(), recursoId: recId, _sec: "material", cantidad: cant, rendimiento: null });
+            }
+          }
+
+          // ── TRANSPORTE ──
+          // Buscar "III. TRANSPORTES", datos 3 filas después
+          let trHeaderRow = -1;
+          for (let row = 50; row <= 68; row++) {
+            const v = cvStr(`C${row}`);
+            if (v && v.includes("III.")) { trHeaderRow = row; break; }
+          }
+          if (trHeaderRow > 0) {
+            const trDataStart = trHeaderRow + 3;
+            for (let row = trDataStart; row < trDataStart + 5; row++) {
+              const nombre = cvStr(`C${row}`);
+              if (!nombre || nombre.includes("SUBTOTAL") || nombre.includes("IV.")) break;
+              const vr = cvNum(`O${row}`);
+              if (vr == null) continue;
+              const recId = getOrCreateRecurso(nombre, "transporte", "global", vr);
+              lineas.push({ id: Date.now()+Math.random(), recursoId: recId, _sec: "transporte", cantidad: 1, rendimiento: null });
+            }
+          }
+
+          // ── MANO DE OBRA ──
+          // Buscar "IV. MANO DE OBRA", datos 4 filas después
+          // C=cantidad, D=nombre, J=jornal, M=rendimiento, O=vr
+          let moHeaderRow = -1;
+          for (let row = 58; row <= 80; row++) {
+            const v = cvStr(`C${row}`);
+            if (v && v.includes("IV.")) { moHeaderRow = row; break; }
+          }
+          if (moHeaderRow > 0) {
+            const moDataStart = moHeaderRow + 4;
+            for (let row = moDataStart; row < moDataStart + 8; row++) {
+              const nombre = cvStr(`D${row}`);
+              if (!nombre || nombre.includes("SUBTOTAL")) break;
+              const rendimiento = cvNum(`M${row}`);
+              const jornal = cvNum(`J${row}`) || 0;
+              if (rendimiento == null) continue;
+              const recId = getOrCreateRecurso(nombre, "mano_obra", "día", jornal);
+              lineas.push({ id: Date.now()+Math.random(), recursoId: recId, _sec: "mano_obra", rendimiento, cantidad: null });
+            }
+          }
+
+          nuevosApus.push({ id: Date.now()+Math.random(), codigo, nombre: desc, unidad, lineas });
+        });
+
+        if (!nuevosApus.length) { setImportApuError("No se encontraron APUs válidos en el archivo."); return; }
+
+        if (nuevosRecursos.length) setRecursos(prev => [...prev, ...nuevosRecursos]);
+
+        setApus(prev => {
+          let agregados = 0, actualizados = 0;
+          const mapa = [...prev];
+          nuevosApus.forEach(a => {
+            const idx2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            if (idx2 >= 0) { mapa[idx2] = { ...mapa[idx2], nombre: a.nombre, unidad: a.unidad, lineas: a.lineas }; actualizados++; }
+            else { mapa.push(a); agregados++; }
+          });
+          const totalLineas = nuevosApus.reduce((s,a) => s + a.lineas.length, 0);
+          setImportApuOk(`✓ ${agregados} APUs importados · ${nuevosRecursos.length} recursos nuevos · ${totalLineas} líneas`);
+          return mapa;
+        });
+
+        setShowImportModal(false);
+        setImportPrefijo("");
+      } catch(err) {
+        console.error(err);
+        setImportApuError("Error leyendo el archivo CCE: " + err.message);
+      }
     };
     reader.readAsArrayBuffer(file);
   };
@@ -2355,28 +2749,117 @@ function ModuloAPUs({
     style: { display: "none" },
     onChange: importarAPU
   })), /*#__PURE__*/React.createElement("button", {
+    className: "btn-s",
+    style: { background: "#1D4ED8", color: "#fff", borderColor: "#1D4ED8" },
+    onClick: () => { setShowImportModal(true); setImportApuError(""); setImportApuOk(""); },
+    title: "Importar APUs directamente desde Excel formato EDESO/obra"
+  }, "\u2B06\uFE0F Importar APUs EDESO"), /*#__PURE__*/React.createElement("button", {
     className: "btn-p",
     onClick: nuevoAPU
-  }, "+ Nuevo APU"))), /*#__PURE__*/React.createElement("div", {
+  }, "+ Nuevo APU"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-s",
+    style: { color: "#B91C1C", borderColor: "#B91C1C" },
+    onClick: () => {
+      const vistos = new Set();
+      const limpios = apus.filter(a => {
+        const k = a.codigo.trim().toLowerCase();
+        if (vistos.has(k)) return false;
+        vistos.add(k);
+        return true;
+      });
+      if (limpios.length === apus.length) { alert("No hay códigos duplicados."); return; }
+      if (confirm(`Se eliminarán ${apus.length - limpios.length} APUs duplicados (se conserva el primero de cada código). ¿Continuar?`)) setApus(limpios);
+    }
+  }, "\uD83E\uDDF9 Eliminar duplicados"))),
+
+  showImportModal && /*#__PURE__*/React.createElement("div", {
+    style: { position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { background:"var(--card)",borderRadius:12,padding:28,width:460,maxWidth:"95vw",boxShadow:"0 8px 40px rgba(0,0,0,0.25)" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize:17,fontWeight:700,marginBottom:6 }
+  }, "\u2B06\uFE0F Importar APUs desde Excel"),
+  /*#__PURE__*/React.createElement("div", {
+    style: { fontSize:13,color:"var(--ink3)",marginBottom:16,lineHeight:1.5 }
+  }, "Soporta dos formatos: formato EDESO (una hoja con todos los APUs) y formato CCE/Colombia Compra Eficiente (una hoja por APU)."),
+  /*#__PURE__*/React.createElement("label", {
+    style: { display:"block",fontSize:13,fontWeight:600,marginBottom:6 }
+  }, "Prefijo para los c\xF3digos"),
+  /*#__PURE__*/React.createElement("input", {
+    className: "ifield",
+    style: { width:"100%",marginBottom:4,textTransform:"uppercase",fontFamily:"var(--mono)",fontWeight:700,letterSpacing:2 },
+    placeholder: "Ej: MOC, VIA, ESC, OBR...",
+    value: importPrefijo,
+    maxLength: 8,
+    onChange: e => { setImportPrefijo(e.target.value.toUpperCase()); setImportPrefijoError(""); }
+  }),
+  /*#__PURE__*/React.createElement("div", {
+    style: { fontSize:11,color:"var(--ink4)",marginBottom: importPrefijoError?4:12 }
+  }, "Los APUs quedar\xE1n como ", /*#__PURE__*/React.createElement("code", {
+    style: { color:"#1D4ED8",fontFamily:"var(--mono)" }
+  }, importPrefijo ? `${importPrefijo}-01, ${importPrefijo}-02...` : "XXX-01, XXX-02...")),
+  importPrefijoError && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize:12,color:"#B91C1C",marginBottom:8 }
+  }, importPrefijoError),
+  /*#__PURE__*/React.createElement("div", {
+    style: { display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16 }
+  },
+  /*#__PURE__*/React.createElement("div", {
+    style: { background:"var(--line2)",borderRadius:8,padding:"10px 12px",fontSize:11,color:"var(--ink3)" }
+  }, /*#__PURE__*/React.createElement("div", { style:{fontWeight:700,marginBottom:4,color:"var(--ink2)"} }, "Formato EDESO"),
+  "Una sola hoja. Columnas: CODIGO, DESCRIPCI\xD3N, UN... con secciones de recursos debajo de cada APU."),
+  /*#__PURE__*/React.createElement("div", {
+    style: { background:"#EFF6FF",borderRadius:8,padding:"10px 12px",fontSize:11,color:"var(--ink3)" }
+  }, /*#__PURE__*/React.createElement("div", { style:{fontWeight:700,marginBottom:4,color:"#1D4ED8"} }, "Formato CCE"),
+  "Una hoja por APU (nombradas 1,1 \u2022 1,2 \u2022 2,1...). Formato Colombia Compra Eficiente con precios calculados.")),
+  /*#__PURE__*/React.createElement("div", {
+    style: { display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end" }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn-s",
+    onClick: () => { setShowImportModal(false); setImportPrefijo(""); setImportPrefijoError(""); }
+  }, "Cancelar"),
+  /*#__PURE__*/React.createElement("label", {
+    className: "btn-s",
+    style: { cursor:"pointer",marginBottom:0 }
+  }, "\uD83D\uDCC2 EDESO",
+  /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".xlsx,.xls",
+    style: { display:"none" },
+    onChange: e => importarDesdeEdeso(e, importPrefijo)
+  })),
+  /*#__PURE__*/React.createElement("label", {
+    className: "btn-p",
+    style: { cursor:"pointer",marginBottom:0,background:"#1D4ED8",borderColor:"#1D4ED8" }
+  }, "\uD83D\uDCC2 CCE / Compra P\xFAblica",
+  /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".xlsx,.xls",
+    style: { display:"none" },
+    onChange: e => importarDesdeCCE(e, importPrefijo)
+  }))))),
+
+  /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "card-header"
   }, /*#__PURE__*/React.createElement("input", {
     className: "ifield",
-    style: {
-      maxWidth: 320
-    },
+    style: { maxWidth: 320 },
     placeholder: "\uD83D\uDD0D  Buscar APU...",
     value: busq,
     onChange: e => setBusq(e.target.value)
   }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "var(--ink4)"
-    }
+    style: { fontSize: 12, color: "var(--ink4)" }
   }, filtered.length, " de ", apus.length)), /*#__PURE__*/React.createElement("table", {
     className: "tbl"
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "C\xF3digo"), /*#__PURE__*/React.createElement("th", null, "Descripci\xF3n"), /*#__PURE__*/React.createElement("th", null, "Unidad"), /*#__PURE__*/React.createElement("th", {
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    style:{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"},
+    onClick: () => toggleSort("codigo")
+  }, "C\xF3digo", " ", sortApus.campo==="codigo" ? (sortApus.dir==="asc"?"\u2191":"\u2193") : /*#__PURE__*/React.createElement("span",{style:{opacity:0.3}},"\u2195")), /*#__PURE__*/React.createElement("th", {
+    style:{cursor:"pointer",userSelect:"none"},
+    onClick: () => toggleSort("nombre")
+  }, "Descripci\xF3n", " ", sortApus.campo==="nombre" ? (sortApus.dir==="asc"?"\u2191":"\u2193") : /*#__PURE__*/React.createElement("span",{style:{opacity:0.3}},"\u2195")), /*#__PURE__*/React.createElement("th", null, "Unidad"), /*#__PURE__*/React.createElement("th", {
     style: {
       textAlign: "right"
     }
@@ -9563,6 +10046,8 @@ function ModuloProyectos({
   const [obsMode, setObsMode] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showApuModal, setShowApuModal] = useState(null);
+  const [dragItem, setDragItem] = useState(null); // {capId, itemId}
+  const [dragOver, setDragOver] = useState(null); // {capId, itemId} or {capId, end:true}
 
   // ── Sincronización por fila (caps e items) ───────────────────────────────
   const dbUser = () => ({
@@ -9972,6 +10457,25 @@ const sincronizarPolizasAU = (proyecto) => {
   const delIt = (capId, itemId) => {
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c)));
     dbDelItem(itemId, pActivo.id);
+  };
+  const moverItem = (fromCapId, itemId, toCapId, beforeItemId) => {
+    if (fromCapId === toCapId && beforeItemId == null) return;
+    setPActivo(p => mutateActiveCaps(p, caps => {
+      const item = (caps.find(c=>c.id===fromCapId)?.items||[]).find(i=>i.id===itemId);
+      if (!item) return caps;
+      let result = caps.map(c => c.id===fromCapId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c);
+      result = result.map(c => {
+        if (c.id !== toCapId) return c;
+        const items = [...(c.items||[])];
+        if (beforeItemId == null) { items.push(item); }
+        else {
+          const bi = items.findIndex(i=>i.id===beforeItemId);
+          items.splice(bi < 0 ? items.length : bi, 0, item);
+        }
+        return {...c, items};
+      });
+      return result;
+    }));
   };
   const updIt = (capId, itemId, campo, val) => {
     _markEditing("caps");
@@ -10571,9 +11075,22 @@ const sincronizarPolizasAU = (proyecto) => {
       const apu = apus.find(a => a.id === item.apuId);
       const vu = apu ? calcAPUTotal(apu, recursos) : 0;
       const vt = calcItem(item, apus, recursos);
+      const isDraggingOver = dragOver && dragOver.capId === cap.id && dragOver.itemId === item.id;
       return /*#__PURE__*/React.createElement("tr", {
-        key: item.id
-      }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
+        key: item.id,
+        draggable: true,
+        onDragStart: e => { e.dataTransfer.effectAllowed="move"; setDragItem({capId:cap.id, itemId:item.id}); },
+        onDragEnd: () => { setDragItem(null); setDragOver(null); },
+        onDragOver: e => { e.preventDefault(); setDragOver({capId:cap.id, itemId:item.id}); },
+        onDrop: e => { e.preventDefault(); if(dragItem) moverItem(dragItem.capId, dragItem.itemId, cap.id, item.id); setDragItem(null); setDragOver(null); },
+        style: {
+          borderBottom: "1px solid #F9F9FB",
+          borderTop: isDraggingOver ? "2px solid var(--red)" : undefined,
+          opacity: dragItem && dragItem.itemId === item.id ? 0.4 : 1,
+          cursor: "grab"
+        }
+      }, /*#__PURE__*/React.createElement("td", {style:{paddingLeft:6,color:"var(--ink4)",fontSize:13,cursor:"grab",userSelect:"none"}}, "⠿"),
+      /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
         style: {
           fontFamily: "var(--mono)",
           fontSize: 11,
@@ -10649,8 +11166,12 @@ const sincronizarPolizasAU = (proyecto) => {
         className: "btn-ghost",
         onClick: () => delIt(cap.id, item.id)
       }, "\xD7")));
+    }), /*#__PURE__*/React.createElement("tr", {
+      onDragOver: e => { e.preventDefault(); setDragOver({capId:cap.id, end:true}); },
+      onDrop: e => { e.preventDefault(); if(dragItem) moverItem(dragItem.capId, dragItem.itemId, cap.id, null); setDragItem(null); setDragOver(null); },
+      style: { height: dragOver && dragOver.capId===cap.id && dragOver.end ? 6 : 2, background: dragOver && dragOver.capId===cap.id && dragOver.end ? "var(--red)" : "transparent", transition:"height 0.1s" }
     }), /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-      colSpan: 8,
+      colSpan: 9,
       style: {
         padding: "5px 16px",
         background: "var(--line2)"
@@ -10658,7 +11179,7 @@ const sincronizarPolizasAU = (proyecto) => {
     }, /*#__PURE__*/React.createElement("button", {
       className: "btn-dashed",
       onClick: () => addItem(cap.id)
-    }, "+ Agregar \xEDtem"))));
+    }, "+ Agregar ítem"))));
   })))));
   })(), tabEditor === "resumen_obra" && renderResumenObra(),
   tabEditor === "sgsst" && React.createElement(TabExtrasModulo, { titulo:"SG-SST", campo:"sgSst", plantilla:PLANTILLA_SGSST, proyecto:pActivo, setPActivo, setAu:nuevoAu=>setPActivo(p=>({...p,au:typeof nuevoAu==="function"?nuevoAu(p.au||auVacio()):nuevoAu})), au:pActivo.au||auVacio(), cd:calcCD(pActivo,apus,recursos), readOnly:esLectura }),
@@ -11036,39 +11557,14 @@ const sincronizarPolizasAU = (proyecto) => {
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
-        justifyContent: "space-between",
+        justifyContent: "flex-end",
         alignItems: "flex-start",
         marginBottom: 16
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 12
-      }
-    }, /*#__PURE__*/React.createElement("img", {
-      src: LOGO_B64,
-      alt: "PREX",
-      style: {
-        height: 40,
-        objectFit: "contain",
-        background: "#ffffff",
-        borderRadius: 6,
-        padding: "4px 10px"
-      }
-    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontWeight: 800,
-        fontSize: 15
-      }
-    }, "PREX"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: "var(--ink4)"
-      }
-    }, "Empresa de Desarrollo Sostenible del Oriente"))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: "right"
+        textAlign: "right",
+        flex: 1
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -12472,7 +12968,7 @@ function App() {
         React.createElement("span",{style:{color:"#C9D1D9",fontSize:13}},syncMsg)
       ),
       modulo==="Recursos"&&React.createElement(ModuloRecursos,{recursos,setRecursos}),
-      modulo==="APUs"&&React.createElement(ModuloAPUs,{recursos,apus,setApus}),
+      modulo==="APUs"&&React.createElement(ModuloAPUs,{recursos,apus,setApus,setRecursos}),
       modulo==="Plantillas AU"&&React.createElement(ModuloPlantillasAU,{plantillas:plantillasAU,setPlantillas:setPlantillasAU}),
       modulo==="Plantillas Ficha"&&React.createElement(ModuloPlantillasFicha,{plantillas:plantillasFicha,setPlantillas:setPlantillasFicha}),
       modulo==="Catálogo Pólizas"&&React.createElement(ModuloCatalogoPolizas,{catalogoPolizas,setCatalogoPolizas}),
