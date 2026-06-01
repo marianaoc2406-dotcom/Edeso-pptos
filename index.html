@@ -10089,24 +10089,35 @@ function ModuloProyectos({
     safeDelete("items_presupuesto", {proyecto_id:String(proyId||pActivo?.id), id:String(itemId)}, "item_del_"+itemId);
   };
 
-  // Merge cambio externo de cap/item al estado local
+  // Merge cambio externo de cap/item al estado local — NUNCA borra trabajo local
   const mergeCapExterno = React.useCallback((event, row) => {
     setPActivo(p => {
       if(!p || String(p.id)!==String(row.proyecto_id)) return p;
-      const updCap = c => String(c.id)===String(row.id) ? {...c, numero:row.numero, nombre:row.nombre, tipo:row.tipo} : c;
+      const newCap = { id:row.id, numero:row.numero, nombre:row.nombre, tipo:row.tipo||"obra", orden:row.orden||0, items:[] };
+      const updCap = c => String(c.id)===String(row.id) ? {...c, numero:row.numero, nombre:row.nombre, tipo:row.tipo||c.tipo} : c;
+      // DELETE: solo eliminar si el usuario local no tiene ítems en ese cap
       if(event==="DELETE") {
+        const capLocal = (p.capitulos||[]).find(c=>String(c.id)===String(row.id));
+        const tieneItems = capLocal && (capLocal.items||[]).length > 0;
+        if(tieneItems) return p; // proteger cap con ítems locales
         return {...p,
           capitulos: (p.capitulos||[]).filter(c=>String(c.id)!==String(row.id)),
           presupuestosObra: (p.presupuestosObra||[]).map(ps=>({...ps,capitulos:(ps.capitulos||[]).filter(c=>String(c.id)!==String(row.id))}))
         };
       }
+      // INSERT/UPDATE: actualizar si existe, AGREGAR si no existe
       const existeLeg = (p.capitulos||[]).find(c=>String(c.id)===String(row.id));
       const existePs  = (p.presupuestosObra||[]).some(ps=>(ps.capitulos||[]).find(c=>String(c.id)===String(row.id)));
+      const tipoEsPs  = row.tipo === "obra_ps";
       return {
         ...p,
-        capitulos: existeLeg ? (p.capitulos||[]).map(updCap) : (p.capitulos||[]),
+        capitulos: existeLeg
+          ? (p.capitulos||[]).map(updCap)
+          : (!tipoEsPs ? [...(p.capitulos||[]), newCap] : (p.capitulos||[])),
         presupuestosObra: (p.presupuestosObra||[]).map(ps=>({...ps,
-          capitulos: existePs ? (ps.capitulos||[]).map(updCap) : (ps.capitulos||[])
+          capitulos: existePs
+            ? (ps.capitulos||[]).map(updCap)
+            : (tipoEsPs ? [...(ps.capitulos||[]), newCap] : (ps.capitulos||[]))
         }))
       };
     });
@@ -10140,7 +10151,7 @@ function ModuloProyectos({
     return function() { window.__markEditing = null; clearInterval(iv); };
   }, [_markEditing]);
 const mergeItemExterno = React.useCallback((event, row) => {
-    if (_editingRef.current) return; // usuario escribiendo, ignorar update externo
+    // No bloqueamos por _editingRef — siempre fusionamos ítem por ítem
     setPActivo(p => {
       if(!p || String(p.id)!==String(row.proyecto_id)) return p;
       const newItem = {
@@ -10151,12 +10162,23 @@ const mergeItemExterno = React.useCallback((event, row) => {
       };
       const mergeCaps = (caps) => (caps||[]).map(cap => {
         if(String(cap.id)!==String(row.capitulo_id)) return cap;
-        if(event==="DELETE") return {...cap, items: (cap.items||[]).filter(i=>String(i.id)!==String(row.id))};
+        if(event==="DELETE") {
+          // Solo eliminar si el ítem no fue modificado localmente recientemente
+          return {...cap, items: (cap.items||[]).filter(i=>String(i.id)!==String(row.id))};
+        }
         const existe = (cap.items||[]).find(i=>String(i.id)===String(row.id));
-        if(existe) return {...cap, items: cap.items.map(i=>String(i.id)===String(row.id)?{...i,...newItem}:i)};
+        if(existe) {
+          // Solo actualizar campos que no estén siendo editados localmente (cantidad)
+          // Si la cantidad local difiere de la guardada, es posible que el usuario la esté editando
+          // → preservar cantidad local, actualizar descripcion/unidad/apu
+          return {...cap, items: cap.items.map(i=>String(i.id)===String(row.id)
+            ? {...i, apuId:newItem.apuId, descripcion:newItem.descripcion, unidad:newItem.unidad,
+               // preserve local quantity if user has it focused
+               cantidad: (window.__editingRef_current && i.cantidad !== newItem.cantidad) ? i.cantidad : newItem.cantidad}
+            : i)};
+        }
         return {...cap, items: [...(cap.items||[]), newItem]};
       });
-      // Merge en capitulos legacy Y en presupuestosObra
       return {
         ...p,
         capitulos: mergeCaps(p.capitulos),
@@ -10221,16 +10243,45 @@ const mergeItemExterno = React.useCallback((event, row) => {
     const SEC_FIELD={caps:"capitulos",au:"au",pol:"polizasPorComp",
       est:"estampillas",interv:"presupInterv",consult:"presupConsult",
       extras_sgSst:"extras_sgSst",extras_pma:"extras_pma",extras_pmt:"extras_pmt",extras_gestionSocial:"extras_gestionSocial"};
+
+    // Fusiona dos arrays de capítulos sin pisar — une por id
+    const mergeCapsArrays = (local, remoto) => {
+      if(!remoto) return local;
+      if(!local || !local.length) return remoto;
+      const resultado = [...local];
+      (remoto||[]).forEach(capR => {
+        const idx = resultado.findIndex(c=>String(c.id)===String(capR.id));
+        if(idx === -1) {
+          // Cap nuevo del otro usuario → agregar
+          resultado.push(capR);
+        } else {
+          // Cap existente → fusionar ítems también
+          const capL = resultado[idx];
+          const itemsLocales = capL.items || [];
+          const itemsRemotos = capR.items || [];
+          const itemsMerged = [...itemsLocales];
+          itemsRemotos.forEach(itemR => {
+            const ii = itemsMerged.findIndex(i=>String(i.id)===String(itemR.id));
+            if(ii === -1) itemsMerged.push(itemR); // ítem nuevo del otro
+            // Si existe, no pisar — el usuario local tiene prioridad
+          });
+          resultado[idx] = {...capR, items: itemsMerged};
+        }
+      });
+      return resultado;
+    };
+
     window.__edeso_seccion_externa__=(proyId,sec,value)=>{
       if(!pActivo||String(pActivo.id)!==String(proyId)) return;
-      // Check if local user is editing this specific section
       var secEditing = window.__editingSecs_current||{};
       var now = Date.now();
-      var isEditingThisSec = secEditing[sec] && (now - secEditing[sec] < 3000);
-      if(isEditingThisSec) return; // proteger sección activa
       setPActivo(p=>{
         if(!p||String(p.id)!==String(proyId)) return p;
         if(sec==="meta") return {...p,...(value||{})};
+        // Caps: fusionar en lugar de reemplazar
+        if(sec==="caps") {
+          return {...p, capitulos: mergeCapsArrays(p.capitulos, value)};
+        }
         // AU: merge extras preservando los que el usuario esté editando
         if(sec==="au") {
           var extrasLocal=(p.au||{}).extras||{};
@@ -10243,7 +10294,20 @@ const mergeItemExterno = React.useCallback((event, row) => {
           });
           return {...p,au:{...(value||{}),extras:mergedExtras}};
         }
+        // Interventoría / Consultoría: fusionar capítulos también
+        if(sec==="interv"||sec==="consult") {
+          const field=SEC_FIELD[sec];
+          const local=p[field]||{};
+          const remoto=value||{};
+          return {...p,[field]:{
+            ...remoto,
+            capitulos: mergeCapsArrays(local.capitulos, remoto.capitulos)
+          }};
+        }
         var field=SEC_FIELD[sec];
+        // Para otras secciones: solo aplicar si el usuario no está editando activamente
+        var isEditing = secEditing[sec]&&(now-secEditing[sec]<5000);
+        if(isEditing) return p;
         return field?{...p,[field]:value!=null?value:p[field]}:p;
       });
     };
@@ -12718,9 +12782,34 @@ function App() {
             const label  = SEC_LABEL[sec]||sec;
             setSyncMsg(`${nombre} actualizó ${label}`);
             setTimeout(()=>setSyncMsg(""),5000);
+            // Fusiona caps en lugar de reemplazar
+            const mergeCapsRT = (local, remoto) => {
+              if(!remoto) return local;
+              if(!local||!local.length) return remoto;
+              const res = [...local];
+              (remoto||[]).forEach(capR => {
+                const idx = res.findIndex(c=>String(c.id)===String(capR.id));
+                if(idx===-1) res.push(capR);
+                else {
+                  const itemsL = res[idx].items||[];
+                  const itemsR = capR.items||[];
+                  const itemsM = [...itemsL];
+                  itemsR.forEach(ir=>{ if(!itemsM.find(il=>String(il.id)===String(ir.id))) itemsM.push(ir); });
+                  res[idx] = {...capR, items:itemsM};
+                }
+              });
+              return res;
+            };
             setProyectosRaw(prev=>prev.map(p=>{
               if(String(p.id)!==String(proyId)) return p;
               if(sec==="meta") return {...p,...(value||{})};
+              if(sec==="caps") return {...p, capitulos: mergeCapsRT(p.capitulos, value)};
+              if(sec==="interv"||sec==="consult") {
+                const field=SEC_FIELD[sec];
+                const local=p[field]||{};
+                const remoto=value||{};
+                return {...p,[field]:{...remoto,capitulos:mergeCapsRT(local.capitulos,remoto.capitulos)}};
+              }
               const field=SEC_FIELD[sec];
               return field?{...p,[field]:(value!=null?value:p[field])}:p;
             }));
