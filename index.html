@@ -339,9 +339,12 @@ function calcAPUTotal(apu, recursos) {
   const totalMO = calcTotalMO(apu.lineas, recursos);
   return totalLineas + (totalMO > 0 ? totalMO * 0.05 : 0);
 }
-function calcItem(item, apus, recursos) {
+function calcItem(item, apus, recursos, proyecto) {
   const apu = apus.find(a => a.id === item.apuId);
-  return apu ? (item.cantidad || 0) * calcAPUTotal(apu, recursos) : 0;
+  if (!apu) return 0;
+  const overrideLineas = proyecto && proyecto.apuOverrides && proyecto.apuOverrides[apu.id];
+  const apuEfectivo = overrideLineas ? {...apu, lineas: overrideLineas} : apu;
+  return (item.cantidad || 0) * calcAPUTotal(apuEfectivo, recursos);
 }
 // Helper: get all obra capitulos (from presupuestosObra or legacy capitulos)
 function getCapitulosObra(proyecto) {
@@ -643,12 +646,25 @@ function calcTotalConvergido(proyecto, apus, recursos) {
 }
 
 function getApusUsados(p, apus, recursos) {
-  const ids = new Set();
+  const ordered = []; // [{apuId, itemRef}] in order of appearance
+  const seen = new Set();
+  const addItem = (item) => {
+    if (item.apuId && !seen.has(item.apuId)) {
+      seen.add(item.apuId);
+      ordered.push(item.apuId);
+    }
+  };
   // Legacy capitulos
-  (p.capitulos || []).forEach(c => (c.items || []).forEach(i => { if (i.apuId) ids.add(i.apuId); }));
+  (p.capitulos || []).forEach(c => (c.items || []).forEach(addItem));
   // New presupuestosObra
-  (p.presupuestosObra || []).forEach(ps => (ps.capitulos||[]).forEach(c => (c.items||[]).forEach(i => { if (i.apuId) ids.add(i.apuId); })));
-  return apus.filter(a => ids.has(a.id)).map(a => ({ ...a, valorUnitario: calcAPUTotal(a, recursos) }));
+  (p.presupuestosObra || []).forEach(ps => (ps.capitulos||[]).forEach(c => (c.items||[]).forEach(addItem)));
+  // Return in order, with apuOverrides applied
+  return ordered.map(id => {
+    const a = apus.find(x=>x.id===id);
+    if (!a) return null;
+    const overrideLineas = p.apuOverrides && p.apuOverrides[id];
+    return { ...a, lineas: overrideLineas || a.lineas, valorUnitario: calcAPUTotal({...a, lineas: overrideLineas||a.lineas}, recursos), _hasOverride: !!overrideLineas };
+  }).filter(Boolean);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -681,9 +697,10 @@ const CSS = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: var(--sans); background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
 
-  ::-webkit-scrollbar { width: 4px; height: 4px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--line2); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--red); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: #991B1B; }
 
   /* ── SHELL ── */
   .app-shell { display: flex; min-height: 100vh; }
@@ -795,7 +812,8 @@ const CSS = `
     transition: all .12s;
   }
   .btn-o:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
-  .btn-ghost {
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .btn-ghost { 
     background: none; border: none; color: var(--ink4);
     font-size: 13px; cursor: pointer; padding: 4px 8px;
     border-radius: 6px; font-family: var(--sans);
@@ -1732,6 +1750,23 @@ function ModuloAPUs({
   const [showImportModal, setShowImportModal] = useState(false);
   const [importPrefijo, setImportPrefijo] = useState("");
   const [importPrefijoError, setImportPrefijoError] = useState("");
+  const [importModoRecursos, setImportModoRecursos] = useState({
+    mano_obra: "conservar", material: "conservar", maquinaria: "conservar", transporte: "conservar"
+  });
+  const setModoTodos = modo => setImportModoRecursos({ mano_obra:modo, material:modo, maquinaria:modo, transporte:modo });
+  const [selectedApus, setSelectedApus] = useState(new Set());
+  // Importador inteligente
+  const [smartImport, setSmartImport] = useState(null);
+  // smartImport = { paso: 1|2|3, wb, sheetNames, selectedSheets, previewRows, colDesc, colUnidad, colPrecio, colCantidad }
+  const toggleSelectApu = id => setSelectedApus(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
+  const selectAllVisible = () => setSelectedApus(prev => { const s=new Set(prev); filtered.forEach(a=>s.add(a.id)); return s; });
+  const deselectAll = () => setSelectedApus(new Set());
+  const deleteSelected = () => {
+    if (!selectedApus.size) return;
+    if (!confirm(`¿Eliminar ${selectedApus.size} APU(s) seleccionados?`)) return;
+    setApus(prev => prev.filter(a => !selectedApus.has(a.id)));
+    setSelectedApus(new Set());
+  };
   const toggleSort = campo => setSortApus(prev =>
     prev.campo === campo ? {campo, dir: prev.dir === "asc" ? "desc" : "asc"} : {campo, dir: "asc"}
   );
@@ -1875,7 +1910,7 @@ function ModuloAPUs({
     "transporte": "transporte",
   };
 
-  const importarDesdeEdeso = (e, prefijo) => {
+  const importarDesdeEdeso = (e, prefijo, modoRecursos="conservar") => {
     setImportApuError(""); setImportApuOk("");
     const file = e.target.files[0];
     if (!file) return;
@@ -1893,6 +1928,11 @@ function ModuloAPUs({
         let apuActualLocal = null;
         let seccionActual = null;
 
+        // Detectar si tiene encabezado (primera fila con "CODIGO" o "codigo")
+        const primerFila = filas[0] || [];
+        const tieneEncabezado = primerFila.some(v => v && String(v).toLowerCase().trim() === "codigo");
+        const startRow = tieneEncabezado ? 1 : 0;
+
         // Detectar categoría desde nombre de sección
         const detectarCategoria = (texto) => {
           if (!texto) return null;
@@ -1904,25 +1944,25 @@ function ModuloAPUs({
           return null;
         };
 
-        for (let i = 1; i < filas.length; i++) {
+        for (let i = startRow; i < filas.length; i++) {
           const f = filas[i];
           if (!f || f.every(c => c === null || c === "")) continue;
 
-          const col0 = f[0]; // CODIGO
+          const col0 = f[0]; // CODIGO APU
           const col1 = f[1]; // DESCRIPCIÓN
-          const col2 = f[2]; // UN
-          const col3 = f[3]; // CANTIDAD
-          const col4 = f[4]; // VALOR UNITARIO
-          const col5 = f[5]; // VALOR UNITARIO TOTAL
+          const col2 = f[2]; // UNIDAD
+          const col3 = f[3]; // PRECIO UNITARIO (col D)
+          const col4 = f[4]; // CANTIDAD / RENDIMIENTO (col E)
+          const col5 = f[5]; // VALOR TOTAL (col F)
 
-          // Fila de APU: tiene código en col0 (ej. "1.1", "2.3")
-          if (col0 !== null && col0 !== "" && col1) {
+          // Fila de APU: col0 es número o código Y col1 es descripción larga
+          if (col0 !== null && col0 !== "" && col1 && typeof col1 === "string" && col1.length > 15) {
             const codStr = String(col0).trim();
             if (codStr.toLowerCase() === "codigo") continue; // header
             apuActualLocal = {
               _codOrig: codStr,
               nombre: String(col1).trim(),
-              unidad: col2 ? String(col2).trim() : "un",
+              unidad: col2 && typeof col2 === "string" ? String(col2).trim() : "un",
               lineas: []
             };
             apusParsed.push(apuActualLocal);
@@ -1938,15 +1978,15 @@ function ModuloAPUs({
             if (cat) { seccionActual = cat; continue; }
           }
 
-          // Fila de recurso
-          if (col0 === null && col1 && seccionActual) {
-            const nombre = String(col1).trim();
-            const cantidad = col3 !== null ? Number(col3) : null;
-            const precio = col4 !== null ? Number(col4) : 0;
-            const unidadRec = col2 ? String(col2).trim() : null;
-            const esHerramientaMenor = nombre.toLowerCase().includes("herramienta menor");
+          // Fila de recurso: col0=null, col1=nombre, col2=unidad, col3=precio, col4=cantidad/rendimiento
+          const esRecursoClasico = col0 === null && col1 && typeof col1 === "string" && seccionActual;
 
-            // Herramienta menor (5% MO) — la manejamos como línea especial
+          if (esRecursoClasico) {
+            const nombre    = String(col1).trim();
+            const unidadRec = col2 ? String(col2).trim() : null;
+            const precio    = col3 !== null && typeof col3 === "number" ? col3 : 0;
+            const cantidad  = col4 !== null && typeof col4 === "number" ? col4 : null;
+            const esHerramientaMenor = nombre.toLowerCase().includes("herramienta menor");
             apuActualLocal.lineas.push({
               _nombre: nombre,
               _categoria: seccionActual,
@@ -1967,10 +2007,28 @@ function ModuloAPUs({
         const pref = prefijo.trim().toUpperCase();
         const nuevosRecursos = [];
         const nuevosApus = [];
-        const recursosMapa = {}; // nombre_lower → id
+        const mapaConservar = {};
+        const mapaExcel = {};
+        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase()] = r.id; });
 
-        // Inicializar mapa con recursos existentes
-        recursos.forEach(r => { recursosMapa[r.nombre.toLowerCase()] = r.id; });
+        const getRecursoId = (nombre, categoria, unidad, precio) => {
+          const key = nombre.toLowerCase().trim();
+          if ((modoRecursos[categoria]||modoRecursos) === "actualizar") {
+            if (!mapaExcel[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id:idR, nombre, codigo:`REC-${Date.now()}`.slice(-8), unidad:unidad||"un", precio:precio||0, categoria });
+              mapaExcel[key] = idR;
+            }
+            return mapaExcel[key];
+          } else {
+            if (!mapaConservar[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id:idR, nombre, codigo:`REC-${Date.now()}`.slice(-8), unidad:unidad||"un", precio:precio||0, categoria });
+              mapaConservar[key] = idR;
+            }
+            return mapaConservar[key];
+          }
+        };
 
         apusParsed.forEach((ap, idx) => {
           const numStr = String(idx + 1).padStart(2, "0");
@@ -1979,43 +2037,14 @@ function ModuloAPUs({
 
           ap.lineas.forEach(l => {
             if (l._esHerramientaMenor) {
-              // Crear recurso especial herramienta menor si no existe
               const nomH = "Herramienta menor (5%)";
-              const keyH = nomH.toLowerCase();
-              if (!recursosMapa[keyH]) {
-                const idH = Date.now() + Math.random();
-                nuevosRecursos.push({ id: idH, nombre: nomH, codigo: "HM-01", unidad: "%M.O.", precio: 0, categoria: "maquinaria" });
-                recursosMapa[keyH] = idH;
-              }
-              lineasApu.push({
-                id: Date.now() + Math.random(),
-                recursoId: recursosMapa[keyH],
-                _sec: "maquinaria",
-                _esHerramienta5: true,
-                rendimiento: 0.05,
-                cantidad: null
-              });
+              const recId = getRecursoId(nomH, "maquinaria", "%M.O.", 0);
+              lineasApu.push({ id: Date.now()+Math.random(), recursoId: recId, _sec:"maquinaria", _esHerramienta5:true, rendimiento:0.05, cantidad:null });
               return;
             }
 
-            const key = l._nombre.toLowerCase();
-            if (!recursosMapa[key]) {
-              // Crear nuevo recurso
-              const idR = Date.now() + Math.random();
-              const sec = SECCIONES_APU.find(s => s.id === l._categoria);
-              const unidadR = l._unidad || (l._categoria === "mano_obra" ? "día" : l._categoria === "maquinaria" ? "hr" : l._categoria === "transporte" ? "viaje" : "un");
-              nuevosRecursos.push({
-                id: idR,
-                nombre: l._nombre,
-                codigo: `REC-${Date.now()}`.slice(-8),
-                unidad: unidadR,
-                precio: l._precio || 0,
-                categoria: l._categoria
-              });
-              recursosMapa[key] = idR;
-            }
-
-            const recId = recursosMapa[key];
+            const unidadR = l._unidad || (l._categoria === "mano_obra" ? "día" : l._categoria === "maquinaria" ? "hr" : l._categoria === "transporte" ? "viaje" : "un");
+            const recId = getRecursoId(l._nombre, l._categoria, unidadR, l._precio || 0);
             const sec = SECCIONES_APU.find(s => s.id === l._categoria);
             const usaCantidad = sec ? sec.usa === "cantidad" : false;
             lineasApu.push({
@@ -2073,7 +2102,7 @@ function ModuloAPUs({
   // Transporte: filas 60-62 (col C=material, O=vr)
   // Mano de obra: filas 68-73 (col D=nombre, J=jornal, L=factor, M=rendimiento, O=vr)
 
-  const importarDesdeCCE = (e, prefijo) => {
+  const importarDesdeCCE = (e, prefijo, modoRecursos="conservar") => {
     setImportApuError(""); setImportApuOk("");
     const file = e.target.files[0];
     if (!file) return;
@@ -2098,17 +2127,27 @@ function ModuloAPUs({
         const pref = prefijo.trim().toUpperCase();
         const nuevosRecursos = [];
         const nuevosApus = [];
-        const recursosMapa = {};
-        recursos.forEach(r => { recursosMapa[r.nombre.toLowerCase().trim()] = r.id; });
+        const mapaConservar = {};
+        const mapaExcel = {};
+        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
 
         const getOrCreateRecurso = (nombre, categoria, unidad, precio) => {
           const key = nombre.toLowerCase().trim();
-          if (!recursosMapa[key]) {
-            const idR = Date.now() + Math.random();
-            nuevosRecursos.push({ id: idR, nombre, codigo: `R${Date.now()}`.slice(-6), unidad: unidad || "un", precio: precio || 0, categoria });
-            recursosMapa[key] = idR;
+          if ((modoRecursos[categoria]||modoRecursos) === "actualizar") {
+            if (!mapaExcel[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id: idR, nombre, codigo: `R${Date.now()}`.slice(-6), unidad: unidad || "un", precio: precio || 0, categoria });
+              mapaExcel[key] = idR;
+            }
+            return mapaExcel[key];
+          } else {
+            if (!mapaConservar[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id: idR, nombre, codigo: `R${Date.now()}`.slice(-6), unidad: unidad || "un", precio: precio || 0, categoria });
+              mapaConservar[key] = idR;
+            }
+            return mapaConservar[key];
           }
-          return recursosMapa[key];
         };
 
         apuSheetNames.forEach((sheetName, idx) => {
@@ -2143,14 +2182,8 @@ function ModuloAPUs({
           }
 
           // Herramienta menor 5% MO (fila 39)
-          const hmNombre = "Herramienta menor (5%)";
-          const hmKey = hmNombre.toLowerCase();
-          if (!recursosMapa[hmKey]) {
-            const idH = Date.now()+Math.random();
-            nuevosRecursos.push({ id: idH, nombre: hmNombre, codigo: "HM-01", unidad: "%M.O.", precio: 0, categoria: "maquinaria" });
-            recursosMapa[hmKey] = idH;
-          }
-          lineas.push({ id: Date.now()+Math.random(), recursoId: recursosMapa[hmKey], _sec: "maquinaria", _esHerramienta5: true, rendimiento: 0.05, cantidad: null });
+          const hmRecId = getOrCreateRecurso("Herramienta menor (5%)", "maquinaria", "%M.O.", 0);
+          lineas.push({id:Date.now()+Math.random(), recursoId:hmRecId, _sec:"maquinaria", _esHerramienta5:true, rendimiento:0.05, cantidad:null});
 
           // ── MATERIALES ──
           // Buscar encabezado "II. MATERIALES" entre filas 34-50, datos empiezan 4 filas después
@@ -2241,6 +2274,570 @@ function ModuloAPUs({
       }
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  // ── IMPORTAR FORMATO SIF (tablas internas: Equipos, Materiales, M de Obra, Transporte) ──
+  const NON_APU_SIF = new Set(["Presentacion","Ppto TIPO","Cant","AIU","Cuadrillas","M de Obra",
+    "Materiales","Transporte","Equipos","PMA-GS-SST","Factor Prestacional 2026",
+    "Plantilla_Apu (2)","Plantilla_Apu","Indice","Personal C.C","Personal profesional - técnico",
+    "Gastos administrativos Obra","Base_Referencia_SIF","PMT","APU CARACTERIZACION VIAL",
+    "APU GEORREFERENCIACION","OBRA_IMPUESTOS","OBRA_PÓLIZAS","Ensayos de laboratorio",
+    "Análisis_Reajustes_OBRA","Concre 2000 PSI","Concre 3000 PSI"]);
+
+  const importarDesdeSIF = (e, prefijo, modoRecursos="conservar") => {
+    setImportApuError(""); setImportApuOk("");
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    if (!prefijo.trim()) { setImportPrefijoError("Escribe un prefijo antes de seleccionar el archivo"); return; }
+    setImportPrefijoError("");
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type:"array" });
+        const pref = prefijo.trim().toUpperCase();
+
+        // Build lookup tables from internal sheets
+        const buildLookup = (sheetName, priceCol=3) => {
+          const map = {};
+          if (!wb.SheetNames.includes(sheetName)) return map;
+          const ws = wb.Sheets[sheetName];
+          const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+          rows.forEach((row, i) => {
+            if (i < 9) return; // skip headers
+            if (!row[0] || !row[1]) return;
+            const cod = String(row[0]).trim();
+            map[cod] = {
+              nombre: String(row[1]).trim(),
+              unidad: row[2] ? String(row[2]).trim() : "un",
+              precio: typeof row[priceCol] === "number" ? row[priceCol] : 0
+            };
+          });
+          return map;
+        };
+
+        const equipos    = buildLookup("Equipos",    3);
+        const materiales = buildLookup("Materiales", 3);
+        const transporte = buildLookup("Transporte", 3);
+        const moTable    = buildLookup("M de Obra",  4); // col E = jornal+prestaciones
+
+        // Detect APU sheets
+        const apuSheets = wb.SheetNames.filter(s => !NON_APU_SIF.has(s) && (s[0] >= "0" && s[0] <= "9" || s.includes(".")));
+        if (!apuSheets.length) { setImportApuError("No se encontraron hojas de APU. Verifica que sea un archivo formato SIF."); return; }
+
+        const nuevosRecursos = [];
+        const nuevosApus = [];
+        // mapaConservar: para modo conservar — reutiliza existentes por nombre
+        // mapaExcel: para modo actualizar — crea recursos nuevos con precios del Excel
+        const mapaConservar = {};
+        const mapaExcel = {};
+        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+
+        const getOrCreate = (nombre, categoria, unidad, precio) => {
+          const key = nombre.toLowerCase().trim();
+          if ((modoRecursos[categoria]||modoRecursos) === "actualizar") {
+            // Siempre crear recurso nuevo con precio del Excel (nunca reutilizar el existente)
+            if (!mapaExcel[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id:idR, nombre, codigo:`R${Date.now()}`.slice(-6), unidad:unidad||"un", precio:precio||0, categoria });
+              mapaExcel[key] = idR;
+            }
+            return mapaExcel[key];
+          } else {
+            // Modo conservar: reutilizar existente o crear nuevo
+            if (!mapaConservar[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id:idR, nombre, codigo:`R${Date.now()}`.slice(-6), unidad:unidad||"un", precio:precio||0, categoria });
+              mapaConservar[key] = idR;
+            }
+            return mapaConservar[key];
+          }
+        };
+
+        apuSheets.forEach((sname, idx) => {
+          const ws = wb.Sheets[sname];
+          const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+          if (rows.length < 21) return;
+
+          // Row 21 (index 20): col D=codigo, col E=descripcion
+          const r21 = rows[20] || [];
+          const desc  = r21[4] ? String(r21[4]).trim() : sname;
+          const unidad = (() => { for (let j=5; j<12; j++) { if(r21[j] && typeof r21[j]==="string" && r21[j].trim().length<=6) return r21[j].trim(); } return "un"; })();
+
+          const numStr = String(idx + 1).padStart(2, "0");
+          const codigo = `${pref}-${numStr}`;
+          const lineas = [];
+
+          rows.forEach(row => {
+            if (!row[0]) return;
+            const cod = String(row[0]).trim();
+            const cantJ = typeof row[9] === "number" ? row[9] : null; // col J
+            const cantI = typeof row[8] === "number" ? row[8] : null; // col I
+            const cantG = typeof row[6] === "number" ? row[6] : null; // col G (transporte)
+
+            if (cod.startsWith("EQ") && equipos[cod] && cantJ != null) {
+              const rec = equipos[cod];
+              const recId = getOrCreate(rec.nombre, "maquinaria", rec.unidad, rec.precio);
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"maquinaria", rendimiento:cantJ, cantidad:null });
+            } else if (cod.startsWith("MAT") && materiales[cod] && (cantI != null)) {
+              const rec = materiales[cod];
+              const recId = getOrCreate(rec.nombre, "material", rec.unidad, rec.precio);
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"material", cantidad:cantI, rendimiento:null });
+            } else if (cod.startsWith("MO") && moTable[cod] && cantJ != null) {
+              const rec = moTable[cod];
+              const recId = getOrCreate(rec.nombre, "mano_obra", rec.unidad, rec.precio);
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"mano_obra", rendimiento:cantJ, cantidad:null });
+            } else if (cod.startsWith("TR") && transporte[cod] && (cantG != null || cantJ != null)) {
+              const rec = transporte[cod];
+              const recId = getOrCreate(rec.nombre, "transporte", rec.unidad, rec.precio);
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"transporte", cantidad:cantG||cantJ, rendimiento:null });
+            }
+          });
+
+          // Herramienta menor 5% — siempre agregar
+          const hmRecId2 = getOrCreate("Herramienta menor (5%)", "maquinaria", "%M.O.", 0);
+          lineas.push({id:Date.now()+Math.random(), recursoId:hmRecId2, _sec:"maquinaria", _esHerramienta5:true, rendimiento:0.05, cantidad:null});
+
+          nuevosApus.push({ id:Date.now()+Math.random(), codigo, nombre:desc, unidad, lineas });
+        });
+
+        if (!nuevosApus.length) { setImportApuError("No se encontraron APUs válidos."); return; }
+
+        // Agregar recursos nuevos (en modo actualizar son nuevos con precio del Excel,
+        // en modo conservar son solo los que no existían)
+        if (nuevosRecursos.length) setRecursos(prev => [...prev, ...nuevosRecursos]);
+
+        setApus(prev => {
+          let agregados=0, actualizados=0;
+          const mapa = [...prev];
+          nuevosApus.forEach(a => {
+            const i2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            if (i2 >= 0) { mapa[i2] = {...mapa[i2], nombre:a.nombre, unidad:a.unidad, lineas:a.lineas}; actualizados++; }
+            else { mapa.push(a); agregados++; }
+          });
+          const totalLineas = nuevosApus.reduce((s,a)=>s+a.lineas.length,0);
+          setImportApuOk(`✓ ${agregados} APUs importados · ${nuevosRecursos.length} recursos nuevos · ${totalLineas} líneas`);
+          return mapa;
+        });
+
+        setShowImportModal(false);
+        setImportPrefijo("");
+      } catch(err) {
+        console.error(err);
+        setImportApuError("Error leyendo el archivo: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // ── IMPORTAR FORMATO EDESO MUNICIPIOS (hoja APU única + hojas INSUMOS) ──────
+  const importarDesdeEdesoMun = (e, prefijo, modoRecursos="conservar") => {
+    setImportApuError(""); setImportApuOk("");
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    if (!prefijo.trim()) { setImportPrefijoError("Escribe un prefijo antes de seleccionar el archivo"); return; }
+    setImportPrefijoError("");
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type:"array" });
+        const pref = prefijo.trim().toUpperCase();
+
+        // Build lookup tables from INSUMOS sheets
+        const buildInsumos = (sheetName, priceCol=3) => {
+          const map = {};
+          if (!wb.SheetNames.includes(sheetName)) return map;
+          const ws = wb.Sheets[sheetName];
+          const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+          rows.forEach((row, i) => {
+            if (i < 7) return;
+            if (!row[0] || !row[1]) return;
+            const cod = String(row[0]).trim();
+            map[cod] = {
+              nombre: String(row[1]).trim(),
+              unidad: row[2] ? String(row[2]).trim() : "un",
+              precio: typeof row[priceCol] === "number" ? row[priceCol] : 0
+            };
+          });
+          return map;
+        };
+
+        const insuEq  = buildInsumos("INSUMOS EQUIPOS",    3);
+        const insuMat = buildInsumos("INSUMOS MATERIALES", 3);
+        const insuMO  = buildInsumos("INSUMOS MANO DE OBRA", 6); // col G = jornal
+        const insuTr  = buildInsumos("INSUMOS TRANSPORTES", 3);
+        // Fallback to shorter names
+        const eqMap   = Object.keys(insuEq).length  ? insuEq  : buildInsumos("EQUIPOS",    3);
+        const matMap  = Object.keys(insuMat).length ? insuMat : buildInsumos("MATERIALES", 3);
+        const moMap   = Object.keys(insuMO).length  ? insuMO  : buildInsumos("MANO DE OBRA", 6);
+        const trMap   = Object.keys(insuTr).length  ? insuTr  : buildInsumos("TRANSPORTES", 3);
+
+        const nuevosRecursos = [];
+        const nuevosApus = [];
+        const mapaConservar = {};
+        const mapaExcel = {};
+        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+
+        const getOrCreate = (nombre, categoria, unidad, precio) => {
+          const key = nombre.toLowerCase().trim();
+          if ((modoRecursos[categoria]||modoRecursos) === "actualizar") {
+            if (!mapaExcel[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id:idR, nombre, codigo:`R${Date.now()}`.slice(-6), unidad:unidad||"un", precio:precio||0, categoria });
+              mapaExcel[key] = idR;
+            }
+            return mapaExcel[key];
+          } else {
+            if (!mapaConservar[key]) {
+              const idR = Date.now() + Math.random();
+              nuevosRecursos.push({ id:idR, nombre, codigo:`R${Date.now()}`.slice(-6), unidad:unidad||"un", precio:precio||0, categoria });
+              mapaConservar[key] = idR;
+            }
+            return mapaConservar[key];
+          }
+        };
+
+        // Parse a single APU sheet or a block of rows from APU sheet
+        const parseApuRows = (rows, startRow, apuIdx) => {
+          const r = rows[startRow];
+          const desc = r[1] ? String(r[1]).trim() : `APU ${apuIdx+1}`;
+          const unidad = r[2] ? String(r[2]).trim() : "un";
+          const numStr = String(apuIdx+1).padStart(2,"0");
+          const codigo = `${pref}-${numStr}`;
+          const lineas = [];
+
+          let sec = null;
+          // Find end of this APU (next APU start or end of rows)
+          let endRow = rows.length;
+          for (let j = startRow+1; j < rows.length; j++) {
+            const rj = rows[j];
+            if (rj[0] && typeof rj[0]==="number" && rj[1] && typeof rj[1]==="string" && rj[1].length>20) {
+              endRow = j; break;
+            }
+          }
+
+          for (let j = startRow+1; j < endRow; j++) {
+            const row = rows[j];
+            if (!row[0]) continue;
+            const col0 = String(row[0]).trim();
+
+            // Section headers
+            if (col0.includes("I.") || col0.toUpperCase().includes("EQUIPO")) { sec="maquinaria"; continue; }
+            if (col0.includes("II.") || col0.toUpperCase().includes("MATERIAL")) { sec="material"; continue; }
+            if (col0.includes("III.") || col0.toUpperCase().includes("TRANSPORT")) { sec="transporte"; continue; }
+            if (col0.includes("IV.") || col0.toUpperCase().includes("MANO DE OBRA")) { sec="mano_obra"; continue; }
+            if (col0.includes("V.") || col0.toUpperCase().includes("SERVICIO")) { sec=null; continue; }
+            if (col0.toUpperCase().includes("SUBTOTAL") || col0.toUpperCase().includes("CÓDIGO") || col0.toUpperCase().includes("CODIGO")) continue;
+
+            if (!sec) continue;
+
+            // Lookup resource
+            const lookup = sec==="maquinaria" ? eqMap : sec==="material" ? matMap : sec==="transporte" ? trMap : moMap;
+            const rec = lookup[col0];
+            const nombre = rec ? rec.nombre : (row[1] ? String(row[1]).trim() : col0);
+            const unidadRec = rec ? rec.unidad : (row[2] ? String(row[2]).trim() : "un");
+            const precio = rec ? rec.precio : (typeof row[3]==="number" ? row[3] : 0);
+
+            // Skip SUBTOTAL rows and header rows
+            if (!nombre || nombre.toUpperCase().includes("SUBTOTAL") || nombre.toUpperCase()==="CÓDIGO" || nombre.toUpperCase()==="CODIGO") continue;
+
+            // Herramienta menor
+            if (col0==="HEQ001" || nombre.toUpperCase().includes("HERRAMIENTA MENOR")) {
+              const hmId = getOrCreate("Herramienta menor (5%)", "maquinaria", "%M.O.", 0);
+              lineas.push({ id:Date.now()+Math.random(), recursoId:hmId, _sec:"maquinaria", _esHerramienta5:true, rendimiento:0.05, cantidad:null });
+              continue;
+            }
+
+            const recId = getOrCreate(nombre, sec, unidadRec, precio);
+
+            if (sec==="material") {
+              const cant = typeof row[3]==="number" ? row[3] : null;
+              if (cant==null) continue;
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:sec, cantidad:cant, rendimiento:null });
+            } else if (sec==="mano_obra") {
+              // col C=cantidad, col D=jornal, col E=rendimiento
+              const rend = typeof row[4]==="number" ? row[4] : (typeof row[3]==="number" ? row[3] : null);
+              if (rend==null) continue;
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:sec, rendimiento:rend, cantidad:null });
+            } else {
+              // equipo y transporte: col D=tarifa col E=rendimiento
+              const rend = typeof row[4]==="number" ? row[4] : null;
+              if (rend==null) continue;
+              lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:sec, rendimiento:rend, cantidad:null });
+            }
+          }
+          return { id:Date.now()+Math.random(), codigo, nombre:desc, unidad, lineas };
+        };
+
+        let apuIdx = 0;
+
+        // Parse main APU sheet
+        const apuSheetNames = ["APU", "APU GEORREFERENCIACIÓN", "APU GEORREFERENCIACION", "APU CARACTERIZACIÓN", "APU CARACTERIZACION"];
+        apuSheetNames.forEach(sname => {
+          if (!wb.SheetNames.includes(sname)) return;
+          const ws = wb.Sheets[sname];
+          const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+
+          // Find all APU start rows
+          const starts = [];
+          rows.forEach((row, i) => {
+            if (row[0] && typeof row[0]==="number" && row[1] && typeof row[1]==="string" && row[1].length>20)
+              starts.push(i);
+          });
+
+          starts.forEach(startRow => {
+            const apu = parseApuRows(rows, startRow, apuIdx++);
+            if (apu.lineas.length > 0) nuevosApus.push(apu);
+          });
+        });
+
+        if (!nuevosApus.length) { setImportApuError("No se encontraron APUs. Verifica que sea un archivo formato EDESO Municipios."); return; }
+
+        if (nuevosRecursos.length) setRecursos(prev => [...prev, ...nuevosRecursos]);
+
+        setApus(prev => {
+          let agregados=0, actualizados=0;
+          const mapa = [...prev];
+          nuevosApus.forEach(a => {
+            const i2 = mapa.findIndex(ex => ex.codigo.toLowerCase()===a.codigo.toLowerCase());
+            if (i2>=0) { mapa[i2]={...mapa[i2],nombre:a.nombre,unidad:a.unidad,lineas:a.lineas}; actualizados++; }
+            else { mapa.push(a); agregados++; }
+          });
+          const totalLineas = nuevosApus.reduce((s,a)=>s+a.lineas.length,0);
+          setImportApuOk(`✓ ${agregados} APUs importados · ${nuevosRecursos.length} recursos nuevos · ${totalLineas} líneas`);
+          return mapa;
+        });
+
+        setShowImportModal(false);
+        setImportPrefijo("");
+      } catch(err) {
+        console.error(err);
+        setImportApuError("Error leyendo el archivo: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // ── IMPORTADOR INTELIGENTE ────────────────────────────────────────────────
+  const PALABRAS_SECCION = {
+    mano_obra:   ["mano de obra","mano obra","m.o.","personal","trabajador","operario"],
+    material:    ["material","materiales","insumo","insumos"],
+    maquinaria:  ["maquinaria","equipo","equipos","herramienta","herramientas","maquinaria - equipo"],
+    transporte:  ["transporte","transportes","flete","fletes"],
+  };
+
+  const detectarSeccionSmart = txt => {
+    if (!txt) return null;
+    const t = String(txt).toLowerCase().replace(/[-–—.]/g," ").replace(/\s+/g," ").trim();
+    for (const [cat, palabras] of Object.entries(PALABRAS_SECCION))
+      if (palabras.some(p => t.includes(p))) return cat;
+    return null;
+  };
+
+  const abrirSmartImport = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type:"array" });
+        setSmartImport({
+          paso: 1,
+          wb,
+          sheetNames: wb.SheetNames,
+          selectedSheets: wb.SheetNames.length === 1 ? new Set([wb.SheetNames[0]]) : new Set(),
+          previewRows: [],
+          previewSheet: wb.SheetNames[0],
+          colDesc: null, colUnidad: null, colPrecio: null, colCantidad: null,
+          prefijo: importPrefijo,
+        });
+      } catch(err) { setImportApuError("Error leyendo el archivo: " + err.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const smartGetPreview = (wb, sheetName) => {
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+    // Find first row with data and return up to 20 rows from there
+    let start = 0;
+    for (let i=0; i<Math.min(10,rows.length); i++) {
+      if (rows[i] && rows[i].some(v=>v!=null)) { start=i; break; }
+    }
+    return rows.slice(start, start+20);
+  };
+
+  const ejecutarSmartImport = () => {
+    const { wb, selectedSheets, colMap, prefijo } = smartImport;
+    if (!prefijo?.trim()) { setImportPrefijoError("Escribe un prefijo"); return; }
+    if (!colMap?.apu?.desc && colMap?.apu?.desc !== 0) { setImportApuError("Indica al menos la columna de descripción del APU"); return; }
+    setImportApuError("");
+
+    const pref = prefijo.trim().toUpperCase();
+    const nuevosRecursos = [];
+    const nuevosApus = [];
+    const mapaConservar = {};
+    const mapaExcel = {};
+    recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+
+    const getOrCreate = (nombre, categoria, unidad, precio) => {
+      const key = nombre.toLowerCase().trim();
+      const modo = (importModoRecursos[categoria]||"conservar");
+      if (modo === "actualizar") {
+        if (!mapaExcel[key]) {
+          const idR = Date.now()+Math.random();
+          nuevosRecursos.push({ id:idR, nombre, codigo:`R${Date.now()}`.slice(-6), unidad:unidad||"un", precio:precio||0, categoria });
+          mapaExcel[key] = idR;
+        }
+        return mapaExcel[key];
+      } else {
+        if (!mapaConservar[key]) {
+          const idR = Date.now()+Math.random();
+          nuevosRecursos.push({ id:idR, nombre, codigo:`R${Date.now()}`.slice(-6), unidad:unidad||"un", precio:precio||0, categoria });
+          mapaConservar[key] = idR;
+        }
+        return mapaConservar[key];
+      }
+    };
+
+    const apuMap  = colMap.apu       || {};
+    const eqMap2  = colMap.equipo    || {};
+    const matMap2 = colMap.material  || {};
+    const trMap2  = colMap.transporte|| {};
+    const moMap2  = colMap.mano_obra || {};
+
+    const cv = (row, idx) => idx!=null && idx>=0 ? row[idx] ?? null : null;
+    const cvStr = (row, idx) => { const v=cv(row,idx); return v!=null?String(v).trim():null; };
+    const cvNum = (row, idx) => { const v=cv(row,idx); return typeof v==="number"?v:(v!=null&&!isNaN(Number(v))?Number(v):null); };
+
+    let apuIdx = 0;
+
+    [...selectedSheets].forEach(sheetName => {
+      const ws = wb.Sheets[sheetName];
+      if (!ws) return;
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+
+      let apuActual = null;
+      let secActual = null; // "equipo" | "material" | "transporte" | "mano_obra"
+
+      rows.forEach(row => {
+        if (!row || row.every(v=>v===null)) return;
+
+        // Detectar sección por palabras clave — solo en celdas cortas (encabezados de sección)
+        const celdas = row.map(v=>v?String(v).trim():"");
+        const celdaSeccion = celdas.find(c => c.length > 0 && c.length < 60 && 
+          /^(i\.|ii\.|iii\.|iv\.|v\.|1\.|2\.|3\.|4\.|5\.)/i.test(c));
+        let secDetect = null;
+        if (celdaSeccion) {
+          const t = celdaSeccion.toLowerCase();
+          if (/equip|maquinar|herramient/.test(t)) secDetect = "maquinaria";
+          else if (/material/.test(t)) secDetect = "material";
+          else if (/transport/.test(t)) secDetect = "transporte";
+          else if (/mano de obra|personal/.test(t)) secDetect = "mano_obra";
+        }
+        // También detectar por toda la fila si no hay celda con prefijo romano
+        if (!secDetect) {
+          const rowText = celdas.join(" ").toLowerCase();
+          if (/^i\.\s*(equip|maquinar)|(i\.\s*equipo\b)/.test(rowText)) secDetect = "maquinaria";
+          else if (/^ii\.\s*material|(ii\.\s*materiales\b)/.test(rowText)) secDetect = "material";
+          else if (/^iii\.\s*transport|(iii\.\s*transportes\b)/.test(rowText)) secDetect = "transporte";
+          else if (/^iv\.\s*mano|(iv\.\s*mano de obra\b)/.test(rowText)) secDetect = "mano_obra";
+        }
+
+        if (secDetect) { secActual = secDetect; return; }
+
+        // Skip filas de encabezado de columnas
+        const descVal = cvStr(row, apuMap.desc);
+        if (descVal && /^(descripci[oó]n|c[oó]digo|cargos personal|item de pago|subtotal)$/i.test(descVal.trim())) return;
+
+        // Detectar APU: descripción larga Y unidad es texto corto no numérico
+        const undVal = apuMap.unidad!=null ? cvStr(row, apuMap.unidad) : null;
+        const esUnidadTexto = undVal && undVal.length<=10 && isNaN(Number(undVal)) && !/subtotal|c[oó]digo|descripci/i.test(undVal);
+        const esDescLarga = descVal && descVal.length > 25;
+
+        if (esDescLarga && (esUnidadTexto || apuMap.unidad==null)) {
+          const numStr = String(++apuIdx).padStart(2,"0");
+          apuActual = {
+            id: Date.now()+Math.random(),
+            codigo: `${pref}-${numStr}`,
+            nombre: descVal,
+            unidad: undVal || "un",
+            lineas: []
+          };
+          nuevosApus.push(apuActual);
+          secActual = null;
+          return;
+        }
+
+        if (!apuActual || !secActual) return;
+
+        // Procesar recurso según sección
+        if (secActual === "maquinaria" || secActual === "equipo") {
+          const nombre = cvStr(row, eqMap2.nombre);
+          const tarifa = cvNum(row, eqMap2.tarifa);
+          const rend   = cvNum(row, eqMap2.rend);
+          if (!nombre || nombre.length < 3) return;
+          if (nombre.toLowerCase().includes("herramienta menor")) {
+            const hmId = getOrCreate("Herramienta menor (5%)", "maquinaria", "%M.O.", 0);
+            apuActual.lineas.push({ id:Date.now()+Math.random(), recursoId:hmId, _sec:"maquinaria", _esHerramienta5:true, rendimiento:0.05, cantidad:null });
+            return;
+          }
+          if (rend==null) return;
+          const recId = getOrCreate(nombre, "maquinaria", "hr", tarifa||0);
+          apuActual.lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"maquinaria", rendimiento:rend, cantidad:null });
+
+        } else if (secActual === "material") {
+          const nombre = cvStr(row, matMap2.nombre);
+          const precio = cvNum(row, matMap2.precio);
+          const cant   = cvNum(row, matMap2.cant);
+          const und    = cvStr(row, matMap2.unidad);
+          if (!nombre || nombre.length < 3 || cant==null) return;
+          const recId = getOrCreate(nombre, "material", und||"un", precio||0);
+          apuActual.lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"material", cantidad:cant, rendimiento:null });
+
+        } else if (secActual === "transporte") {
+          const nombre = cvStr(row, trMap2.nombre);
+          const precio = cvNum(row, trMap2.precio);
+          const cant   = cvNum(row, trMap2.cant);
+          if (!nombre || nombre.length < 3 || cant==null) return;
+          const recId = getOrCreate(nombre, "transporte", "global", precio||0);
+          apuActual.lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"transporte", cantidad:cant, rendimiento:null });
+
+        } else if (secActual === "mano_obra") {
+          const nombre = cvStr(row, moMap2.nombre);
+          const jornal = cvNum(row, moMap2.jornal);
+          const rend   = cvNum(row, moMap2.rend);
+          if (!nombre || nombre.length < 3 || rend==null) return;
+          const recId = getOrCreate(nombre, "mano_obra", "día", jornal||0);
+          apuActual.lineas.push({ id:Date.now()+Math.random(), recursoId:recId, _sec:"mano_obra", rendimiento:rend, cantidad:null });
+        }
+      });
+    });
+
+    if (!nuevosApus.length) { setImportApuError("No se encontraron APUs. Verifica la columna de descripción del APU en el paso anterior."); return; }
+
+    if (nuevosRecursos.length) setRecursos(prev => [...prev, ...nuevosRecursos]);
+
+    setApus(prev => {
+      let agregados=0;
+      const mapa = [...prev];
+      nuevosApus.forEach(a => {
+        const i2 = mapa.findIndex(ex=>ex.codigo.toLowerCase()===a.codigo.toLowerCase());
+        if (i2>=0) mapa[i2]={...mapa[i2],nombre:a.nombre,unidad:a.unidad,lineas:a.lineas};
+        else { mapa.push(a); agregados++; }
+      });
+      const totalLineas = nuevosApus.reduce((s,a)=>s+a.lineas.length,0);
+      setImportApuOk(`✓ ${agregados} APUs importados · ${nuevosRecursos.length} recursos nuevos · ${totalLineas} líneas`);
+      return mapa;
+    });
+
+    setSmartImport(null);
+    setShowImportModal(false);
+    setImportPrefijo("");
   };
 
   const nuevoAPU = () => {
@@ -2801,8 +3398,44 @@ function ModuloAPUs({
   importPrefijoError && /*#__PURE__*/React.createElement("div", {
     style: { fontSize:12,color:"#B91C1C",marginBottom:8 }
   }, importPrefijoError),
+  /*#__PURE__*/React.createElement("div", { style:{marginBottom:16} },
+  /*#__PURE__*/React.createElement("div", { style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8} },
+    /*#__PURE__*/React.createElement("label", { style:{fontSize:13,fontWeight:600} }, "Recursos que ya existen en PREX"),
+    /*#__PURE__*/React.createElement("div", { style:{display:"flex",gap:6} },
+      /*#__PURE__*/React.createElement("button", { className:"btn-s", style:{fontSize:11}, onClick:()=>setModoTodos("conservar") }, "Todos los m\xEDos"),
+      /*#__PURE__*/React.createElement("button", { className:"btn-s", style:{fontSize:11,background:"var(--red)",color:"#fff",border:"none"}, onClick:()=>setModoTodos("actualizar") }, "Todos del Excel")
+    )
+  ),
+  /*#__PURE__*/React.createElement("div", { style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6} },
+  [
+    ["mano_obra",   "Mano de Obra",  "\uD83D\uDC77"],
+    ["material",    "Materiales",    "\uD83E\uDDF1"],
+    ["maquinaria",  "Maquinaria",    "\u2699\uFE0F"],
+    ["transporte",  "Transporte",    "\uD83D\uDE9A"],
+  ].map(([cat, label, icon]) =>
+    /*#__PURE__*/React.createElement("div", {
+      key: cat,
+      style:{border:"1px solid var(--line)",borderRadius:8,padding:"8px 10px",background:"var(--card)"}
+    },
+    /*#__PURE__*/React.createElement("div", { style:{fontSize:11,fontWeight:600,marginBottom:6,color:"var(--ink2)"} }, icon, " ", label),
+    /*#__PURE__*/React.createElement("div", { style:{display:"flex",gap:4} },
+      ["conservar","actualizar"].map(op =>
+        /*#__PURE__*/React.createElement("button", {
+          key: op,
+          onClick: () => setImportModoRecursos(p=>({...p,[cat]:op})),
+          style:{
+            flex:1, fontSize:10, padding:"3px 4px", borderRadius:5, border:"1px solid",
+            cursor:"pointer", fontWeight: importModoRecursos[cat]===op ? 700 : 400,
+            background: importModoRecursos[cat]===op ? (op==="actualizar"?"var(--red)":"#15803D") : "var(--card)",
+            color: importModoRecursos[cat]===op ? "#fff" : "var(--ink4)",
+            borderColor: importModoRecursos[cat]===op ? (op==="actualizar"?"var(--red)":"#15803D") : "var(--line)"
+          }
+        }, op==="conservar" ? "Los m\xEDos" : "Del Excel")
+      )
+    ))
+  ))),
   /*#__PURE__*/React.createElement("div", {
-    style: { display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16 }
+    style: { display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:16 }
   },
   /*#__PURE__*/React.createElement("div", {
     style: { background:"var(--line2)",borderRadius:8,padding:"10px 12px",fontSize:11,color:"var(--ink3)" }
@@ -2811,7 +3444,15 @@ function ModuloAPUs({
   /*#__PURE__*/React.createElement("div", {
     style: { background:"#EFF6FF",borderRadius:8,padding:"10px 12px",fontSize:11,color:"var(--ink3)" }
   }, /*#__PURE__*/React.createElement("div", { style:{fontWeight:700,marginBottom:4,color:"#1D4ED8"} }, "Formato CCE"),
-  "Una hoja por APU (nombradas 1,1 \u2022 1,2 \u2022 2,1...). Formato Colombia Compra Eficiente con precios calculados.")),
+  "Una hoja por APU (1,1 \u2022 1,2...). Colombia Compra Eficiente con precios calculados."),
+  /*#__PURE__*/React.createElement("div", {
+    style: { background:"#F0FDF4",borderRadius:8,padding:"10px 12px",fontSize:11,color:"var(--ink3)" }
+  }, /*#__PURE__*/React.createElement("div", { style:{fontWeight:700,marginBottom:4,color:"#15803D"} }, "Formato SIF"),
+  "Una hoja por APU (1.1.1, 1.2.1...) con tablas internas de Equipos, Materiales, MO y Transporte."),
+  /*#__PURE__*/React.createElement("div", {
+    style: { background:"#FFF7ED",borderRadius:8,padding:"10px 12px",fontSize:11,color:"var(--ink3)" }
+  }, /*#__PURE__*/React.createElement("div", { style:{fontWeight:700,marginBottom:4,color:"#C2410C"} }, "Formato EDESO Municipios"),
+  "Hoja APU con m\xFAltiples APUs + hojas INSUMOS EQUIPOS, MATERIALES, MO, TRANSPORTES.")),
   /*#__PURE__*/React.createElement("div", {
     style: { display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end" }
   }, /*#__PURE__*/React.createElement("button", {
@@ -2826,7 +3467,7 @@ function ModuloAPUs({
     type: "file",
     accept: ".xlsx,.xls",
     style: { display:"none" },
-    onChange: e => importarDesdeEdeso(e, importPrefijo)
+    onChange: e => importarDesdeEdeso(e, importPrefijo, importModoRecursos)
   })),
   /*#__PURE__*/React.createElement("label", {
     className: "btn-p",
@@ -2836,8 +3477,192 @@ function ModuloAPUs({
     type: "file",
     accept: ".xlsx,.xls",
     style: { display:"none" },
-    onChange: e => importarDesdeCCE(e, importPrefijo)
+    onChange: e => importarDesdeCCE(e, importPrefijo, importModoRecursos)
+  })),
+  /*#__PURE__*/React.createElement("label", {
+    className: "btn-p",
+    style: { cursor:"pointer",marginBottom:0,background:"#15803D",borderColor:"#15803D" }
+  }, "\uD83D\uDCC2 SIF / Tablas internas",
+  /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".xlsx,.xls,.xlsm",
+    style: { display:"none" },
+    onChange: e => importarDesdeSIF(e, importPrefijo, importModoRecursos)
+  })),
+  /*#__PURE__*/React.createElement("label", {
+    className: "btn-p",
+    style: { cursor:"pointer",marginBottom:0,background:"#7C3AED",borderColor:"#7C3AED" }
+  }, "\u2728 Importador inteligente",
+  /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".xlsx,.xls,.xlsm",
+    style: { display:"none" },
+    onChange: abrirSmartImport
   }))))),
+
+  smartImport && /*#__PURE__*/React.createElement("div", {
+    style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:10000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}
+  }, /*#__PURE__*/React.createElement("div", {
+    style:{background:"var(--card)",borderRadius:14,padding:24,width:"min(900px,95vw)",maxHeight:"92vh",overflowY:"auto",boxShadow:"0 16px 48px rgba(0,0,0,.4)"}
+  },
+  // Header
+  /*#__PURE__*/React.createElement("div", {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}},
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:17,fontWeight:700}}, "\u2728 Importador inteligente"),
+      /*#__PURE__*/React.createElement("div", {style:{fontSize:12,color:"var(--ink4)",marginTop:2}},
+        smartImport.paso===1 ? "Paso 1 de 3 \u2014 Selecciona las hojas con APUs" :
+        smartImport.paso===2 ? "Paso 2 de 3 \u2014 Mapea las columnas por secci\xF3n" :
+        "Paso 3 de 3 \u2014 Confirmar e importar"
+      )
+    ),
+    /*#__PURE__*/React.createElement("button", {className:"btn-ghost",style:{fontSize:18},onClick:()=>setSmartImport(null)}, "\u00D7")
+  ),
+
+  // PASO 1: Seleccionar hojas
+  smartImport.paso===1 && /*#__PURE__*/React.createElement("div", null,
+    /*#__PURE__*/React.createElement("div", {style:{fontSize:13,color:"var(--ink3)",marginBottom:12}}, "Marca las hojas que contienen APUs:"),
+    /*#__PURE__*/React.createElement("div", {style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:8,marginBottom:20}},
+      smartImport.sheetNames.map(sname => {
+        const sel = smartImport.selectedSheets.has(sname);
+        return /*#__PURE__*/React.createElement("div", {
+          key:sname,
+          onClick:()=>setSmartImport(p=>{ const s=new Set(p.selectedSheets); sel?s.delete(sname):s.add(sname); return {...p,selectedSheets:s}; }),
+          style:{border:`2px solid ${sel?"var(--red)":"var(--line)"}`,borderRadius:8,padding:"8px 12px",cursor:"pointer",
+                 background:sel?"var(--red-soft)":"var(--card)",fontSize:12,fontWeight:sel?700:400,
+                 color:sel?"var(--red)":"var(--ink2)",display:"flex",alignItems:"center",gap:6}
+        }, sel?"\u2713":"\u25CB", " ", sname);
+      })
+    ),
+    /*#__PURE__*/React.createElement("div", {style:{display:"flex",gap:8,justifyContent:"flex-end"}},
+      /*#__PURE__*/React.createElement("button", {className:"btn-s",onClick:()=>setSmartImport(null)}, "Cancelar"),
+      /*#__PURE__*/React.createElement("button", {
+        className:"btn-p", disabled:smartImport.selectedSheets.size===0,
+        onClick:()=>{
+          const firstSheet=[...smartImport.selectedSheets][0];
+          const preview=smartGetPreview(smartImport.wb,firstSheet);
+          setSmartImport(p=>({...p,paso:2,previewRows:preview,previewSheet:firstSheet}));
+        }
+      }, "Siguiente \u2192")
+    )
+  ),
+
+  // PASO 2: Mapeo por sección
+  smartImport.paso===2 && (()=>{
+    const cols = smartImport.previewRows[0] ? Array.from({length:Math.max(...smartImport.previewRows.map(r=>(r||[]).length))},(_,i)=>String.fromCharCode(65+i)) : [];
+    const map = smartImport.colMap || {};
+    const setCol = (sec,campo,col) => setSmartImport(p=>({...p,colMap:{...(p.colMap||{}),[sec]:{...((p.colMap||{})[sec]||{}),[campo]:col}}}));
+    const getCol = (sec,campo) => (map[sec]||{})[campo]??null;
+
+    const SECCIONES_MAP = [
+      {id:"apu",    label:"APU (encabezado)",  color:"#7C3AED", campos:[
+        {id:"codigo",   label:"C\xF3digo APU",        hint:"Ej: 1.1, 1.2..."},
+        {id:"desc",     label:"Descripci\xF3n",        hint:"Descripci\xF3n larga del APU"},
+        {id:"unidad",   label:"Unidad",               hint:"m2, ml, día, un..."},
+      ]},
+      {id:"equipo",  label:"I. Equipo / Maquinaria", color:"#15803D", campos:[
+        {id:"nombre",   label:"Nombre recurso",        hint:"Nombre del equipo"},
+        {id:"tarifa",   label:"Tarifa/Precio",         hint:"Precio por hora o día"},
+        {id:"rend",     label:"Rendimiento/Cantidad",  hint:"Cantidad usada"},
+      ]},
+      {id:"material",label:"II. Materiales",          color:"#1D4ED8", campos:[
+        {id:"nombre",   label:"Nombre recurso",        hint:"Nombre del material"},
+        {id:"unidad",   label:"Unidad",               hint:"m3, kg, un..."},
+        {id:"precio",   label:"Precio unitario",       hint:"Precio por unidad"},
+        {id:"cant",     label:"Cantidad",              hint:"Cantidad usada"},
+      ]},
+      {id:"transporte",label:"III. Transporte",       color:"#D97706", campos:[
+        {id:"nombre",   label:"Nombre recurso",        hint:"Tipo de transporte"},
+        {id:"precio",   label:"Tarifa/Precio",         hint:"Precio unitario"},
+        {id:"cant",     label:"Cantidad/Distancia",    hint:"Cantidad o distancia"},
+      ]},
+      {id:"mano_obra",label:"IV. Mano de Obra",       color:"#DC2626", campos:[
+        {id:"nombre",   label:"Nombre cargo",          hint:"Topógrafo, Ayudante..."},
+        {id:"jornal",   label:"Jornal/Precio",         hint:"Salario diario"},
+        {id:"rend",     label:"Rendimiento/Cantidad",  hint:"Días por unidad APU"},
+      ]},
+    ];
+
+    return /*#__PURE__*/React.createElement("div", null,
+      // Preview table
+      /*#__PURE__*/React.createElement("div", {style:{marginBottom:12,fontSize:12,color:"var(--ink3)"}},
+        "Vista previa: ", /*#__PURE__*/React.createElement("strong",null,smartImport.previewSheet),
+        " \u2014 usa los selectores de abajo para asignar cada columna."
+      ),
+      /*#__PURE__*/React.createElement("div", {style:{overflowX:"auto",marginBottom:20,border:"1px solid var(--line)",borderRadius:8}},
+        /*#__PURE__*/React.createElement("table", {className:"tbl",style:{fontSize:10}},
+          /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
+            cols.map(c=>/*#__PURE__*/React.createElement("th",{key:c,style:{padding:"6px 8px",textAlign:"center",background:"var(--sb3)",color:"var(--ink3)",fontWeight:700,minWidth:60}},c))
+          )),
+          /*#__PURE__*/React.createElement("tbody", null,
+            smartImport.previewRows.slice(0,10).map((row,ri)=>/*#__PURE__*/React.createElement("tr",{key:ri},
+              cols.map((_,ci)=>{
+                const val=(row||[])[ci];
+                return /*#__PURE__*/React.createElement("td",{key:ci,style:{padding:"3px 6px",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:10}},
+                  val!=null?String(val).substring(0,30):"");
+              })
+            ))
+          )
+        )
+      ),
+
+      // Section mappers
+      /*#__PURE__*/React.createElement("div", {style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}},
+        SECCIONES_MAP.map(sec=>/*#__PURE__*/React.createElement("div",{
+          key:sec.id,
+          style:{border:`1px solid ${sec.color}44`,borderRadius:10,padding:12,background:sec.color+"08"}
+        },
+          /*#__PURE__*/React.createElement("div",{style:{fontWeight:700,fontSize:12,color:sec.color,marginBottom:8}},sec.label),
+          sec.campos.map(campo=>/*#__PURE__*/React.createElement("div",{key:campo.id,style:{display:"flex",alignItems:"center",gap:8,marginBottom:6}},
+            /*#__PURE__*/React.createElement("label",{style:{fontSize:11,color:"var(--ink3)",width:130,flexShrink:0}},campo.label),
+            /*#__PURE__*/React.createElement("select",{
+              className:"ifield",
+              style:{fontSize:11,padding:"2px 6px",height:26,flex:1},
+              value:getCol(sec.id,campo.id)!==null?getCol(sec.id,campo.id):"",
+              onChange:e=>setCol(sec.id,campo.id,e.target.value===""?null:Number(e.target.value))
+            },
+              /*#__PURE__*/React.createElement("option",{value:""},"— no usar —"),
+              cols.map((_,ci)=>/*#__PURE__*/React.createElement("option",{key:ci,value:ci},`Col ${String.fromCharCode(65+ci)}`))
+            )
+          ))
+        ))
+      ),
+
+      /*#__PURE__*/React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"space-between"}},
+        /*#__PURE__*/React.createElement("button",{className:"btn-s",onClick:()=>setSmartImport(p=>({...p,paso:1}))},"\u2190 Volver"),
+        /*#__PURE__*/React.createElement("button",{
+          className:"btn-p",
+          disabled:!(map.apu?.desc!=null),
+          onClick:()=>setSmartImport(p=>({...p,paso:3}))
+        },"Siguiente \u2192")
+      )
+    );
+  })(),
+
+  // PASO 3: Confirmar
+  smartImport.paso===3 && /*#__PURE__*/React.createElement("div", null,
+    /*#__PURE__*/React.createElement("div",{style:{background:"var(--line2)",borderRadius:8,padding:16,marginBottom:16,fontSize:13}},
+      /*#__PURE__*/React.createElement("div",{style:{fontWeight:600,marginBottom:8}},"Resumen:"),
+      /*#__PURE__*/React.createElement("div",{style:{color:"var(--ink3)",lineHeight:2}},
+        "\uD83D\uDCC4 Hojas: ", [...smartImport.selectedSheets].join(", "), /*#__PURE__*/React.createElement("br"),
+        "\uD83D\uDCCC APU: c\xF3digo=", smartImport.colMap?.apu?.codigo!=null?String.fromCharCode(65+smartImport.colMap.apu.codigo):"auto",
+        " | desc=", smartImport.colMap?.apu?.desc!=null?String.fromCharCode(65+smartImport.colMap.apu.desc):"?",
+        " | unidad=", smartImport.colMap?.apu?.unidad!=null?String.fromCharCode(65+smartImport.colMap.apu.unidad):"auto"
+      )
+    ),
+    /*#__PURE__*/React.createElement("label",{style:{display:"block",fontSize:13,fontWeight:600,marginBottom:6}},"Prefijo para los c\xF3digos"),
+    /*#__PURE__*/React.createElement("input",{className:"ifield",
+      style:{width:"100%",marginBottom:8,textTransform:"uppercase",fontFamily:"var(--mono)",fontWeight:700,letterSpacing:2},
+      placeholder:"Ej: MOC, VIA, ESC...",value:smartImport.prefijo||"",maxLength:8,
+      onChange:e=>setSmartImport(p=>({...p,prefijo:e.target.value.toUpperCase()}))
+    }),
+    importApuError&&/*#__PURE__*/React.createElement("div",{style:{fontSize:12,color:"#B91C1C",marginBottom:8}},importApuError),
+    /*#__PURE__*/React.createElement("div",{style:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:12}},
+      /*#__PURE__*/React.createElement("button",{className:"btn-s",onClick:()=>setSmartImport(p=>({...p,paso:2}))},"\u2190 Volver"),
+      /*#__PURE__*/React.createElement("button",{className:"btn-p",onClick:ejecutarSmartImport},"\u2705 Importar APUs")
+    )
+  )
+  )),
+
 
   /*#__PURE__*/React.createElement("div", {
     className: "card"
@@ -2848,12 +3673,20 @@ function ModuloAPUs({
     style: { maxWidth: 320 },
     placeholder: "\uD83D\uDD0D  Buscar APU...",
     value: busq,
-    onChange: e => setBusq(e.target.value)
-  }), /*#__PURE__*/React.createElement("span", {
+    onChange: e => { setBusq(e.target.value); setSelectedApus(new Set()); }
+  }),
+  selectedApus.size > 0 && /*#__PURE__*/React.createElement("div", {
+    style:{display:"flex",gap:6,alignItems:"center"}
+  }, /*#__PURE__*/React.createElement("span",{style:{fontSize:12,color:"var(--red)",fontWeight:600}}, selectedApus.size, " seleccionados"),
+  /*#__PURE__*/React.createElement("button",{className:"btn-s",onClick:deselectAll,style:{fontSize:11}},"Desmarcar"),
+  /*#__PURE__*/React.createElement("button",{className:"btn-s",onClick:deleteSelected,style:{fontSize:11,background:"#B91C1C",color:"#fff",border:"none"}},"\uD83D\uDDD1 Eliminar seleccionados")),
+  /*#__PURE__*/React.createElement("span", {
     style: { fontSize: 12, color: "var(--ink4)" }
   }, filtered.length, " de ", apus.length)), /*#__PURE__*/React.createElement("table", {
     className: "tbl"
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null,
+  /*#__PURE__*/React.createElement("th", {style:{width:32}}, /*#__PURE__*/React.createElement("input", {type:"checkbox", title:"Seleccionar todos los visibles", checked: filtered.length > 0 && filtered.every(a=>selectedApus.has(a.id)), onChange: e => e.target.checked ? selectAllVisible() : deselectAll()})),
+  /*#__PURE__*/React.createElement("th", {
     style:{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"},
     onClick: () => toggleSort("codigo")
   }, "C\xF3digo", " ", sortApus.campo==="codigo" ? (sortApus.dir==="asc"?"\u2191":"\u2193") : /*#__PURE__*/React.createElement("span",{style:{opacity:0.3}},"\u2195")), /*#__PURE__*/React.createElement("th", {
@@ -2868,7 +3701,7 @@ function ModuloAPUs({
       width: 120
     }
   }))), /*#__PURE__*/React.createElement("tbody", null, filtered.length === 0 ? /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: 5
+    colSpan: 6
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2878,8 +3711,15 @@ function ModuloAPUs({
   }, "Sin APUs")))) : filtered.map(a => {
     const total = calcAPUTotal(a, recursos);
     return /*#__PURE__*/React.createElement("tr", {
-      key: a.id
-    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
+      key: a.id,
+      style: { background: selectedApus.has(a.id) ? "var(--red-soft)" : undefined }
+    }, /*#__PURE__*/React.createElement("td", {style:{textAlign:"center"}},
+      /*#__PURE__*/React.createElement("input", {
+        type:"checkbox",
+        checked: selectedApus.has(a.id),
+        onChange: () => toggleSelectApu(a.id)
+      })
+    ), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
       style: {
         fontFamily: "var(--mono)",
         fontSize: 11,
@@ -3739,7 +4579,8 @@ function TabAU({
   cd,
   total,
   plantillasAU,
-  readOnly
+  readOnly,
+  obsProps
 }) {
   // PMA/PMT/SST/GS se guardan en au.extras
   const extras = (auProp||{}).extras || { sgSst:0, pma:0, pmt:0, gestionSocial:0 };
@@ -4101,7 +4942,7 @@ function TabAU({
         }
       }, fmt(subTotal)), /*#__PURE__*/React.createElement("td", null)), (sub.items || []).map(item => {
         const vItem = calcAUItem(item, sub.tipo, cd, cd + totalAU);
-        return /*#__PURE__*/React.createElement("tr", {
+        return [/*#__PURE__*/React.createElement("tr", {
           key: item.id
         }, /*#__PURE__*/React.createElement("td", {
           style: {
@@ -4170,7 +5011,7 @@ function TabAU({
             borderRadius: 4,
             cursor: "default"
           }
-        }, "\uD83D\uDD12 auto") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+        }, "\uD83D\uDD12 auto") : readOnly ? null : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
           className: "btn-ghost",
           style: {
             fontSize: 11
@@ -4179,7 +5020,8 @@ function TabAU({
         }, "\u270F\uFE0F"), /*#__PURE__*/React.createElement("button", {
           className: "btn-ghost",
           onClick: () => removeItem(sub.id, item.id)
-        }, "\xD7")))));
+        }, "\xD7")))))
+        , obsProps && /*#__PURE__*/React.createElement("tr", {key:item.id+"_obs"}, /*#__PURE__*/React.createElement("td", {colSpan:9,style:{padding:0}}, /*#__PURE__*/React.createElement(HiloObs, {cid:"au_"+sub.id, idx:(sub.items||[]).indexOf(item), desc:"A+U \u203A "+(sub.titulo||sub.id)+" \u203A "+(item.descripcion||""), tabLabel:"C\xE1lculo A+U", allObs:obsProps.allObs, session:obsProps.session, enviar:obsProps.enviar, eliminar:obsProps.eliminar, openKey:obsProps.openKey, setOpenKey:obsProps.setOpenKey, textos:obsProps.textos, setTextos:obsProps.setTextos, replyTo:obsProps.replyTo, setReplyTo:obsProps.setReplyTo})))]
       }), sub.id === "s1_1" && personal11 > 0 && /*#__PURE__*/React.createElement("tr", {
         style: { background: "#F0FDF4", borderTop: "1px solid #BBF7D0" }
       }, /*#__PURE__*/React.createElement("td", {
@@ -7140,7 +7982,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   presups.forEach(function(ps) {
     var caps = ps.capitulos || [];
     var cdPs = caps.reduce(function(sum, cap) {
-      return sum + (cap.items||[]).reduce(function(s2, it) { return s2 + calcItem(it,apus,recursos); }, 0);
+      return sum + (cap.items||[]).reduce(function(s2, it) { return s2 + calcItem(it,apus,recursos,proyecto); }, 0);
     }, 0);
     var ws = {}, r = 0;
 
@@ -7157,7 +7999,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
     // Items
     caps.forEach(function(cap) {
-      var cdCap = (cap.items||[]).reduce(function(ss,it){ return ss+calcItem(it,apus,recursos); },0);
+      var cdCap = (cap.items||[]).reduce(function(ss,it){ return ss+calcItem(it,apus,recursos,proyecto); },0);
       var pct = cdPs>0?(cdCap/cdPs*100).toFixed(1):'0.0';
       // Chapter row
       [0,1,2,3,4,5,7].forEach(function(ci){ sc(ws,r,ci,'',ST.cap()); });
@@ -7166,7 +8008,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       r++;
       (cap.items||[]).forEach(function(item, ii) {
         var apu = apus.find(function(a){ return a.id===item.apuId; });
-        var vu = apu ? Math.round(calcAPUTotal(apu,recursos)) : 0;
+        var apuConOverride = apu ? Object.assign({}, apu, {
+          lineas: (proyecto.apuOverrides&&proyecto.apuOverrides[apu.id]) || apu.lineas
+        }) : null;
+        var vu = apuConOverride ? Math.round(calcAPUTotal(apuConOverride,recursos)) : 0;
         var vt = Math.round((item.cantidad||0)*vu);
         var pct2 = cdPs>0?(vt/cdPs*100).toFixed(2):'0.00';
         var st2=ii%2===0?ST.rowA():ST.rowB();
@@ -7521,7 +8366,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
   presups.forEach(function(ps) {
     var cdPs = Math.round((ps.capitulos||[]).reduce(function(ss,cap){
-      return ss+(cap.items||[]).reduce(function(s2,it){ return s2+calcItem(it,apus,recursos); },0);
+      return ss+(cap.items||[]).reduce(function(s2,it){ return s2+calcItem(it,apus,recursos,proyecto); },0);
     },0));
     var prop = cd>0?cdPs/cd:0;
     var adm = Math.round((res.auGastos||0)*prop);
@@ -7530,7 +8375,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     [0,1,2,3].forEach(function(ci){ sc(wsR,r,ci,'',ST.cap()); });
     sc(wsR,r,1,safe(ps.nombre||'Presupuesto Obra'),ST.cap()); nc(wsR,r,2,cdPs,ST.tot()); r++;
     (ps.capitulos||[]).forEach(function(cap) {
-      var cdC = Math.round((cap.items||[]).reduce(function(ss,it){ return ss+calcItem(it,apus,recursos); },0));
+      var cdC = Math.round((cap.items||[]).reduce(function(ss,it){ return ss+calcItem(it,apus,recursos,proyecto); },0));
       var pct = cdPs>0?(cdC/cdPs*100).toFixed(1):'0.0';
       s(wsR,r,0,safe(cap.numero)); s(wsR,r,1,safe(cap.nombre));
       n(wsR,r,2,cdC); s(wsR,r,3,pct+'%'); r++;
@@ -8546,12 +9391,17 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     {id:"calculo_au",              label:"Cálculo A+U",               show:_tieneObra},
     {id:"polizas_obra",            label:"Pólizas Obra",              show:_tieneObra},
     {id:"estampillas",             label:"Estampillas",               show:_tieneObra},
+    {id:"sgsst",                   label:"✓ SG-SST",                  show:_tieneObra&&!!(proyecto.activo_sgSst)},
+    {id:"pma",                     label:"✓ PMA",                     show:_tieneObra&&!!(proyecto.activo_pma)},
+    {id:"pmt",                     label:"✓ PMT",                     show:_tieneObra&&!!(proyecto.activo_pmt)},
+    {id:"gsocial",                 label:"✓ Gestión Social",          show:_tieneObra&&!!(proyecto.activo_gestionSocial)},
     {id:"presupuesto_interventoria",label:"Presupuesto Interventoría",show:_tieneInterv},
     {id:"polizas_interventoria",   label:"Pólizas Interventoría",     show:_tieneInterv},
     {id:"presupuesto_consultoria", label:"Presupuesto Consultoría",   show:_tieneConsult},
     {id:"polizas_consultoria",     label:"Pólizas Consultoría",       show:_tieneConsult},
     {id:"polizas_edeso",           label:"Pólizas EDESO",             show:_tieneObra||_tieneInterv},
     {id:"fichaFinanciera",         label:"Ficha Financiera",          show:_tieneObra||_tieneInterv},
+    {id:"resumen",                 label:"Resumen",                   show:true},
     {id:"apus_usados",             label:`APUs Proyectos (${apusUsados.length})`, show:apusUsados.length>0},
   ].filter(t=>t.show);
 
@@ -8603,21 +9453,113 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
         })
       );
     }
-    if(tabActiva==="calculo_au")
-      return React.createElement(TabAU,{au:proyecto.au||{},setAu:()=>{},cd:calcCD(proyecto,apus,recursos),total:calcProyecto(proyecto,apus,recursos).total,plantillasAU:plantillasAU||[],readOnly:true,perfil,session});
+    if(tabActiva==="calculo_au") {
+      return React.createElement(TabAU,{
+        au:proyecto.au||{}, setAu:()=>{},
+        cd:calcCD(proyecto,apus,recursos),
+        total:calcProyecto(proyecto,apus,recursos).total,
+        plantillasAU:plantillasAU||[],
+        readOnly:true, perfil, session,
+        obsProps:{allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo}
+      });
+    }
     if(tabActiva.startsWith("polizas_")){
       const cid=tabActiva.slice(8);
+      const comp = (proyecto.polizasPorComp||{})[cid]||{};
+      const polizas = comp.polizasActivas||[];
       const tot=calcProyecto(proyecto,apus,recursos).total;
-      return React.createElement(TabPolizas,{proyecto,componenteId:cid,plazoProyecto:(proyecto.au||{}).plazo||0,totalProyecto:tot,totalBase:tot,catalogoPolizas:[],readOnly:true,perfil,session,setPolizas:()=>{},setAU:()=>{}});
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        React.createElement(TabPolizas,{proyecto,componenteId:cid,plazoProyecto:(proyecto.au||{}).plazo||0,totalProyecto:tot,totalBase:tot,catalogoPolizas:[],readOnly:true,perfil,session,setPolizas:()=>{},setAU:()=>{}}),
+        polizas.length > 0 && React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones por póliza"),
+          polizas.map((pol,pi)=>React.createElement("div",{key:pi,style:{borderBottom:"1px solid #F3F4F6"}},
+            React.createElement("div",{style:{padding:"8px 20px",fontSize:13}},pol.nombre||pol.tipo||`Póliza ${pi+1}`),
+            React.createElement(HiloObs,{
+              cid:`pol_${cid}`, idx:pi,
+              desc:`Pólizas ${cid} › ${pol.nombre||pol.tipo||`Póliza ${pi+1}`}`,
+              tabLabel:`Pólizas ${cid}`,
+              allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+            })
+          ))
+        )
+      );
     }
-    if(tabActiva==="estampillas")
-      return React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:calcProyecto(proyecto,apus,recursos).total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}});
-    if(tabActiva==="presupuesto_interventoria")
-      return React.createElement(TabPresupuestoInterventoria,{proyecto,setPActivo:()=>{},readOnly:true,storageKey:"presupInterv",perfil,session,catalogoEstampillas:catalogoEstampillas||[]});
-    if(tabActiva==="presupuesto_consultoria")
-      return React.createElement(TabPresupuestoConsultoria,{proyecto,setPActivo:()=>{},readOnly:true,perfil,session,catalogoEstampillas:catalogoEstampillas||[]});
-    if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera")
-      return React.createElement(TabFichaFinanciera,{proyecto,setPActivo:()=>{},apus,recursos,readOnly:true,perfil,session});
+    if(tabActiva==="estampillas"){
+      const estItems = (proyecto.estampillas||[]);
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:calcProyecto(proyecto,apus,recursos).total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}}),
+        estItems.length > 0 && React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones por estampilla"),
+          estItems.map((est,ei)=>React.createElement("div",{key:ei,style:{borderBottom:"1px solid #F3F4F6"}},
+            React.createElement("div",{style:{padding:"8px 20px",fontSize:13}},est.nombre||`Estampilla ${ei+1}`),
+            React.createElement(HiloObs,{
+              cid:"estampillas", idx:ei,
+              desc:`Estampillas › ${est.nombre||`Estampilla ${ei+1}`}`,
+              tabLabel:"Estampillas",
+              allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+            })
+          ))
+        )
+      );
+    }
+    if(tabActiva==="presupuesto_interventoria") {
+      const caps = (proyecto.presupInterv||{}).capitulos||[];
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+        React.createElement(TabPresupuestoInterventoria,{proyecto,setPActivo:()=>{},readOnly:true,storageKey:"presupInterv",perfil,session,catalogoEstampillas:catalogoEstampillas||[]}),
+        caps.map(cap=>React.createElement("div",{key:cap.id,className:"card"},
+          React.createElement("div",{style:{background:"#1F2937",padding:"8px 16px"}},
+            React.createElement("span",{style:{color:"#fff",fontWeight:700}},cap.nombre||cap.titulo||"Capítulo")
+          ),
+          (cap.items||[]).map((item,ii)=>React.createElement("div",{key:item.id||ii,style:{borderBottom:"1px solid #F3F4F6"}},
+            React.createElement("div",{style:{padding:"8px 20px",fontSize:13}},item.descripcion||`Ítem ${ii+1}`),
+            React.createElement(HiloObs,{
+              cid:`interv_${cap.id}`, idx:ii,
+              desc:`Interventoría › ${cap.nombre||""} › ${item.descripcion||`Ítem ${ii+1}`}`,
+              tabLabel:"Presupuesto Interventoría",
+              allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+            })
+          ))
+        ))
+      );
+    }
+    if(tabActiva==="presupuesto_consultoria") {
+      const caps = (proyecto.presupConsult||{}).capitulos||[];
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+        React.createElement(TabPresupuestoConsultoria,{proyecto,setPActivo:()=>{},readOnly:true,perfil,session,catalogoEstampillas:catalogoEstampillas||[]}),
+        caps.map(cap=>React.createElement("div",{key:cap.id,className:"card"},
+          React.createElement("div",{style:{background:"#1F2937",padding:"8px 16px"}},
+            React.createElement("span",{style:{color:"#fff",fontWeight:700}},cap.nombre||cap.titulo||"Capítulo")
+          ),
+          (cap.items||[]).map((item,ii)=>React.createElement("div",{key:item.id||ii,style:{borderBottom:"1px solid #F3F4F6"}},
+            React.createElement("div",{style:{padding:"8px 20px",fontSize:13}},item.descripcion||`Ítem ${ii+1}`),
+            React.createElement(HiloObs,{
+              cid:`consult_${cap.id}`, idx:ii,
+              desc:`Consultoría › ${cap.nombre||""} › ${item.descripcion||`Ítem ${ii+1}`}`,
+              tabLabel:"Presupuesto Consultoría",
+              allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+            })
+          ))
+        ))
+      );
+    }
+    if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera") {
+      const seccFF = (proyecto.fichaFinanciera||{}).secciones||[];
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        React.createElement(TabFichaFinanciera,{proyecto,setPActivo:()=>{},apus,recursos,readOnly:true,perfil,session}),
+        seccFF.length > 0 && React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones por ítem"),
+          seccFF.map((sec,si)=>(sec.items||[]).map((item,ii)=>React.createElement("div",{key:`${si}-${ii}`,style:{borderBottom:"1px solid #F3F4F6"}},
+            React.createElement("div",{style:{padding:"8px 20px",fontSize:13}},item.descripcion||`Ítem ${ii+1}`),
+            React.createElement(HiloObs,{
+              cid:`ficha_${si}`, idx:ii,
+              desc:`Ficha Financiera › ${sec.titulo||""} › ${item.descripcion||`Ítem ${ii+1}`}`,
+              tabLabel:"Ficha Financiera",
+              allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+            })
+          )))
+        )
+      );
+    }
     if(tabActiva==="apus_usados") return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:16}},
       apusUsados.map((apu)=>{
         const apuObj=apus.find(x=>x.id===apu.id)||{lineas:[]};
@@ -8645,13 +9587,21 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
                 const rec=recursos.find(x=>x.id===l.recursoId); if(!rec) return null;
                 const sub=calcLinea(l,recursos,lineas);
                 const val=rec.precio>0?sub/rec.precio:(l.cantidad||l.rendimiento||0);
-                return React.createElement("div",{key:l.id||li,style:{padding:"8px 20px",borderBottom:"1px solid #F3F4F6",display:"grid",gridTemplateColumns:"auto 1fr 60px 90px 100px 110px",gap:8,alignItems:"center"}},
-                  React.createElement("code",{style:{fontSize:10,color:"#9CA3AF",fontFamily:"var(--mono)"}},rec.codigo||"—"),
-                  React.createElement("span",{style:{fontSize:12}},rec.nombre),
-                  React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",textAlign:"center"}},rec.unidad||""),
-                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(val,4)),
-                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt(rec.precio||0)),
-                  React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",fontWeight:700}},fmt(Math.round(sub)))
+                return React.createElement("div",{key:l.id||li,style:{borderBottom:"1px solid #F3F4F6"}},
+                  React.createElement("div",{style:{padding:"8px 20px",display:"grid",gridTemplateColumns:"auto 1fr 60px 90px 100px 110px",gap:8,alignItems:"center"}},
+                    React.createElement("code",{style:{fontSize:10,color:"#9CA3AF",fontFamily:"var(--mono)"}},rec.codigo||"—"),
+                    React.createElement("span",{style:{fontSize:12}},rec.nombre),
+                    React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",textAlign:"center"}},rec.unidad||""),
+                    React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(val,4)),
+                    React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt(rec.precio||0)),
+                    React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",fontWeight:700}},fmt(Math.round(sub)))
+                  ),
+                  React.createElement(HiloObs,{
+                    cid:`apu_${apu.id}_${sec.id}`, idx:li,
+                    desc:`${apu.codigo} › ${sec.label} › ${rec.nombre}`,
+                    tabLabel:`APUs Proyectos`,
+                    allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+                  })
                 );
               }),
               moTotal>0&&sec.id==="maquinaria"&&React.createElement("div",{style:{padding:"6px 20px",background:"#FEF3C7",display:"flex",justifyContent:"space-between"}},
@@ -8667,6 +9617,63 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
         );
       })
     );
+    if(["sgsst","pma","pmt","gsocial"].includes(tabActiva)) {
+      const campoMap = {sgsst:"sgSst", pma:"pma", pmt:"pmt", gsocial:"gestionSocial"};
+      const labelMap = {sgsst:"SG-SST", pma:"PMA", pmt:"PMT", gsocial:"Gestión Social"};
+      const campo = campoMap[tabActiva];
+      const label = labelMap[tabActiva];
+      const plantMap = {sgsst:PLANTILLA_SGSST, pma:PLANTILLA_PMA, pmt:PLANTILLA_PMT, gsocial:PLANTILLA_GS};
+      const plantilla = plantMap[tabActiva]||[];
+      const au = proyecto.au||{};
+      const extras = (au.extras||{})[campo]||{};
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        React.createElement(TabExtrasModulo,{
+          titulo:label, campo, plantilla,
+          proyecto, setPActivo:()=>{},
+          setAu:()=>{}, au, cd:calcCD(proyecto,apus,recursos), readOnly:true
+        }),
+        React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},`Observaciones sobre ${label}`),
+          React.createElement(HiloObs,{
+            cid:tabActiva, idx:0,
+            desc:`${label} — observación general`,
+            tabLabel:label,
+            allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+          })
+        )
+      );
+    }
+    if(tabActiva==="resumen") {
+      const caps = (proyecto.presupuestosObra||[{capitulos:proyecto.capitulos||[]}])
+        .flatMap(ps=>(ps.capitulos||[]));
+      return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+        React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{padding:"10px 16px",fontWeight:700,fontSize:13,borderBottom:"1px solid var(--line)"}},"Resumen por cap\xEDtulo"),
+          caps.map((cap,ci)=>{
+            const cdC = (cap.items||[]).reduce((s,it)=>s+calcItem(it,apus,recursos,proyecto),0);
+            return React.createElement("div",{key:cap.id||ci,style:{borderBottom:"1px solid #F3F4F6"}},
+              React.createElement("div",{style:{padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
+                React.createElement("span",{style:{fontSize:13,fontWeight:600}},`${cap.numero||ci+1}. ${cap.nombre||""}`),
+                React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:13,fontWeight:700}},fmt(cdC))
+              ),
+              React.createElement(HiloObs,{
+                cid:"resumen", idx:ci,
+                desc:`Resumen \u203A Cap. ${cap.numero||ci+1} ${cap.nombre||""}`,
+                tabLabel:"Resumen",
+                allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+              })
+            );
+          }),
+          React.createElement("div",{style:{padding:"10px 20px",borderTop:"2px solid var(--line)",fontWeight:700}},"Observaci\xF3n general del proyecto"),
+          React.createElement(HiloObs,{
+            cid:"resumen_general", idx:0,
+            desc:"Observaci\xF3n general del proyecto",
+            tabLabel:"Resumen",
+            allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+          })
+        )
+      );
+    }
     return null;
   };
 
@@ -9999,7 +11006,10 @@ function ModuloProyectos({
   plantillasFicha,
   perfil,
   session,
-  guardarSeccion
+  guardarSeccion,
+  presencia,
+  saveStatus,
+  setSaveStatus
 }) {
   const rol = perfil?.rol || "usuario";
   const esAdmin   = rol === "admin";
@@ -10208,11 +11218,37 @@ const mergeItemExterno = React.useCallback((event, row) => {
   // ── Auto-guardado por sección ─────────────────────────────────────────────
   const prevPActivoRef = React.useRef(null);
   const secTimers      = React.useRef({});
+  const lastSavedRef   = React.useRef({}); // último valor guardado por sección
+
+  // Guardado de seguridad cada 10 segundos — independiente de detección de cambios
+  useEffect(()=>{
+    if(!pActivo||vista!=="editor"||!guardarSeccion) return;
+    const secciones = {caps:"capitulos",au:"au",pol:"polizasPorComp",est:"estampillas",interv:"presupInterv",consult:"presupConsult"};
+    const iv = setInterval(()=>{
+      if(!pActivo||vista!=="editor") return;
+      Object.entries(secciones).forEach(([sec,field])=>{
+        const actual = JSON.stringify(pActivo[field]);
+        if(actual !== lastSavedRef.current[sec]) {
+          lastSavedRef.current[sec] = actual;
+          guardarSeccion(pActivo.id, sec, pActivo[field]);
+        }
+      });
+    }, 10000);
+    return ()=>clearInterval(iv);
+  },[pActivo?.id, vista]);
 
   useEffect(()=>{
     if(!pActivo||vista!=="editor"||!guardarSeccion) return;
     const prev = prevPActivoRef.current;
-    if(!prev||prev.id!==pActivo.id){ prevPActivoRef.current=pActivo; return; }
+    if(!prev||prev.id!==pActivo.id){
+      prevPActivoRef.current=pActivo;
+      // Guardar todas las secciones al abrir el proyecto (primera vez)
+      const secciones = {caps:"capitulos",au:"au",pol:"polizasPorComp",est:"estampillas",interv:"presupInterv",consult:"presupConsult"};
+      Object.entries(secciones).forEach(([sec,field])=>{
+        lastSavedRef.current[sec] = JSON.stringify(pActivo[field]);
+      });
+      return;
+    }
 
     const secciones = {
       caps:"capitulos", au:"au", pol:"polizasPorComp",
@@ -10222,8 +11258,13 @@ const mergeItemExterno = React.useCallback((event, row) => {
 
     Object.entries(secciones).forEach(([sec,field])=>{
       if(JSON.stringify(pActivo[field])!==JSON.stringify(prev[field])){
+        window.__hasPendingChanges__ = true;
+        // Broadcast presence: qué sección estoy editando
+        if(window.__presenceTrack__) window.__presenceTrack__(sec, pActivo.id);
         clearTimeout(secTimers.current[sec]);
         secTimers.current[sec]=setTimeout(()=>{
+          lastSavedRef.current[sec] = JSON.stringify(pActivo[field]);
+          window.__hasPendingChanges__ = false;
           guardarSeccion(pActivo.id, sec, pActivo[field]);
         }, 700);
       }
@@ -10845,7 +11886,7 @@ const sincronizarPolizasAU = (proyecto) => {
       className: `tab${tabEditor === t.id ? " on" : ""}`,
       onClick: () => setTabEditor(t.id)
     }, t.l));
-  })()), (tabEditor === "apus_usados") && React.createElement(DetalleAPUsUsados, { apusUsados: apusUsados, apus: apus, recursos: recursos, proyecto: pActivo, perfil: perfil, session: session, esLectura: false }),
+  })()), (tabEditor === "apus_usados") && React.createElement(DetalleAPUsUsados, { apusUsados: apusUsados, apus: apus, recursos: recursos, proyecto: pActivo, perfil: perfil, session: session, esLectura: false, setPActivo: setPActivo }),
   (tabEditor === "fichaFinanciera") && (() => {
     const _extrasObra = (pActivo.au||{}).extras||{}; const _obraTotal = calcProyecto(pActivo, apus, recursos).total + ((_extrasObra.sgSst||0)+(_extrasObra.pma||0)+(_extrasObra.pmt||0)+(_extrasObra.gestionSocial||0));
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
@@ -11142,18 +12183,20 @@ const sincronizarPolizasAU = (proyecto) => {
       const isDraggingOver = dragOver && dragOver.capId === cap.id && dragOver.itemId === item.id;
       return /*#__PURE__*/React.createElement("tr", {
         key: item.id,
-        draggable: true,
-        onDragStart: e => { e.dataTransfer.effectAllowed="move"; setDragItem({capId:cap.id, itemId:item.id}); },
-        onDragEnd: () => { setDragItem(null); setDragOver(null); },
+        draggable: false,
         onDragOver: e => { e.preventDefault(); setDragOver({capId:cap.id, itemId:item.id}); },
         onDrop: e => { e.preventDefault(); if(dragItem) moverItem(dragItem.capId, dragItem.itemId, cap.id, item.id); setDragItem(null); setDragOver(null); },
         style: {
           borderBottom: "1px solid #F9F9FB",
           borderTop: isDraggingOver ? "2px solid var(--red)" : undefined,
           opacity: dragItem && dragItem.itemId === item.id ? 0.4 : 1,
-          cursor: "grab"
         }
-      }, /*#__PURE__*/React.createElement("td", {style:{paddingLeft:6,color:"var(--ink4)",fontSize:13,cursor:"grab",userSelect:"none"}}, "⠿"),
+      }, /*#__PURE__*/React.createElement("td", {
+        draggable: true,
+        onDragStart: e => { e.dataTransfer.effectAllowed="move"; setDragItem({capId:cap.id, itemId:item.id}); },
+        onDragEnd: () => { setDragItem(null); setDragOver(null); },
+        style:{paddingLeft:6,color:"var(--ink4)",fontSize:13,cursor:"grab",userSelect:"none"}
+      }, "⠿"),
       /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
         style: {
           fontFamily: "var(--mono)",
@@ -11543,6 +12586,19 @@ const sincronizarPolizasAU = (proyecto) => {
         gap: 10
       }
     }, pActivo.finalizado&&React.createElement("span",{style:{background:"#FEF2F2",color:"#B91C1C",border:"1px solid #FECACA",borderRadius:6,padding:"3px 10px",fontSize:12,fontWeight:600}},"🔒 Finalizado"),
+    // Indicador de presencia — quién está editando qué
+    presencia && Object.entries(presencia).filter(([email, u]) =>
+      email !== session?.user?.email &&
+      u.proyecto_id === String(pActivo.id) && u.seccion
+    ).map(([email, u]) => {
+      const secLabels = {caps:"Presupuesto",au:"A+U",pol:"Pólizas",est:"Estampillas",interv:"Interventoría",consult:"Consultoría"};
+      return React.createElement("span", {
+        key: email,
+        title: `${u.user_nombre||email} está editando ${secLabels[u.seccion]||u.seccion}`,
+        style:{display:"flex",alignItems:"center",gap:5,background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#1D4ED8",fontWeight:600}
+      }, React.createElement("span",{style:{width:7,height:7,borderRadius:"50%",background:"#22C55E",display:"inline-block",animation:"pulse 1.5s infinite"}}),
+      ` ${u.user_nombre||email.split("@")[0]} · ${secLabels[u.seccion]||u.seccion}`);
+    }),
     !esLectura&&!pActivo.finalizado&&/*#__PURE__*/React.createElement("button",{className:"btn-s",onClick:()=>abrirEditor(pActivo)},"Editar"),
     !esLectura&&!pActivo.finalizado&&React.createElement("button",{className:"btn-s",style:{background:"#92400E",color:"#fff",border:"none"},onClick:finalizarProyecto},"🔒 Finalizar"),
     esAdmin&&pActivo.finalizado&&React.createElement("button",{className:"btn-s",style:{background:"#1D4ED8",color:"#fff",border:"none"},onClick:reabrirProyecto},"🔓 Reabrir"),
@@ -11972,16 +13028,18 @@ const sincronizarPolizasAU = (proyecto) => {
       proyectoId: pActivo.id
     }), tabDetalle === "apus_usados" && React.createElement(DetalleAPUsUsados, {
       apusUsados, apus, recursos, proyecto: pActivo,
-      perfil, session, esLectura
+      perfil, session, esLectura: true
     }));
   }
   return null;
 }
 
 // ── Desglose visual de APUs Proyectos (read-only con observaciones) ─────────────
-function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, session, esLectura}) {
+function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, session, esLectura, setPActivo}) {
   const [expandidos, setExpandidos] = useState({});
   const [obsCounts, setObsCounts]   = useState({});
+  const [editandoId, setEditandoId] = useState(null); // APU being edited locally
+  const [editLineas, setEditLineas] = useState(null); // working copy of lineas
 
   useEffect(()=>{
     if(!proyecto?.id||!apusUsados?.length) return;
@@ -12056,11 +13114,31 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
             )
           ),
           React.createElement("div",{style:{display:"flex",alignItems:"center",gap:12}},
-
             React.createElement("div",{style:{textAlign:"right"}},
               React.createElement("div",{style:{fontFamily:"var(--mono)",fontWeight:700,fontSize:16,color:"var(--red)"}},
                 fmt(apu.valorUnitario)),
               React.createElement("div",{style:{fontSize:10,color:"var(--ink4)"}},"por ",apu.unidad)
+            ),
+            !esLectura && React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:4},onClick:e=>e.stopPropagation()},
+              React.createElement("button",{
+                className:"btn-s",
+                style:{fontSize:10,padding:"3px 8px"},
+                onClick:e=>{ e.stopPropagation();
+                  const lineasActuales = (proyecto.apuOverrides&&proyecto.apuOverrides[apu.id]) || (apus.find(x=>x.id===apu.id)||{}).lineas || [];
+                  setEditandoId(apu.id);
+                  setEditLineas(JSON.parse(JSON.stringify(lineasActuales)));
+                  setExpandidos(ex=>({...ex,[apu.id]:true}));
+                }
+              }, "\u270F\uFE0F Editar APU"),
+              apu._hasOverride && React.createElement("button",{
+                className:"btn-s",
+                style:{fontSize:10,padding:"3px 8px",color:"#B91C1C",borderColor:"#B91C1C"},
+                title:"Restaurar APU original",
+                onClick:e=>{ e.stopPropagation();
+                  if(!confirm("¿Restaurar el APU original? Se perderán los cambios locales de este proyecto.")) return;
+                  setPActivo(p=>({...p, apuOverrides:{...p.apuOverrides, [apu.id]:undefined}}));
+                }
+              }, "\u21BA Original")
             )
           )
         ),
@@ -12132,7 +13210,111 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
           )
         )
       );
-    })
+    }),
+
+    // ── Modal editor APU local ──
+    editandoId && React.createElement("div",{
+      style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}
+    }, React.createElement("div",{
+      style:{background:"var(--card)",borderRadius:14,padding:24,width:"min(860px,95vw)",maxHeight:"90vh",overflowY:"auto",boxShadow:"0 16px 48px rgba(0,0,0,.4)"}
+    },
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}},
+        React.createElement("div",null,
+          React.createElement("div",{style:{fontWeight:700,fontSize:16}}, "✏️ Editar APU para este proyecto"),
+          React.createElement("div",{style:{fontSize:12,color:"var(--ink4)",marginTop:2}},
+            "Los cambios solo afectan este proyecto. El APU global no se modifica."
+          )
+        ),
+        React.createElement("button",{className:"btn-ghost",style:{fontSize:18},onClick:()=>setEditandoId(null)}, "×")
+      ),
+
+      // Editable lines by section
+      SECCIONES_APU.map(sec=>{
+        const lineasSec = (editLineas||[]).filter(l=>{
+          const r=recursos.find(x=>x.id===l.recursoId);
+          return r&&r.categoria===sec.id;
+        });
+        const sc=SEC_COLORS[sec.id]||{bg:"#F3F4F6",fg:"#374151",border:"#E5E7EB"};
+        return React.createElement("div",{key:sec.id,style:{marginBottom:16}},
+          React.createElement("div",{style:{background:sc.bg,padding:"8px 16px",borderRadius:"8px 8px 0 0",
+            display:"flex",justifyContent:"space-between",alignItems:"center",
+            borderBottom:"1px solid "+sc.border}},
+            React.createElement("span",{style:{fontWeight:700,fontSize:12,color:sc.fg,textTransform:"uppercase",letterSpacing:".08em"}},sec.label),
+            React.createElement("button",{
+              className:"btn-s",style:{fontSize:10,padding:"2px 8px"},
+              onClick:()=>{
+                const allRecSec = recursos.filter(r=>r.categoria===sec.id);
+                // Show simple resource picker — add first one found
+                const nombre = prompt(`Nombre del recurso a agregar (${sec.label}):`);
+                if(!nombre) return;
+                const rec = allRecSec.find(r=>r.nombre.toLowerCase().includes(nombre.toLowerCase()));
+                if(!rec) { alert("Recurso no encontrado en el catálogo. Agréguelo primero en Recursos."); return; }
+                setEditLineas(prev=>[...prev, {id:Date.now()+Math.random(), recursoId:rec.id, _sec:sec.id, cantidad:sec.usa==="cantidad"?1:null, rendimiento:sec.usa!=="cantidad"?1:null}]);
+              }
+            }, "+ Agregar")
+          ),
+          React.createElement("table",{className:"tbl",style:{marginBottom:0,border:"1px solid "+sc.border,borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden"}},
+            React.createElement("thead",null, React.createElement("tr",null,
+              React.createElement("th",null,"Recurso"),
+              React.createElement("th",{style:{textAlign:"center"}},"Und."),
+              React.createElement("th",{style:{textAlign:"right",width:100}},sec.usa==="cantidad"?"Cantidad":"Rendimiento"),
+              React.createElement("th",{style:{textAlign:"right",width:120}},"P. Unitario"),
+              React.createElement("th",{style:{textAlign:"right",width:110}},"Subtotal"),
+              React.createElement("th",{style:{width:32}})
+            )),
+            React.createElement("tbody",null,
+              lineasSec.length===0
+                ? React.createElement("tr",null,React.createElement("td",{colSpan:6,style:{textAlign:"center",color:"var(--ink4)",fontSize:12,padding:"12px"}}, "Sin recursos"))
+                : lineasSec.map((l,li)=>{
+                  const r=recursos.find(x=>x.id===l.recursoId);
+                  const val=sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0);
+                  return React.createElement("tr",{key:l.id},
+                    React.createElement("td",null,
+                      React.createElement("div",{style:{fontWeight:500,fontSize:13}},r?.nombre||"—"),
+                    ),
+                    React.createElement("td",{style:{textAlign:"center",fontSize:11,color:"var(--ink3)"}},r?.unidad||"—"),
+                    React.createElement("td",{style:{textAlign:"right"}},
+                      React.createElement("input",{
+                        className:"inum",style:{width:80},type:"number",min:0,step:0.0001,value:val,
+                        onChange:e=>{
+                          const v=parseFloat(e.target.value)||0;
+                          setEditLineas(prev=>prev.map(x=>x.id===l.id
+                            ? {...x,[sec.usa==="cantidad"?"cantidad":"rendimiento"]:v}
+                            : x));
+                        }
+                      })
+                    ),
+                    React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"}},
+                      fmt(r?.precio||0)
+                    ),
+                    React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,fontWeight:600}},
+                      fmt(val*(r?.precio||0))
+                    ),
+                    React.createElement("td",null,
+                      React.createElement("button",{className:"btn-ghost",style:{color:"var(--red)"},
+                        onClick:()=>setEditLineas(prev=>prev.filter(x=>x.id!==l.id))
+                      },"×")
+                    )
+                  );
+                })
+            )
+          )
+        );
+      }),
+
+      // Footer
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16,paddingTop:16,borderTop:"1px solid var(--line)"}},
+        React.createElement("button",{className:"btn-s",onClick:()=>setEditandoId(null)}, "Cancelar"),
+        React.createElement("button",{
+          className:"btn-p",
+          onClick:()=>{
+            setPActivo(p=>({...p, apuOverrides:{...(p.apuOverrides||{}), [editandoId]:editLineas}}));
+            setEditandoId(null);
+            setEditLineas(null);
+          }
+        }, "✓ Guardar cambios para este proyecto")
+      )
+    ))
   );
 }
 
@@ -12675,6 +13857,9 @@ function App() {
   const [dataReady,setDataReady] = useState(false);
   const [syncMsg,setSyncMsg]   = useState("");
   const [modulo,setModulo]     = useState("Proyectos");
+  const [saveStatus,setSaveStatus] = useState(""); // "Guardando...", "Guardado hace Xs"
+  const [presencia,setPresencia]   = useState({}); // {email: {nombre, seccion, ts}}
+  const lastSaveTimeRef = React.useRef(null);
 
   // ── Data states ───────────────────────────────────────
   const [recursos,           setRecursosRaw]            = useState(RECURSOS_INIT);
@@ -12734,13 +13919,31 @@ function App() {
   // Sección-level save: guarda solo la parte del proyecto que cambió
   const guardarSeccion = (proyectoId, seccion, data) => {
     const key = `psec_${proyectoId}_${seccion}`;
+    setSaveStatus("Guardando...");
     _sb.from("app_data").upsert({
       key, value: data,
       updated_at: new Date().toISOString(),
       updated_by: session?.user?.id,
       updated_by_email: session?.user?.email,
       updated_by_name: perfil?.nombre || session?.user?.email,
-    }).then(({error})=>{ if(error) console.error("SecSave:",key,error); });
+    }).then(({error})=>{
+      if(error) { console.error("SecSave:",key,error); setSaveStatus("⚠️ Error al guardar"); }
+      else {
+        lastSaveTimeRef.current = Date.now();
+        setSaveStatus("✓ Guardado");
+        setTimeout(()=>setSaveStatus(""), 4000);
+        // Guardar versión histórica (solo caps y au)
+        if((seccion==="caps"||seccion==="au") && session) {
+          _sb.from("version_history").insert({
+            proyecto_id: String(proyectoId),
+            seccion, value: data,
+            saved_at: new Date().toISOString(),
+            user_email: session.user.email,
+            user_nombre: perfil?.nombre || session.user.email,
+          }).then(()=>{}).catch(()=>{});
+        }
+      }
+    });
     // Audit
     if(session){
       const labels = {caps:"Presupuesto",au:"Cálculo A+U",pol:"Pólizas",
@@ -12865,7 +14068,7 @@ function App() {
         rtChannel = setupRealtime(session);
       }
     });
-    // Presencia — quién está conectado
+    // Presencia — quién está conectado y qué sección edita
     const presenceSetup = (sess) => {
       if(!sess) return;
       const roomCh = _sb.channel("presence_room", {config:{presence:{key:sess.user.id}}});
@@ -12874,6 +14077,10 @@ function App() {
           const state = roomCh.presenceState();
           const activos = Object.values(state).flat().map(u=>u);
           setUsuariosActivos(activos);
+          // Build presencia map: email -> {nombre, seccion, proyecto_id}
+          const mapa = {};
+          activos.forEach(u=>{ if(u.user_email) mapa[u.user_email]=u; });
+          setPresencia(mapa);
         })
         .subscribe(async(status)=>{
           if(status==="SUBSCRIBED"){
@@ -12881,16 +14088,38 @@ function App() {
               user_id: sess.user.id,
               user_email: sess.user.email,
               user_nombre: perfil?.nombre||sess.user.email,
-              online_at: new Date().toISOString()
+              online_at: new Date().toISOString(),
+              seccion: null,
+              proyecto_id: null,
             });
           }
         });
+      // Expose track function globally so ModuloProyectos can update section
+      window.__presenceTrack__ = async(seccion, proyecto_id) => {
+        await roomCh.track({
+          user_id: sess.user.id,
+          user_email: sess.user.email,
+          user_nombre: perfil?.nombre||sess.user.email,
+          online_at: new Date().toISOString(),
+          seccion, proyecto_id: String(proyecto_id||""),
+        });
+      };
       return roomCh;
     };
     let presenceCh = null;
     _sb.auth.getSession().then(({data:{session}})=>{
       if(session) presenceCh = presenceSetup(session);
     });
+
+    // Alerta antes de cerrar si hay cambios pendientes
+    const handleBeforeUnload = (e) => {
+      if(window.__hasPendingChanges__) {
+        e.preventDefault();
+        e.returnValue = "Tienes cambios sin guardar. ¿Segura que quieres salir?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
 
     const{data:{subscription}}=_sb.auth.onAuthStateChange(async(event,session)=>{
       setSession(session);
@@ -12905,6 +14134,8 @@ function App() {
     return()=>{
       subscription.unsubscribe();
       if(rtChannel) _sb.removeChannel(rtChannel);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.__presenceTrack__ = null;
     };
   },[]);
 
@@ -13056,6 +14287,12 @@ function App() {
         React.createElement("span",{style:{fontSize:18}},"🔄"),
         React.createElement("span",{style:{color:"#C9D1D9",fontSize:13}},syncMsg)
       ),
+      saveStatus&&React.createElement("div",{style:{
+        position:"fixed",bottom:16,left:"50%",transform:"translateX(-50%)",
+        zIndex:998,background:saveStatus.includes("Error")?"#7F1D1D":saveStatus==="Guardando..."?"#1D4ED8":"#14532D",
+        color:"#fff",borderRadius:20,padding:"5px 16px",fontSize:12,fontWeight:600,
+        boxShadow:"0 2px 12px rgba(0,0,0,.3)",pointerEvents:"none",whiteSpace:"nowrap"
+      }}, saveStatus),
       modulo==="Recursos"&&React.createElement(ModuloRecursos,{recursos,setRecursos}),
       modulo==="APUs"&&React.createElement(ModuloAPUs,{recursos,apus,setApus,setRecursos}),
       modulo==="Plantillas AU"&&React.createElement(ModuloPlantillasAU,{plantillas:plantillasAU,setPlantillas:setPlantillasAU}),
@@ -13071,10 +14308,9 @@ function App() {
         recursos,apus,plantillasAU,proyectos,setProyectos,
         catalogoPolizas,catalogoEstampillas,plantillasInt,
         plantillasFicha,
-        perfil,session,guardarSeccion
+        perfil,session,guardarSeccion,presencia,saveStatus,setSaveStatus
       }),
       modulo==="Actividad"&&React.createElement(ModuloActividad),
-      modulo==="Observaciones"&&React.createElement(ModuloObservaciones,{proyectos,apus,recursos,perfil,session,catalogoEstampillas,plantillasAU}),
       modulo==="Usuarios"&&React.createElement(ModuloUsuarios,{perfil,session,proyectos})
     )
   );
