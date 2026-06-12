@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>PREX · Gestión Presupuestal</title><script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script><script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script><style>*{box-sizing:border-box;margin:0;padding:0;}
+<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>PREX · Gestión Presupuestal</title><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231a2e4a'/><text x='16' y='23' font-family='Arial' font-size='20' font-weight='bold' fill='%231d7a6e' text-anchor='middle'>P</text></svg>"/><script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script><script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script><style>*{box-sizing:border-box;margin:0;padding:0;}
   :root {
     --red:      #B91C1C;
     --red-soft: #FEF2F2;
@@ -9526,7 +9526,7 @@ function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, o
   );
 }
 
-function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampillas, plantillasAU, esVisor, onClose}) {
+function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampillas, plantillasAU, catalogoPolizas, plantillasFicha, esVisor, onClose}) {
   const [allObs, setAllObs] = useState([]);
   const [busy,   setBusy]   = useState(true);
   const [openKey,setOpenKey]= useState(null);
@@ -9778,10 +9778,31 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     }
     if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera") {
       const seccFF = (proyecto.fichaFinanciera||{}).secciones||[];
+      const _cdObs = calcCD(proyecto,apus,recursos);
+      const _extrasObs = (proyecto.au||{}).extras||{};
+      const _obraObs = calcProyecto(proyecto,apus,recursos).total + ((_extrasObs.sgSst||0)+(_extrasObs.pma||0)+(_extrasObs.pmt||0)+(_extrasObs.gestionSocial||0));
+      const _intervSubObs = calcTotalPresupInterv(proyecto.presupInterv);
+      const _intervPolDObs = ((proyecto.polizasPorComp||{})["interventoria"])||{};
+      const _intervEstObs = getEstampillasMunicipio(catalogoEstampillas||[], proyecto.municipioId, "interv");
+      const _intervPlazoObs = Number(_intervPolDObs.plazoContractual)||Number((proyecto.presupInterv||{}).plazo)||0;
+      const _intervObs = calcResumenInterv(_intervSubObs, _intervEstObs, _intervPolDObs.polizasActivas||[], _intervPlazoObs).valorTotal;
+      const _consultSubObs = calcTotalPresupConsult(proyecto.presupConsult);
+      const _consultPolDObs = ((proyecto.polizasPorComp||{})["consultoria"])||{};
+      const _consultEstObs = getEstampillasMunicipio(catalogoEstampillas||[], proyecto.municipioId, "interv");
+      const _consultPlazoObs = Number(_consultPolDObs.plazoContractual)||Number((proyecto.presupConsult||{}).plazo)||0;
+      const _cObs = _consultSubObs > 0 ? calcResumenInterv(_consultSubObs, _consultEstObs, _consultPolDObs.polizasActivas||[], _consultPlazoObs).valorTotal : 0;
       return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
-        React.createElement(TabFichaFinanciera,{proyecto,setPActivo:()=>{},apus,recursos,readOnly:true,perfil,session}),
-        seccFF.length > 0 && React.createElement("div",{className:"card"},
-          React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones por ítem"),
+        React.createElement(TabFichaFinanciera,{proyecto,setPActivo:()=>{},readOnly:true,perfil,session,
+          obraTotal:_obraObs, intervTotal:_intervObs, consultTotal:_cObs,
+          catalogoPolizas:catalogoPolizas||[], plantillasFicha:plantillasFicha||[], cd:_cdObs}),
+        React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones — Ficha Financiera"),
+          React.createElement(HiloObs,{
+            cid:"ficha_general", idx:0,
+            desc:"Ficha Financiera — observación general",
+            tabLabel:"Ficha Financiera",
+            allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo
+          }),
           seccFF.map((sec,si)=>(sec.items||[]).map((item,ii)=>React.createElement("div",{key:`${si}-${ii}`,style:{borderBottom:"1px solid #F3F4F6"}},
             React.createElement("div",{style:{padding:"8px 20px",fontSize:13}},item.descripcion||`Ítem ${ii+1}`),
             React.createElement(HiloObs,{
@@ -12679,7 +12700,7 @@ const sincronizarPolizasAU = (proyecto) => {
     const presups=(pActivo.presupuestosObra&&pActivo.presupuestosObra.length)?pActivo.presupuestosObra:[{id:"p0",nombre:"Presupuesto Obra",capitulos:pActivo.capitulos||[]}];
     return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:20,padding:"8px 0"}},
       presups.map(ps=>{
-        const cdPs=(ps.capitulos||[]).reduce((ss,cap)=>ss+(cap.items||[]).reduce((ss2,it)=>ss2+calcItem(it,apus,recursos,proyecto),0),0);
+        const cdPs=(ps.capitulos||[]).reduce((ss,cap)=>ss+(cap.items||[]).reduce((ss2,it)=>ss2+calcItem(it,apus,recursos,pActivo),0),0);
         return React.createElement("div",{key:ps.id,className:"card",style:{overflow:"hidden"}},
           React.createElement("div",{style:{background:"#111827",padding:"12px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
             React.createElement("span",{style:{color:"#fff",fontWeight:700,fontSize:15}},ps.nombre||"Presupuesto Obra"),
@@ -12690,7 +12711,7 @@ const sincronizarPolizasAU = (proyecto) => {
               ["Ítem","Capítulo","CD","% Incid."].map((h,i)=>React.createElement("th",{key:i,style:{padding:"8px 16px",textAlign:i>=2?"right":"left",fontSize:11,fontWeight:700,color:"#6B7280",textTransform:"uppercase"}},h))
             )),
             React.createElement("tbody",null,(ps.capitulos||[]).map((cap,ci)=>{
-              const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos,proyecto),0);
+              const cdC=(cap.items||[]).reduce((ss,it)=>ss+calcItem(it,apus,recursos,pActivo),0);
               const pct=cdPs>0?(cdC/cdPs*100).toFixed(1):"0.0";
               return React.createElement("tr",{key:cap.id,style:{borderBottom:"1px solid #F3F4F6",background:ci%2===0?"#fff":"#F9FAFB"}},
                 React.createElement("td",{style:{padding:"10px 16px",fontFamily:"var(--mono)",fontSize:12,color:"var(--red)",fontWeight:700,whiteSpace:"nowrap"}},cap.numero),
@@ -12747,6 +12768,8 @@ const sincronizarPolizasAU = (proyecto) => {
       proyecto: pActivo, apus, recursos, perfil, session,
       catalogoEstampillas: catalogoEstampillas||[],
       plantillasAU: plantillasAU||[],
+      catalogoPolizas: catalogoPolizas||[],
+      plantillasFicha: plantillasFicha||[],
       esVisor,
       onClose: esVisor ? null : () => setObsMode(false)
     });
@@ -14038,7 +14061,7 @@ function ModuloUsuarios({perfil,session,proyectos}) {
 
 
 // ── Módulo Observaciones ──────────────────────────────────────────────────
-function ModuloObservaciones({proyectos, apus, recursos, perfil, session, catalogoEstampillas, plantillasAU}) {
+function ModuloObservaciones({proyectos, apus, recursos, perfil, session, catalogoEstampillas, plantillasAU, catalogoPolizas, plantillasFicha}) {
   const [proySelId, setProySelId] = useState("");
   const proySel = (proyectos||[]).find(p=>String(p.id)===proySelId) || null;
 
@@ -14068,6 +14091,8 @@ function ModuloObservaciones({proyectos, apus, recursos, perfil, session, catalo
           perfil, session,
           catalogoEstampillas:catalogoEstampillas||[],
           plantillasAU:plantillasAU||[],
+          catalogoPolizas:catalogoPolizas||[],
+          plantillasFicha:plantillasFicha||[],
           esVisor:false,
           onClose:()=>setProySelId("")
         })
