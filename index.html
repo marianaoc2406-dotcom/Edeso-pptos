@@ -1762,8 +1762,8 @@ function ModuloAPUs({
   const [formatosGuardados, setFormatosGuardados] = useState(() => {
     try { return JSON.parse(localStorage.getItem('prex_formatos_importar')||'[]'); } catch(e) { return []; }
   });
-  const guardarFormato = (nombre, colMap, seccionRows) => {
-    const nuevo = { id: Date.now(), nombre, colMap, seccionRows: seccionRows||{}, fecha: new Date().toLocaleDateString('es-CO') };
+  const guardarFormato = (nombre, colMap, seccionRows, apuRows) => {
+    const nuevo = { id: Date.now(), nombre, colMap, seccionRows: seccionRows||{}, apuRows: apuRows||[], fecha: new Date().toLocaleDateString('es-CO') };
     const nuevos = [...formatosGuardados.filter(f=>f.nombre!==nombre), nuevo];
     setFormatosGuardados(nuevos);
     try { localStorage.setItem('prex_formatos_importar', JSON.stringify(nuevos)); } catch(e) {}
@@ -2841,7 +2841,7 @@ function ModuloAPUs({
   const ejecutarSmartImport = () => {
     const { wb, selectedSheets, colMap, prefijo } = smartImport;
     if (!prefijo?.trim()) { setImportPrefijoError("Escribe un prefijo"); return; }
-    if (!colMap?.apu?.desc && colMap?.apu?.desc !== 0) { setImportApuError("Indica al menos la columna de descripción del APU"); return; }
+    if (colMap?.apu?.desc == null) { setImportApuError("Indica al menos la columna de descripción del APU"); return; }
     setImportApuError("");
 
     const pref = prefijo.trim().toUpperCase();
@@ -2877,14 +2877,14 @@ function ModuloAPUs({
     const trMap2  = colMap.transporte|| {};
     const moMap2  = colMap.mano_obra || {};
     const seccionRows = smartImport.seccionRows || {};
+    const manualApuRows = smartImport.apuRows || []; // manually marked APU rows
 
-    // Build sorted section boundaries: [{rowIdx, sec}] sorted by rowIdx
+    // Build sorted section boundaries
     const secBoundaries = Object.entries(seccionRows)
       .map(([sec, rowIdx]) => ({ sec, rowIdx }))
       .sort((a,b) => a.rowIdx - b.rowIdx);
 
     const getSecForRow = (absRowIdx) => {
-      // Find the last boundary that is <= absRowIdx
       let current = null;
       for (const b of secBoundaries) {
         if (absRowIdx >= b.rowIdx) current = b.sec;
@@ -2892,6 +2892,9 @@ function ModuloAPUs({
       }
       return current;
     };
+
+    // If manual APU rows are set, use them to identify APUs
+    const useManualApus = manualApuRows.length > 0;
 
     const cv = (row, idx) => idx!=null && idx>=0 ? row[idx] ?? null : null;
     const cvStr = (row, idx) => { const v=cv(row,idx); return v!=null?String(v).trim():null; };
@@ -2911,34 +2914,56 @@ function ModuloAPUs({
       rows.forEach(row => {
         if (!row || row.every(v=>v===null)) { rowAbsIdx++; return; }
 
-        const desc  = apuMap.desc    != null ? row[apuMap.desc]    : null;
-        const und   = apuMap.unidad  != null ? row[apuMap.unidad]  : null;
+        const cleanVal = (v) => v ? String(v).trim().replace(/^(ITEM:|DESCRIPCI[ÓO]N:|UNIDAD:|DESCRIPCION:)\s*/i, '').trim() : null;
+
+        const desc  = apuMap.desc    != null ? cleanVal(row[apuMap.desc])    : null;
+        const und   = apuMap.unidad  != null ? cleanVal(row[apuMap.unidad])  : null;
 
         // Determine current section from seccionRows boundaries
         const secFromBoundary = getSecForRow(rowAbsIdx);
 
-        // Detect APU header: description long + unit short text + not in a section boundary row
+        // Detect APU: either manual selection or automatic detection
         const descStr = desc ? String(desc).trim() : null;
         const undStr  = und  ? String(und).trim()  : null;
-        const esUnidadTexto = undStr && undStr.length<=10 && isNaN(Number(undStr)) && !/subtotal|c[oó]digo|descripci/i.test(undStr);
-        const esDescLarga = descStr && descStr.length > 25;
-        const esBoundaryRow = secBoundaries.some(b => b.rowIdx === rowAbsIdx);
-        const esEncabezado = descStr && /^(descripci[oó]n|c[oó]digo|cargos personal|item de pago|subtotal)$/i.test(descStr.trim());
+        const isBoundaryRow = secBoundaries.some(b => b.rowIdx === rowAbsIdx);
 
-        if (esDescLarga && (esUnidadTexto || apuMap.unidad==null) && !esBoundaryRow && !esEncabezado && !detectarSeccionSmart(descStr)) {
+        const isManualAPU = useManualApus && manualApuRows.includes(rowAbsIdx);
+        const isAutoAPU = !useManualApus && (() => {
+          const esUnidadTexto = undStr && undStr.length<=10 && isNaN(Number(undStr)) && !/subtotal|c[oó]digo|descripci/i.test(undStr);
+          const esDescLarga = descStr && descStr.length > 25;
+          const esEncabezado = descStr && /^(descripci[oó]n|c[oó]digo|cargos personal|item de pago|subtotal)$/i.test(descStr.trim());
+          return esDescLarga && (esUnidadTexto || apuMap.unidad==null) && !isBoundaryRow && !esEncabezado && !detectarSeccionSmart(descStr);
+        })();
+
+        if (isManualAPU || isAutoAPU) {
           const numStr = String(++apuIdx).padStart(2,"0");
+          let apuDesc = desc;
+          let apuUnd = undStr || "un";
+          // If desc contains "ITEM:" it's a header row - look at next row for description
+          if (apuDesc && /^ITEM:/i.test(String(row[apuMap.desc]||""))) {
+            const nextRow = rows[rowAbsIdx+1];
+            if (nextRow && apuMap.desc!=null) {
+              apuDesc = cleanVal(nextRow[apuMap.desc]) || apuDesc;
+            }
+            // Unidad might be in col I of the ITEM row
+            if (!apuUnd || apuUnd==="un") {
+              const uIdx = apuMap.unidad!=null ? apuMap.unidad : 8; // default col I
+              const uVal = row[uIdx] ? cleanVal(row[uIdx]) : null;
+              if (uVal && uVal.length<=10 && isNaN(Number(uVal))) apuUnd = uVal;
+            }
+          }
           apuActual = {
             id: Date.now()+Math.random(),
-            codigo: `${pref}-${numStr}`,
-            nombre: descStr,
-            unidad: undStr || "un",
+            codigo: apuMap.codigo!=null && row[apuMap.codigo] ? `${pref}-${cleanVal(row[apuMap.codigo])}` : `${pref}-${numStr}`,
+            nombre: apuDesc || `APU ${apuIdx}`,
+            unidad: apuUnd,
             lineas: []
           };
           nuevosApus.push(apuActual);
           rowAbsIdx++; return;
         }
 
-        if (!apuActual || !secFromBoundary || esBoundaryRow) { rowAbsIdx++; return; }
+        if (!apuActual || !secFromBoundary || isBoundaryRow) { rowAbsIdx++; return; }
 
         // Process resource based on section
         if (secFromBoundary === "equipo") {
@@ -2985,6 +3010,13 @@ function ModuloAPUs({
     });
 
     if (!nuevosApus.length) { setImportApuError("No se encontraron APUs. Verifica la columna de descripción del APU en el paso anterior."); return; }
+
+    // Check if APUs have any lines
+    const apusConLineas = nuevosApus.filter(a => a.lineas.length > 0);
+    if (!apusConLineas.length) { 
+      setImportApuError(`Se encontraron ${nuevosApus.length} APU(s) pero sin recursos. Verifica que las secciones estén marcadas y las columnas mapeadas correctamente. APUs: ${nuevosApus.map(a=>a.nombre.substring(0,30)).join(', ')}`); 
+      return; 
+    }
 
     if (nuevosRecursos.length) setRecursos(prev => [...prev, ...nuevosRecursos]);
 
@@ -3684,11 +3716,13 @@ function ModuloAPUs({
     const previewRows = smartImport.previewRows || [];
     const cols = previewRows[0] ? Array.from({length:Math.max(...previewRows.map(r=>(r||[]).length),1)},(_,i)=>String.fromCharCode(65+i)) : [];
     const map = smartImport.colMap || {};
-    const seccionRows = smartImport.seccionRows || {}; // {equipo: 5, material: 12, ...}
+    const seccionRows = smartImport.seccionRows || {};
+    const apuRows = smartImport.apuRows || []; // array of absolute row indices marked as APUs
     const setCol = (sec,campo,col) => setSmartImport(p=>({...p,colMap:{...(p.colMap||{}),[sec]:{...((p.colMap||{})[sec]||{}),[campo]:col}}}));
     const getCol = (sec,campo) => { const v=(map[sec]||{})[campo]; return v!==null&&v!==undefined?v:null; };
     const startRow = smartImport.previewStartRow || 0;
     const totalRows = smartImport.previewTotalRows || 0;
+    const mode = smartImport.markMode || "section"; // "section" | "apu"
 
     const SECS = [
       {id:"equipo",    label:"Equipo / Maquinaria", color:"#15803D"},
@@ -3698,49 +3732,64 @@ function ModuloAPUs({
     ];
 
     const SECCIONES_MAP = [
-      {id:"apu",     label:"APU (encabezado)",         color:"#7C3AED", campos:[
+      {id:"apu",     label:"APU (encabezado)",       color:"#7C3AED", campos:[
         {id:"codigo",  label:"C\xF3digo APU"},
         {id:"desc",    label:"Descripci\xF3n"},
         {id:"unidad",  label:"Unidad"},
       ]},
-      {id:"equipo",  label:"I. Equipo / Maquinaria",   color:"#15803D", campos:[
+      {id:"equipo",  label:"I. Equipo / Maquinaria", color:"#15803D", campos:[
         {id:"nombre",  label:"Nombre recurso"},
         {id:"tarifa",  label:"Tarifa/Precio"},
         {id:"rend",    label:"Rendimiento"},
       ]},
-      {id:"material",label:"II. Materiales",            color:"#1D4ED8", campos:[
+      {id:"material",label:"II. Materiales",          color:"#1D4ED8", campos:[
         {id:"nombre",  label:"Nombre recurso"},
         {id:"unidad",  label:"Unidad"},
         {id:"precio",  label:"Precio unitario"},
         {id:"cant",    label:"Cantidad"},
       ]},
-      {id:"transporte",label:"III. Transporte",         color:"#D97706", campos:[
+      {id:"transporte",label:"III. Transporte",       color:"#D97706", campos:[
         {id:"nombre",  label:"Nombre recurso"},
         {id:"precio",  label:"Tarifa/Precio"},
         {id:"cant",    label:"Cantidad/Distancia"},
       ]},
-      {id:"mano_obra",label:"IV. Mano de Obra",         color:"#DC2626", campos:[
+      {id:"mano_obra",label:"IV. Mano de Obra",       color:"#DC2626", campos:[
         {id:"nombre",  label:"Nombre cargo"},
         {id:"jornal",  label:"Jornal/Precio"},
         {id:"rend",    label:"Rendimiento"},
       ]},
     ];
 
-    // Colors for section row highlights
     const secColors = {equipo:"#15803D", material:"#1D4ED8", transporte:"#D97706", mano_obra:"#DC2626"};
-    const getRowSec = (absRow) => {
-      return Object.entries(seccionRows).find(([k,v]) => v===absRow)?.[0] || null;
-    };
-
-    // Instruction for next section to mark
+    const getRowSec = (absRow) => Object.entries(seccionRows).find(([k,v])=>v===absRow)?.[0]||null;
     const markedSecs = Object.keys(seccionRows);
-    const pendingSecs = SECS.filter(s => !markedSecs.includes(s.id));
-    const nextToMark = pendingSecs[0];
+    const pendingSecs = SECS.filter(s=>!markedSecs.includes(s.id));
+    const nextToMark = mode==="section" ? pendingSecs[0] : null;
 
     return React.createElement("div", null,
-      // Row navigator
-      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"8px 12px",background:"var(--line2)",borderRadius:8,flexWrap:"wrap"}},
-        React.createElement("span",{style:{fontSize:12,color:"var(--ink3)",fontWeight:600}},"Vista previa:"),
+      // Mode toggle
+      React.createElement("div",{style:{display:"flex",gap:8,marginBottom:10,padding:"8px 12px",background:"var(--line2)",borderRadius:8,alignItems:"center",flexWrap:"wrap"}},
+        React.createElement("span",{style:{fontSize:12,fontWeight:600,color:"var(--ink3)"}},"Modo:"),
+        React.createElement("button",{
+          className:"btn-s",
+          style:{fontSize:11,background:mode==="section"?"var(--red)":"",color:mode==="section"?"#fff":"",border:mode==="section"?"none":""},
+          onClick:()=>setSmartImport(p=>({...p,markMode:"section"}))
+        },"\uD83D\uDCC1 Marcar secciones"),
+        React.createElement("button",{
+          className:"btn-s",
+          style:{fontSize:11,background:mode==="apu"?"#7C3AED":"",color:mode==="apu"?"#fff":"",border:mode==="apu"?"none":""},
+          onClick:()=>setSmartImport(p=>({...p,markMode:"apu"}))
+        },"\uD83D\uDCCC Marcar APUs manualmente"),
+        mode==="apu" && React.createElement("span",{style:{fontSize:11,color:"#7C3AED",fontWeight:600}},
+          `${apuRows.length} APU(s) marcados`),
+        mode==="apu" && apuRows.length>0 && React.createElement("button",{
+          className:"btn-s",style:{fontSize:10},
+          onClick:()=>setSmartImport(p=>({...p,apuRows:[]}))
+        },"Limpiar")
+      ),
+
+      // Nav
+      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"6px 10px",background:"var(--line2)",borderRadius:8,flexWrap:"wrap"}},
         React.createElement("button",{className:"btn-s",style:{fontSize:11,padding:"2px 8px"},
           disabled:startRow===0,
           onClick:()=>{const p=smartGetPreview(smartImport.wb,smartImport.previewSheet,Math.max(0,startRow-25));setSmartImport(s=>({...s,previewRows:p.rows,previewStartRow:p.startRow,previewTotalRows:p.totalRows}));}
@@ -3752,36 +3801,34 @@ function ModuloAPUs({
         },"\u2193 Siguiente")
       ),
 
-      // Section marking instruction
-      React.createElement("div",{style:{marginBottom:8,padding:"8px 12px",borderRadius:8,
-        background: nextToMark ? nextToMark.color+"11" : "#F0FDF4",
-        border:`1px solid ${nextToMark ? nextToMark.color+"44" : "#BBF7D0"}`}},
+      // Section instruction (only in section mode)
+      mode==="section" && React.createElement("div",{style:{marginBottom:8,padding:"8px 12px",borderRadius:8,
+        background:nextToMark?nextToMark.color+"11":"#F0FDF4",
+        border:`1px solid ${nextToMark?nextToMark.color+"44":"#BBF7D0"}`}},
         nextToMark
-          ? React.createElement("span",{style:{fontSize:12,color:nextToMark.color,fontWeight:600}},
-              `\u27A1 Haz clic en la fila que marca el inicio de "${nextToMark.label}"`)
-          : React.createElement("span",{style:{fontSize:12,color:"#15803D",fontWeight:600}},
-              "\u2705 Todas las secciones marcadas"),
-        // Show marked sections
+          ? React.createElement("span",{style:{fontSize:12,color:nextToMark.color,fontWeight:600}},`\u27A1 Clic en la fila inicio de "${nextToMark.label}"`)
+          : React.createElement("span",{style:{fontSize:12,color:"#15803D",fontWeight:600}},"\u2705 Todas las secciones marcadas"),
         React.createElement("div",{style:{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}},
-          SECS.map(s => {
-            const fila = seccionRows[s.id];
+          SECS.map(s=>{
+            const fila=seccionRows[s.id];
             return React.createElement("div",{key:s.id,style:{
-              fontSize:10,padding:"2px 8px",borderRadius:4,
-              background: fila!=null ? s.color : "var(--line2)",
-              color: fila!=null ? "#fff" : "var(--ink4)",
-              display:"flex",alignItems:"center",gap:4
-            }},
-              fila!=null ? `\u2713 ${s.label} (fila ${fila+1})` : `\u25CB ${s.label}`,
-              fila!=null && React.createElement("span",{
-                style:{cursor:"pointer",marginLeft:2,opacity:.7},
-                onClick:()=>setSmartImport(p=>{const sr={...p.seccionRows};delete sr[s.id];return{...p,seccionRows:sr};})
-              },"\u00D7")
+              fontSize:10,padding:"2px 8px",borderRadius:4,cursor:fila!=null?"pointer":undefined,
+              background:fila!=null?s.color:"var(--line2)", color:fila!=null?"#fff":"var(--ink4)"
+            }, onClick:fila!=null?()=>setSmartImport(p=>{const sr={...p.seccionRows};delete sr[s.id];return{...p,seccionRows:sr};}):undefined},
+              fila!=null?`\u2713 ${s.label} (fila ${fila+1}) \u00D7`:`\u25CB ${s.label}`
             );
           })
         )
       ),
 
-      // Preview table — clicking a row marks the section
+      // APU mode instruction
+      mode==="apu" && React.createElement("div",{style:{marginBottom:8,padding:"8px 12px",borderRadius:8,
+        background:"#7C3AED11",border:"1px solid #7C3AED44"}},
+        React.createElement("span",{style:{fontSize:12,color:"#7C3AED",fontWeight:600}},
+          "\u27A1 Haz clic en cada fila que es un APU para marcarla. Clic de nuevo para desmarcar.")
+      ),
+
+      // Preview table
       React.createElement("div",{style:{overflowX:"auto",marginBottom:14,border:"1px solid var(--line)",borderRadius:8,maxHeight:220,overflowY:"auto"}},
         React.createElement("table",{className:"tbl",style:{fontSize:10,minWidth:"100%"}},
           React.createElement("thead",null,React.createElement("tr",null,
@@ -3790,22 +3837,31 @@ function ModuloAPUs({
           )),
           React.createElement("tbody",null,
             previewRows.map((row,ri)=>{
-              const absRow = startRow + ri;
-              const rowSec = getRowSec(absRow);
-              const rowColor = rowSec ? secColors[rowSec]+"22" : undefined;
-              const rowBorder = rowSec ? `2px solid ${secColors[rowSec]}` : undefined;
+              const absRow=startRow+ri;
+              const rowSec=getRowSec(absRow);
+              const isAPU=apuRows.includes(absRow);
+              const isBoundary=Object.values(seccionRows).includes(absRow);
+              const rowBg=isAPU?"#7C3AED22":rowSec?secColors[rowSec]+"22":undefined;
+              const rowBorderLeft=isAPU?"3px solid #7C3AED":rowSec?`3px solid ${secColors[rowSec]}`:undefined;
               return React.createElement("tr",{key:ri,
-                style:{cursor:nextToMark?"pointer":undefined, background:rowColor, borderLeft:rowBorder},
+                style:{cursor:"pointer",background:rowBg,borderLeft:rowBorderLeft},
                 onClick:()=>{
-                  if(!nextToMark) return;
-                  setSmartImport(p=>({...p,seccionRows:{...(p.seccionRows||{}),[nextToMark.id]:absRow}}));
+                  if(mode==="apu"){
+                    setSmartImport(p=>{
+                      const arr=p.apuRows||[];
+                      return {...p,apuRows:arr.includes(absRow)?arr.filter(x=>x!==absRow):[...arr,absRow].sort((a,b)=>a-b)};
+                    });
+                  } else if(mode==="section"&&nextToMark){
+                    setSmartImport(p=>({...p,seccionRows:{...(p.seccionRows||{}),[nextToMark.id]:absRow}}));
+                  }
                 },
-                title: nextToMark ? `Marcar fila ${absRow+1} como inicio de "${nextToMark.label}"` : undefined
+                title:mode==="apu"?(isAPU?"Desmarcar APU":"Marcar como APU"):(nextToMark?`Marcar inicio de "${nextToMark.label}"`:undefined)
               },
-                React.createElement("td",{style:{padding:"2px 6px",fontSize:9,color:"var(--ink4)",textAlign:"center",background:"var(--line2)"}},(absRow+1)),
+                React.createElement("td",{style:{padding:"2px 6px",fontSize:9,color:isAPU?"#7C3AED":"var(--ink4)",textAlign:"center",background:"var(--line2)",fontWeight:isAPU?700:400}},
+                  isAPU?"\uD83D\uDCCC":(absRow+1)),
                 cols.map((_,ci)=>{
                   const val=(row||[])[ci];
-                  return React.createElement("td",{key:ci,style:{padding:"2px 6px",maxWidth:130,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                  return React.createElement("td",{key:ci,style:{padding:"2px 6px",maxWidth:130,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:isAPU?600:400}},
                     val!=null?String(val).substring(0,28):"");
                 })
               );
@@ -3822,7 +3878,7 @@ function ModuloAPUs({
           sec.campos.map(campo=>React.createElement("div",{key:campo.id,style:{display:"flex",alignItems:"center",gap:8,marginBottom:6}},
             React.createElement("label",{style:{fontSize:11,color:"var(--ink3)",width:115,flexShrink:0}},campo.label),
             React.createElement("select",{
-              className:"ifield", style:{fontSize:11,padding:"2px 6px",height:26,flex:1},
+              className:"ifield",style:{fontSize:11,padding:"2px 6px",height:26,flex:1},
               value:getCol(sec.id,campo.id)!==null?getCol(sec.id,campo.id):"",
               onChange:e=>setCol(sec.id,campo.id,e.target.value===""?null:Number(e.target.value))
             },
@@ -3874,7 +3930,7 @@ function ModuloAPUs({
           onClick:()=>{
             const nombre = document.getElementById("nombreFormatoGuardar")?.value?.trim();
             if(!nombre){alert("Escribe un nombre para el formato");return;}
-            guardarFormato(nombre, smartImport.colMap, smartImport.seccionRows);
+            guardarFormato(nombre, smartImport.colMap, smartImport.seccionRows, smartImport.apuRows);
             alert(`✓ Formato "${nombre}" guardado`);
           }
         }, "Guardar formato")
