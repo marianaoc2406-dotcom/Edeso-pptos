@@ -343,7 +343,9 @@ function calcAPUTotal(apu, recursos) {
 }
 function getApuEfectivo(apu, proyecto) {
   const overrideLineas = proyecto && proyecto.apuOverrides && proyecto.apuOverrides[apu.id];
-  return overrideLineas ? {...apu, lineas: overrideLineas} : apu;
+  const overrideNombre = proyecto && proyecto.apuNombreOverrides && proyecto.apuNombreOverrides[apu.id];
+  if (!overrideLineas && !overrideNombre) return apu;
+  return {...apu, lineas: overrideLineas || apu.lineas, nombre: overrideNombre || apu.nombre};
 }
 function calcItem(item, apus, recursos, proyecto) {
   const apu = apus.find(a => a.id === item.apuId);
@@ -668,7 +670,8 @@ function getApusUsados(p, apus, recursos) {
     const a = apus.find(x=>x.id===id);
     if (!a) return null;
     const overrideLineas = p.apuOverrides && p.apuOverrides[id];
-    return { ...a, lineas: overrideLineas || a.lineas, valorUnitario: calcAPUTotal({...a, lineas: overrideLineas||a.lineas}, recursos), _hasOverride: !!overrideLineas };
+    const overrideNombre = p.apuNombreOverrides && p.apuNombreOverrides[id];
+    return { ...a, nombre: overrideNombre || a.nombre, lineas: overrideLineas || a.lineas, valorUnitario: calcAPUTotal({...a, lineas: overrideLineas||a.lineas}, recursos), _hasOverride: !!overrideLineas, _hasNombreOverride: !!overrideNombre };
   }).filter(Boolean);
 }
 
@@ -1804,6 +1807,19 @@ function ModuloAPUs({
   }, [apus, busq, sortApus]);
   const abrirEditor = a => {
     setApuActivo(JSON.parse(JSON.stringify(a)));
+    setVista("editor");
+  };
+  const duplicarAPU = a => {
+    const base = (a.codigo || "APU") + "-COPIA";
+    let codigo = base, n = 1;
+    while (apus.some(x => x.codigo.toLowerCase() === codigo.toLowerCase())) { n++; codigo = base + "-" + n; }
+    const copia = JSON.parse(JSON.stringify(a));
+    copia.id = Date.now() + Math.random();
+    copia.codigo = codigo;
+    copia.nombre = (a.nombre || "") + " (copia)";
+    copia.lineas = (copia.lineas || []).map(l => ({ ...l, id: Date.now() + Math.random() }));
+    delete copia.propietario;
+    setApuActivo(copia);
     setVista("editor");
   };
   const descargarPlantillaAPU = () => {
@@ -3981,7 +3997,7 @@ function ModuloAPUs({
     }
   }, "Valor Unitario"), /*#__PURE__*/React.createElement("th", {
     style: {
-      width: 120
+      width: 170
     }
   }))), /*#__PURE__*/React.createElement("tbody", null, filtered.length === 0 ? /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: 6
@@ -4031,6 +4047,10 @@ function ModuloAPUs({
       className: "btn-o",
       onClick: () => abrirEditor(a)
     }, "Editar"), /*#__PURE__*/React.createElement("button", {
+      className: "btn-o",
+      title: "Crear una copia de este APU",
+      onClick: () => duplicarAPU(a)
+    }, "Copiar"), /*#__PURE__*/React.createElement("button", {
       className: "btn-o",
       onClick: () => setDelItem(a)
     }, "\u2715"))));
@@ -8309,7 +8329,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         var pct2 = cdPs>0?(vt/cdPs*100).toFixed(2):'0.00';
         var st2=ii%2===0?ST.rowA():ST.rowB();
         sc(ws,r,0,safe(cap.numero)+'.'+(ii+1),{font:{color:{rgb:'B91C1C'},bold:true},fill:st2.fill,border:brd});
-        sc(ws,r,1,safe(item.descripcion)||(apu?safe(apu.nombre):''),st2);
+        sc(ws,r,1,safe(item.descripcion)||(apuEfectivo?safe(apuEfectivo.nombre):''),st2);
         sc(ws,r,2,safe(item.unidad)||(apu?safe(apu.unidad):''),{fill:st2.fill,border:brd,alignment:C_AL});
         ndc(ws,r,3,item.cantidad||0,{fill:st2.fill,border:brd,alignment:R_AL});
         nc(ws,r,4,vu,ST.mon(st2));
@@ -11586,7 +11606,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
       caps:"capitulos", au:"au", pol:"polizasPorComp",
       est:"estampillas", interv:"presupInterv", consult:"presupConsult"
     };
-    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
 
     Object.entries(secciones).forEach(([sec,field])=>{
       if(JSON.stringify(pActivo[field])!==JSON.stringify(prev[field])){
@@ -13374,6 +13394,7 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
   const [obsCounts, setObsCounts]   = useState({});
   const [editandoId, setEditandoId] = useState(null); // APU being edited locally
   const [editLineas, setEditLineas] = useState(null); // working copy of lineas
+  const [editNombre, setEditNombre] = useState(""); // working copy of la descripción (solo para este proyecto)
 
   useEffect(()=>{
     if(!proyecto?.id||!apusUsados?.length) return;
@@ -13388,6 +13409,27 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
   },[proyecto?.id]);
 
   const toggle = id => setExpandidos(e=>({...e,[id]:!e[id]}));
+  const [showRecModal, setShowRecModal] = useState(null); // {seccion}
+  const [busqRec, setBusqRec] = useState("");
+  const selRec = rec => {
+    if(!showRecModal) return;
+    const seccion = showRecModal.seccion;
+    const usa = (SECCIONES_APU.find(s=>s.id===seccion)||{}).usa;
+    setEditLineas(prev=>[...(prev||[]), {
+      id: Date.now()+Math.random(), recursoId: rec.id, _sec: seccion,
+      cantidad: usa==="cantidad"?1:null, rendimiento: usa!=="cantidad"?1:null
+    }]);
+    setShowRecModal(null);
+  };
+  const recsFiltrados = useMemo(() => {
+    if(!showRecModal) return [];
+    let r = recursos.filter(rc => rc.categoria === showRecModal.seccion);
+    if(busqRec.trim()) {
+      const q = busqRec.toLowerCase();
+      r = r.filter(rc => rc.nombre.toLowerCase().includes(q) || (rc.codigo||"").toLowerCase().includes(q));
+    }
+    return r;
+  }, [recursos, showRecModal, busqRec]);
 
   const SEC_COLORS = {
     material:   {bg:"#FEE2E2", fg:"#C81E1E", border:"#FECACA"},
@@ -13461,16 +13503,17 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
                   const lineasActuales = (proyecto.apuOverrides&&proyecto.apuOverrides[apu.id]) || (apus.find(x=>x.id===apu.id)||{}).lineas || [];
                   setEditandoId(apu.id);
                   setEditLineas(JSON.parse(JSON.stringify(lineasActuales)));
+                  setEditNombre(apu.nombre||"");
                   setExpandidos(ex=>({...ex,[apu.id]:true}));
                 }
               }, "\u270F\uFE0F Editar APU"),
-              apu._hasOverride && React.createElement("button",{
+              (apu._hasOverride||apu._hasNombreOverride) && React.createElement("button",{
                 className:"btn-s",
                 style:{fontSize:10,padding:"3px 8px",color:"#B91C1C",borderColor:"#B91C1C"},
                 title:"Restaurar APU original",
                 onClick:e=>{ e.stopPropagation();
                   if(!confirm("¿Restaurar el APU original? Se perderán los cambios locales de este proyecto.")) return;
-                  setPActivo(p=>({...p, apuOverrides:{...p.apuOverrides, [apu.id]:undefined}}));
+                  setPActivo(p=>({...p, apuOverrides:{...p.apuOverrides, [apu.id]:undefined}, apuNombreOverrides:{...(p.apuNombreOverrides||{}), [apu.id]:undefined}}));
                 }
               }, "\u21BA Original")
             )
@@ -13562,6 +13605,15 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
         React.createElement("button",{className:"btn-ghost",style:{fontSize:18},onClick:()=>setEditandoId(null)}, "×")
       ),
 
+      React.createElement("div",{style:{marginBottom:16}},
+        React.createElement("label",{style:{fontSize:11,fontWeight:700,color:"var(--ink3)",textTransform:"uppercase",letterSpacing:".06em",display:"block",marginBottom:6}}, "Descripción"),
+        React.createElement("input",{
+          className:"ifield", style:{width:"100%"},
+          value:editNombre, onChange:e=>setEditNombre(e.target.value),
+          placeholder:"Descripción del APU para este proyecto"
+        })
+      ),
+
       // Editable lines by section
       SECCIONES_APU.map(sec=>{
         const lineasSec = (editLineas||[]).filter(l=>{
@@ -13576,15 +13628,7 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
             React.createElement("span",{style:{fontWeight:700,fontSize:12,color:sc.fg,textTransform:"uppercase",letterSpacing:".08em"}},sec.label),
             React.createElement("button",{
               className:"btn-s",style:{fontSize:10,padding:"2px 8px"},
-              onClick:()=>{
-                const allRecSec = recursos.filter(r=>r.categoria===sec.id);
-                // Show simple resource picker — add first one found
-                const nombre = prompt(`Nombre del recurso a agregar (${sec.label}):`);
-                if(!nombre) return;
-                const rec = allRecSec.find(r=>r.nombre.toLowerCase().includes(nombre.toLowerCase()));
-                if(!rec) { alert("Recurso no encontrado en el catálogo. Agréguelo primero en Recursos."); return; }
-                setEditLineas(prev=>[...prev, {id:Date.now()+Math.random(), recursoId:rec.id, _sec:sec.id, cantidad:sec.usa==="cantidad"?1:null, rendimiento:sec.usa!=="cantidad"?1:null}]);
-              }
+              onClick:()=>{ setShowRecModal({seccion:sec.id}); setBusqRec(""); }
             }, "+ Agregar")
           ),
           React.createElement("table",{className:"tbl",style:{marginBottom:0,border:"1px solid "+sc.border,borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden"}},
@@ -13642,11 +13686,52 @@ function DetalleAPUsUsados({apusUsados, apus, recursos, proyecto, perfil, sessio
         React.createElement("button",{
           className:"btn-p",
           onClick:()=>{
-            setPActivo(p=>({...p, apuOverrides:{...(p.apuOverrides||{}), [editandoId]:editLineas}}));
+            const nombreTrim = (editNombre||"").trim();
+            if(!nombreTrim) { alert("La descripción no puede quedar vacía"); return; }
+            const nombreOriginal = (apus.find(x=>x.id===editandoId)||{}).nombre || "";
+            setPActivo(p=>({
+              ...p,
+              apuOverrides:{...(p.apuOverrides||{}), [editandoId]:editLineas},
+              apuNombreOverrides:{...(p.apuNombreOverrides||{}), [editandoId]: nombreTrim!==nombreOriginal ? nombreTrim : undefined}
+            }));
             setEditandoId(null);
             setEditLineas(null);
+            setEditNombre("");
           }
         }, "✓ Guardar cambios para este proyecto")
+      )
+    )),
+
+    showRecModal && React.createElement("div",{
+      className:"modal-bg",
+      style:{zIndex:10000},
+      onClick: e => e.target === e.currentTarget && setShowRecModal(null)
+    }, React.createElement("div",{className:"modal"},
+      React.createElement("div",{className:"modal-title"}, "Seleccionar Recurso"),
+      React.createElement("div",{className:"modal-sub",style:{marginBottom:14}},
+        "Categoría: ", React.createElement("strong",{style:{color:"var(--red)"}},
+          (SECCIONES_APU.find(s=>s.id===showRecModal.seccion)||{}).label)
+      ),
+      React.createElement("input",{
+        className:"ifield", style:{marginBottom:10}, placeholder:"🔍  Buscar...",
+        value:busqRec, onChange:e=>setBusqRec(e.target.value), autoFocus:true
+      }),
+      React.createElement("div",{style:{maxHeight:300,overflowY:"auto",border:"1px solid #F2F2F7",borderRadius:8}},
+        React.createElement("table",{className:"tbl",style:{fontSize:12}},
+          React.createElement("tbody",null,
+            recsFiltrados.length===0
+              ? React.createElement("tr",null,React.createElement("td",{colSpan:4,style:{textAlign:"center",padding:24,color:"var(--ink4)"}},"Sin resultados"))
+              : recsFiltrados.map(r => React.createElement("tr",{key:r.id,className:"pick",onClick:()=>selRec(r)},
+                  React.createElement("td",null,React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--red)"}},r.codigo)),
+                  React.createElement("td",null,r.nombre),
+                  React.createElement("td",null,React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--ink3)"}},r.unidad)),
+                  React.createElement("td",{style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:500}},fmt(r.precio))
+                ))
+          )
+        )
+      ),
+      React.createElement("div",{style:{display:"flex",justifyContent:"flex-end",marginTop:14}},
+        React.createElement("button",{className:"btn-s",onClick:()=>setShowRecModal(null)},"Cancelar")
       )
     ))
   );
