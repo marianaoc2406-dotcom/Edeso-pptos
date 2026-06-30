@@ -13549,7 +13549,7 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
           return s+(sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0))*(r.precio||0);
         },0);
         return {sec,ls,sub};
-      }).filter(g=>g.ls.length>0);
+      }).filter(g=>g.ls.length>0 || (g.sec.id==="maquinaria" && calcTotalMO(apuObj.lineas||[],recursos)>0));
 
       return React.createElement("div",{key:apu.id,className:"card",style:{overflow:"hidden"}},
         // ── Header del APU ──
@@ -13572,7 +13572,8 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
                 React.createElement("span",{style:{fontSize:11,color:"var(--ink3)"}},"Unidad: ",React.createElement("strong",null,apu.unidad)),
                 porSeccion.map(g=>React.createElement("span",{key:g.sec.id,
                   style:{fontSize:11,color:"var(--ink3)"}},
-                  g.sec.label,": ",React.createElement("strong",{style:{fontFamily:"var(--mono)"}},fmt(g.sub))
+                  g.sec.label,": ",React.createElement("strong",{style:{fontFamily:"var(--mono)"}},
+                    fmt(g.sub+(g.sec.id==="maquinaria"?Math.round(calcTotalMO(apuObj.lineas||[],recursos)*pctHerr):0)))
                 ))
               )
             )
