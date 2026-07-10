@@ -11381,7 +11381,9 @@ function PresupuestoObraTab({ proyecto, presupuesto, setPActivo, setCapitulos, a
 
 function ModuloProyectos({
   recursos,
-  apus,
+  setRecursos,
+  apus: apusGlobal,
+  setApus,
   plantillasAU,
   proyectos,
   setProyectos,
@@ -11418,6 +11420,14 @@ function ModuloProyectos({
 
   const [vista, setVista] = useState("lista");
   const [pActivo, setPActivo] = useState(null);
+  // Lista efectiva de APUs dentro del proyecto = globales + APUs locales del proyecto.
+  // Así todos los cálculos y renders resuelven los APUs creados "solo para este proyecto".
+  const apus = useMemo(() => {
+    const loc = (pActivo && pActivo.apusLocales) || [];
+    return loc.length ? apusGlobal.concat(loc) : apusGlobal;
+  }, [apusGlobal, pActivo]);
+  // Editor de APU accesible desde el ítem del capítulo (crear / editar / editar-local)
+  const [apuEditor, setApuEditor] = useState(null);
   const [tabDetalle, setTabDetalle] = useState("");
   const [tabEditor, setTabEditorRaw] = useState("presupuesto");
   const setTabEditor = React.useCallback((tab) => {
@@ -11639,7 +11649,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
       caps:"capitulos", au:"au", pol:"polizasPorComp",
       est:"estampillas", interv:"presupInterv", consult:"presupConsult"
     };
-    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
 
     Object.entries(secciones).forEach(([sec,field])=>{
       if(JSON.stringify(pActivo[field])!==JSON.stringify(prev[field])){
@@ -12000,6 +12010,79 @@ const sincronizarPolizasAU = (proyecto) => {
     const blankItem = cap.items?.find(i => i.id===itemId);
     if (blankItem) dbSaveItem({...blankItem,apuId:first.id,descripcion:first.nombre,unidad:first.unidad},capId,cap.numero,pActivo.id);
     newItems.forEach(it => dbSaveItem(it,capId,cap.numero,pActivo.id));
+  };
+  // ── Vincular un ítem a un APU (mismo patrón que selApu) ──
+  const _linkItemToApu = (capId, itemId, apu) => {
+    setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c)));
+    const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
+    const item = cap?.items?.find(i=>i.id===itemId);
+    if(cap&&item) dbSaveItem({...item,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad},capId,cap.numero,pActivo.id);
+  };
+  // ── Abrir editor de APU desde un ítem ──
+  const openEditApu = (capId, itemId, item) => {
+    const apuLocal = ((pActivo && pActivo.apusLocales) || []).find(a => a.id === item.apuId);
+    if (apuLocal) {
+      // APU local del proyecto: se edita directo y permite promover a global
+      setApuEditor({
+        mode: "local", capId, itemId, apuId: apuLocal.id,
+        initial: { codigo: apuLocal.codigo||"", nombre: apuLocal.nombre||"", unidad: apuLocal.unidad||"un", lineas: JSON.parse(JSON.stringify(apuLocal.lineas||[])) }
+      });
+      return;
+    }
+    const apuG = apusGlobal.find(a => a.id === item.apuId);
+    if (!apuG) return;
+    // APU global: se edita como override (solo este proyecto)
+    const ovLineas = (pActivo.apuOverrides && pActivo.apuOverrides[apuG.id]) || apuG.lineas || [];
+    const ovNombre = (pActivo.apuNombreOverrides && pActivo.apuNombreOverrides[apuG.id]) || apuG.nombre || "";
+    setApuEditor({
+      mode: "override", capId, itemId, apuId: apuG.id,
+      initial: { codigo: apuG.codigo||"", nombre: ovNombre, unidad: apuG.unidad||"un", lineas: JSON.parse(JSON.stringify(ovLineas)) }
+    });
+  };
+  // ── Crear un APU nuevo desde el picker ──
+  const openCreateApu = () => {
+    if (!showApuModal) return;
+    const { capId, itemId } = showApuModal;
+    setShowApuModal(null); setSelectedApuIds([]);
+    setApuEditor({
+      mode: "create", capId, itemId, apuId: null,
+      initial: { codigo: "", nombre: "", unidad: "m2", lineas: [] }
+    });
+  };
+  // ── Guardar desde el editor de APU ──
+  const saveApuEditor = (result) => {
+    const ed = apuEditor;
+    if (!ed) { return; }
+    if (ed.mode === "override") {
+      const nombreOriginal = (apusGlobal.find(a=>a.id===ed.apuId)||{}).nombre || "";
+      setPActivo(p => ({
+        ...p,
+        apuOverrides: { ...(p.apuOverrides||{}), [ed.apuId]: result.lineas },
+        apuNombreOverrides: { ...(p.apuNombreOverrides||{}), [ed.apuId]: (result.nombre && result.nombre !== nombreOriginal) ? result.nombre : undefined }
+      }));
+    } else if (ed.mode === "local") {
+      if (result.scope === "global") {
+        // Promover a global: sale de apusLocales y entra a la biblioteca global
+        const promoted = { id: ed.apuId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: result.lineas };
+        setApus(prev => prev.some(a=>a.id===ed.apuId) ? prev.map(a=>a.id===ed.apuId?promoted:a) : [...prev, promoted]);
+        setPActivo(p => ({ ...p, apusLocales: (p.apusLocales||[]).filter(a=>a.id!==ed.apuId) }));
+        _linkItemToApu(ed.capId, ed.itemId, promoted);
+      } else {
+        // Sigue local
+        setPActivo(p => ({ ...p, apusLocales: (p.apusLocales||[]).map(a=>a.id===ed.apuId ? { ...a, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: result.lineas } : a) }));
+        _linkItemToApu(ed.capId, ed.itemId, { id: ed.apuId, nombre: result.nombre, unidad: result.unidad });
+      }
+    } else if (ed.mode === "create") {
+      const newId = Date.now() + Math.floor(Math.random()*100000);
+      const apuObj = { id: newId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: result.lineas };
+      if (result.scope === "global") {
+        setApus(prev => [...prev, apuObj]);
+      } else {
+        setPActivo(p => ({ ...p, apusLocales: [ ...(p.apusLocales||[]), apuObj ] }));
+      }
+      _linkItemToApu(ed.capId, ed.itemId, apuObj);
+    }
+    setApuEditor(null);
   };
   const apusFiltrados = useMemo(() => {
     if (!busqApu.trim()) return apus;
@@ -12625,7 +12708,12 @@ const sincronizarPolizasAU = (proyecto) => {
           });
           setBusqApu("");
         }
-      }, "cambiar")), /*#__PURE__*/React.createElement("td", null), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
+      }, "cambiar"), apu && !esLectura && /*#__PURE__*/React.createElement("button", {
+        className: "btn-ghost",
+        style: { fontSize: 10, marginLeft: 6, padding: "1px 5px", color: "var(--red)", fontWeight: 600 },
+        title: "Editar el APU de este ítem",
+        onClick: () => openEditApu(cap.id, item.id, item)
+      }, "\u270F\uFE0F Editar APU")), /*#__PURE__*/React.createElement("td", null), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
         style: {
           fontFamily: "var(--mono)",
           fontSize: 11,
@@ -12826,9 +12914,19 @@ const sincronizarPolizasAU = (proyecto) => {
       marginTop: 14
     }
   },
+  React.createElement("button",{className:"btn-s",style:{marginRight:"auto",borderColor:"var(--red)",color:"var(--red)"},onClick:openCreateApu},"+ Crear APU nuevo"),
   React.createElement("button",{className:"btn-s",onClick:()=>{setShowApuModal(null);setSelectedApuIds([]);}},"Cancelar"),
   React.createElement("button",{className:"btn-p",disabled:selectedApuIds.length===0,onClick:selMultipleApus,style:{opacity:selectedApuIds.length===0?0.4:1}},
-    selectedApuIds.length===0?"Selecciona APUs":`Agregar ${selectedApuIds.length} APU${selectedApuIds.length>1?"s":""}`)))));
+    selectedApuIds.length===0?"Selecciona APUs":`Agregar ${selectedApuIds.length} APU${selectedApuIds.length>1?"s":""}`)))),
+  apuEditor && React.createElement(ApuEditorModal, {
+    mode: apuEditor.mode,
+    initial: apuEditor.initial,
+    recursos: recursos,
+    setRecursos: setRecursos,
+    pctHerr: getPctHerramienta(pActivo),
+    onSave: saveApuEditor,
+    onClose: () => setApuEditor(null)
+  }));
 
 
   function renderResumenObra() {
@@ -13839,6 +13937,247 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
         React.createElement("button",{className:"btn-s",onClick:()=>setShowRecModal(null)},"Cancelar")
       )
     ))
+  );
+}
+
+// ═══════════════════════════════════════════════════════
+// EDITOR DE APU (crear / editar desde el presupuesto)
+// ═══════════════════════════════════════════════════════
+function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave, onClose }) {
+  const [codigo, setCodigo] = useState(initial.codigo || "");
+  const [nombre, setNombre] = useState(initial.nombre || "");
+  const [unidad, setUnidad] = useState(initial.unidad || "un");
+  const [lineas, setLineas] = useState(initial.lineas || []);
+  const [picker, setPicker] = useState(null); // { seccion }
+  const [busq, setBusq] = useState("");
+  const [nuevoRec, setNuevoRec] = useState(null); // { codigo, nombre, unidad, precio, categoria }
+  const [errRec, setErrRec] = useState({});
+
+  const editaCabecera = mode !== "override";
+  const preguntaAlcance = mode === "create" || mode === "local";
+
+  const SEC_COLORS = {
+    material:   {bg:"#FEE2E2", fg:"#C81E1E", border:"#FECACA"},
+    mano_obra:  {bg:"#FEF3C7", fg:"#B45309", border:"#FDE68A"},
+    maquinaria: {bg:"#F5F3FF", fg:"#6D28D9", border:"#DDD6FE"},
+    transporte: {bg:"#EFF6FF", fg:"#1D4ED8", border:"#BFDBFE"},
+  };
+
+  const addLinea = (rec) => {
+    const sec = SECCIONES_APU.find(s => s.id === rec.categoria) || SECCIONES_APU[0];
+    setLineas(prev => [...prev, {
+      id: Date.now()+Math.random(), recursoId: rec.id, _sec: rec.categoria,
+      cantidad: sec.usa==="cantidad"?1:null, rendimiento: sec.usa!=="cantidad"?1:null
+    }]);
+    setPicker(null); setBusq(""); setNuevoRec(null); setErrRec({});
+  };
+
+  const recsFiltrados = useMemo(() => {
+    if (!picker) return [];
+    let r = recursos.filter(rc => rc.categoria === picker.seccion);
+    if (busq.trim()) {
+      const q = busq.toLowerCase();
+      r = r.filter(rc => (rc.nombre||"").toLowerCase().includes(q) || (rc.codigo||"").toLowerCase().includes(q));
+    }
+    return r;
+  }, [recursos, picker, busq]);
+
+  const guardarNuevoRec = () => {
+    const e = {};
+    const cod = (nuevoRec.codigo||"").trim();
+    const nom = (nuevoRec.nombre||"").trim();
+    if (!cod) e.codigo = "Requerido";
+    if (!nom) e.nombre = "Requerido";
+    if (!nuevoRec.precio || isNaN(nuevoRec.precio) || Number(nuevoRec.precio) <= 0) e.precio = "Precio inválido";
+    if (cod && recursos.find(r => (r.codigo||"").toLowerCase() === cod.toLowerCase())) e.codigo = "Código ya existe";
+    if (Object.keys(e).length) { setErrRec(e); return; }
+    const nuevo = {
+      id: Date.now()+Math.floor(Math.random()*100000),
+      codigo: cod, nombre: nom, categoria: nuevoRec.categoria,
+      unidad: nuevoRec.unidad || "un", precio: Number(nuevoRec.precio)
+    };
+    setRecursos(prev => [...prev, nuevo]); // → Recursos generales (global), auto-guarda
+    addLinea(nuevo);
+  };
+
+  const total = calcAPUTotal({ lineas }, recursos, pctHerr);
+
+  const doSave = (scope) => {
+    const nom = (nombre||"").trim();
+    if (!nom) { alert("La descripción no puede quedar vacía"); return; }
+    if (editaCabecera && !(codigo||"").trim()) { alert("El código es obligatorio"); return; }
+    onSave({ codigo: (codigo||"").trim(), nombre: nom, unidad: unidad||"un", lineas, scope });
+  };
+
+  const titulo = mode === "create" ? "Crear APU nuevo"
+    : mode === "local" ? "Editar APU (local del proyecto)"
+    : "Editar APU para este proyecto";
+  const aviso = mode === "override"
+    ? "Los cambios solo afectan este proyecto. El APU global de la biblioteca no se modifica."
+    : mode === "local"
+      ? "APU creado solo para este proyecto. Al guardar puedes dejarlo local o moverlo a la biblioteca global."
+      : "El APU se creará y se vinculará a este ítem. Elige si lo guardas en la biblioteca global o solo en este proyecto.";
+
+  // ── Campos de cabecera ──
+  const cabecera = React.createElement("div", { style:{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16} },
+    editaCabecera && React.createElement("div", { style:{width:150} },
+      React.createElement("label", { style:{fontSize:11,fontWeight:700,color:"var(--ink3)",textTransform:"uppercase",letterSpacing:".06em",display:"block",marginBottom:6} }, "Código"),
+      React.createElement("input", { className:"ifield", style:{width:"100%"}, value:codigo, onChange:e=>setCodigo(e.target.value), placeholder:"Ej: APU-010" })
+    ),
+    React.createElement("div", { style:{flex:1,minWidth:220} },
+      React.createElement("label", { style:{fontSize:11,fontWeight:700,color:"var(--ink3)",textTransform:"uppercase",letterSpacing:".06em",display:"block",marginBottom:6} }, "Descripción"),
+      React.createElement("input", { className:"ifield", style:{width:"100%"}, value:nombre, onChange:e=>setNombre(e.target.value), placeholder:"Descripción del APU" })
+    ),
+    editaCabecera && React.createElement("div", { style:{width:120} },
+      React.createElement("label", { style:{fontSize:11,fontWeight:700,color:"var(--ink3)",textTransform:"uppercase",letterSpacing:".06em",display:"block",marginBottom:6} }, "Unidad"),
+      React.createElement("input", { className:"ifield", style:{width:"100%"}, value:unidad, onChange:e=>setUnidad(e.target.value), placeholder:"m2" })
+    ),
+    !editaCabecera && React.createElement("div", { style:{display:"flex",gap:16,alignItems:"flex-end",fontSize:12,color:"var(--ink3)"} },
+      React.createElement("div", null, "Código: ", React.createElement("strong",{style:{fontFamily:"var(--mono)",color:"var(--red)"}}, codigo||"—")),
+      React.createElement("div", null, "Unidad: ", React.createElement("strong",null, unidad||"—"))
+    )
+  );
+
+  // ── Secciones editables ──
+  const secciones = SECCIONES_APU.map(sec => {
+    const lineasSec = (lineas||[]).filter(l => {
+      const r = recursos.find(x => x.id === l.recursoId);
+      return r && r.categoria === sec.id;
+    });
+    const sc = SEC_COLORS[sec.id] || {bg:"#F3F4F6", fg:"#374151", border:"#E5E7EB"};
+    return React.createElement("div", { key:sec.id, style:{marginBottom:16} },
+      React.createElement("div", { style:{background:sc.bg,padding:"8px 16px",borderRadius:"8px 8px 0 0",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid "+sc.border} },
+        React.createElement("span", { style:{fontWeight:700,fontSize:12,color:sc.fg,textTransform:"uppercase",letterSpacing:".08em"} }, sec.label),
+        React.createElement("button", { className:"btn-s", style:{fontSize:10,padding:"2px 8px"}, onClick:()=>{ setPicker({seccion:sec.id}); setBusq(""); setNuevoRec(null); setErrRec({}); } }, "+ Agregar")
+      ),
+      React.createElement("table", { className:"tbl", style:{marginBottom:0,border:"1px solid "+sc.border,borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden"} },
+        React.createElement("thead", null, React.createElement("tr", null,
+          React.createElement("th", null, "Recurso"),
+          React.createElement("th", {style:{textAlign:"center"}}, "Und."),
+          React.createElement("th", {style:{textAlign:"right",width:100}}, sec.usa==="cantidad"?"Cantidad":"Rendimiento"),
+          React.createElement("th", {style:{textAlign:"right",width:120}}, "P. Unitario"),
+          React.createElement("th", {style:{textAlign:"right",width:110}}, "Subtotal"),
+          React.createElement("th", {style:{width:32}})
+        )),
+        React.createElement("tbody", null,
+          lineasSec.length===0
+            ? React.createElement("tr", null, React.createElement("td", {colSpan:6,style:{textAlign:"center",color:"var(--ink4)",fontSize:12,padding:"12px"}}, "Sin recursos"))
+            : lineasSec.map(l => {
+                const r = recursos.find(x => x.id === l.recursoId);
+                const val = sec.usa==="cantidad" ? (l.cantidad||0) : (l.rendimiento||0);
+                return React.createElement("tr", { key:l.id },
+                  React.createElement("td", null, React.createElement("div",{style:{fontWeight:500,fontSize:13}}, r?.nombre||"—")),
+                  React.createElement("td", {style:{textAlign:"center",fontSize:11,color:"var(--ink3)"}}, r?.unidad||"—"),
+                  React.createElement("td", {style:{textAlign:"right"}},
+                    React.createElement("input", {
+                      className:"inum", style:{width:80}, type:"number", min:0, step:0.0001, value:val,
+                      onChange:e=>{ const v=parseFloat(e.target.value)||0; setLineas(prev=>prev.map(x=>x.id===l.id?{...x,[sec.usa==="cantidad"?"cantidad":"rendimiento"]:v}:x)); }
+                    })
+                  ),
+                  React.createElement("td", {style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"}}, fmt(r?.precio||0)),
+                  React.createElement("td", {style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,fontWeight:600}}, fmt(val*(r?.precio||0))),
+                  React.createElement("td", null, React.createElement("button", { className:"btn-ghost", style:{color:"var(--red)"}, onClick:()=>setLineas(prev=>prev.filter(x=>x.id!==l.id)) }, "×"))
+                );
+              })
+        )
+      )
+    );
+  });
+
+  // ── Footer de acciones ──
+  const footer = React.createElement("div", { style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16,paddingTop:16,borderTop:"1px solid var(--line)",gap:8,flexWrap:"wrap"} },
+    React.createElement("div", { style:{fontSize:12,color:"var(--ink3)"} }, "Total APU: ", React.createElement("strong",{style:{fontFamily:"var(--mono)",color:"var(--red)"}}, fmt3(total))),
+    React.createElement("div", { style:{display:"flex",gap:8,flexWrap:"wrap"} },
+      React.createElement("button", { className:"btn-s", onClick:onClose }, "Cancelar"),
+      preguntaAlcance
+        ? React.createElement(React.Fragment, null,
+            React.createElement("button", { className:"btn-s", onClick:()=>doSave("local") }, "Guardar solo en este proyecto"),
+            React.createElement("button", { className:"btn-p", onClick:()=>doSave("global") }, "Guardar en global")
+          )
+        : React.createElement("button", { className:"btn-p", onClick:()=>doSave() }, "✓ Guardar cambios para este proyecto")
+    )
+  );
+
+  // ── Sub-modal: selección / creación de recurso ──
+  const pickerModal = picker && React.createElement("div", { className:"modal-bg", style:{zIndex:10001}, onClick:e=>e.target===e.currentTarget && (setPicker(null),setNuevoRec(null)) },
+    React.createElement("div", { className:"modal" },
+      React.createElement("div", { className:"modal-title" }, nuevoRec ? "Crear recurso nuevo" : "Seleccionar Recurso"),
+      React.createElement("div", { className:"modal-sub", style:{marginBottom:14} },
+        "Categoría: ", React.createElement("strong",{style:{color:"var(--red)"}}, (SECCIONES_APU.find(s=>s.id===picker.seccion)||{}).label)
+      ),
+      nuevoRec
+        // ── Formulario nuevo recurso ──
+        ? React.createElement("div", null,
+            React.createElement("div", { style:{display:"flex",gap:10,flexWrap:"wrap",marginBottom:10} },
+              React.createElement("div", { style:{width:130} },
+                React.createElement("label",{style:{fontSize:11,fontWeight:600,color:"var(--ink3)",display:"block",marginBottom:4}},"Código"),
+                React.createElement("input",{className:"ifield",style:{width:"100%",borderColor:errRec.codigo?"var(--red)":undefined},value:nuevoRec.codigo,onChange:e=>setNuevoRec(v=>({...v,codigo:e.target.value}))}),
+                errRec.codigo && React.createElement("div",{style:{fontSize:10,color:"var(--red)",marginTop:2}},errRec.codigo)
+              ),
+              React.createElement("div", { style:{flex:1,minWidth:160} },
+                React.createElement("label",{style:{fontSize:11,fontWeight:600,color:"var(--ink3)",display:"block",marginBottom:4}},"Nombre"),
+                React.createElement("input",{className:"ifield",style:{width:"100%",borderColor:errRec.nombre?"var(--red)":undefined},value:nuevoRec.nombre,onChange:e=>setNuevoRec(v=>({...v,nombre:e.target.value}))}),
+                errRec.nombre && React.createElement("div",{style:{fontSize:10,color:"var(--red)",marginTop:2}},errRec.nombre)
+              )
+            ),
+            React.createElement("div", { style:{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14} },
+              React.createElement("div", { style:{width:130} },
+                React.createElement("label",{style:{fontSize:11,fontWeight:600,color:"var(--ink3)",display:"block",marginBottom:4}},"Unidad"),
+                React.createElement("select",{className:"ifield",style:{width:"100%"},value:nuevoRec.unidad,onChange:e=>setNuevoRec(v=>({...v,unidad:e.target.value}))},
+                  (UNIDADES_MAP[nuevoRec.categoria]||["un"]).map(u=>React.createElement("option",{key:u,value:u},u))
+                )
+              ),
+              React.createElement("div", { style:{flex:1,minWidth:160} },
+                React.createElement("label",{style:{fontSize:11,fontWeight:600,color:"var(--ink3)",display:"block",marginBottom:4}},"Precio unitario"),
+                React.createElement("input",{className:"inum",style:{width:"100%",borderColor:errRec.precio?"var(--red)":undefined},type:"number",min:0,step:1,value:nuevoRec.precio,onChange:e=>setNuevoRec(v=>({...v,precio:e.target.value}))}),
+                errRec.precio && React.createElement("div",{style:{fontSize:10,color:"var(--red)",marginTop:2}},errRec.precio)
+              )
+            ),
+            React.createElement("div", { style:{fontSize:11,color:"var(--ink4)",marginBottom:12} }, "Se guardará en Recursos generales (biblioteca global) y se agregará a este APU."),
+            React.createElement("div", { style:{display:"flex",justifyContent:"flex-end",gap:8} },
+              React.createElement("button",{className:"btn-s",onClick:()=>{setNuevoRec(null);setErrRec({});}},"Volver"),
+              React.createElement("button",{className:"btn-p",onClick:guardarNuevoRec},"Crear y agregar")
+            )
+          )
+        // ── Lista de recursos existentes ──
+        : React.createElement("div", null,
+            React.createElement("input", { className:"ifield", style:{marginBottom:10}, placeholder:"🔍  Buscar...", value:busq, onChange:e=>setBusq(e.target.value), autoFocus:true }),
+            React.createElement("div", { style:{maxHeight:280,overflowY:"auto",border:"1px solid #F2F2F7",borderRadius:8} },
+              React.createElement("table", { className:"tbl", style:{fontSize:12} },
+                React.createElement("tbody", null,
+                  recsFiltrados.length===0
+                    ? React.createElement("tr", null, React.createElement("td",{colSpan:4,style:{textAlign:"center",padding:24,color:"var(--ink4)"}},"Sin resultados"))
+                    : recsFiltrados.map(r => React.createElement("tr", { key:r.id, className:"pick", onClick:()=>addLinea(r) },
+                        React.createElement("td", null, React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--red)"}},r.codigo)),
+                        React.createElement("td", null, r.nombre),
+                        React.createElement("td", null, React.createElement("code",{style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--ink3)"}},r.unidad)),
+                        React.createElement("td", {style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:500}}, fmt(r.precio))
+                      ))
+                )
+              )
+            ),
+            React.createElement("div", { style:{display:"flex",justifyContent:"space-between",marginTop:14} },
+              React.createElement("button",{className:"btn-s",style:{borderColor:"var(--red)",color:"var(--red)"},onClick:()=>{setNuevoRec({codigo:"",nombre:"",unidad:(UNIDADES_MAP[picker.seccion]||["un"])[0],precio:"",categoria:picker.seccion});setErrRec({});}},"+ Crear recurso nuevo"),
+              React.createElement("button",{className:"btn-s",onClick:()=>setPicker(null)},"Cancelar")
+            )
+          )
+    )
+  );
+
+  return React.createElement("div", { style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}, onClick:e=>e.target===e.currentTarget && onClose() },
+    React.createElement("div", { style:{background:"var(--card)",borderRadius:14,padding:24,width:"min(880px,96vw)",maxHeight:"92vh",overflowY:"auto",boxShadow:"0 16px 48px rgba(0,0,0,.4)"} },
+      React.createElement("div", { style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16} },
+        React.createElement("div", null,
+          React.createElement("div", { style:{fontWeight:700,fontSize:16} }, "✏️ "+titulo),
+          React.createElement("div", { style:{fontSize:12,color:"var(--ink4)",marginTop:2,maxWidth:560} }, aviso)
+        ),
+        React.createElement("button", { className:"btn-ghost", style:{fontSize:18}, onClick:onClose }, "×")
+      ),
+      cabecera,
+      secciones,
+      footer,
+      pickerModal
+    )
   );
 }
 
@@ -14933,7 +15272,7 @@ function App() {
         _sb.from("app_data").upsert({ key:"moData", value:v, updated_at:new Date().toISOString() }).then(({error})=>{ if(error) console.error("MO save:",error); });
       } }),
       modulo==="Proyectos"&&React.createElement(ModuloProyectos,{
-        recursos,apus,plantillasAU,proyectos,setProyectos,
+        recursos,setRecursos,apus,setApus,plantillasAU,proyectos,setProyectos,
         catalogoPolizas,catalogoEstampillas,plantillasInt,
         plantillasFicha,
         perfil,session,guardarSeccion,presencia,saveStatus,setSaveStatus
