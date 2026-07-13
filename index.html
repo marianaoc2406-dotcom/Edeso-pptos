@@ -5241,7 +5241,15 @@ function TabAU({
       width: 70
     }
   }))), /*#__PURE__*/React.createElement("tbody", null, (au.secciones || []).map(sec => {
-    const totalSec = (sec.subsecciones || []).reduce((s, sub) => s + calcAUSubseccion(sub, cd, cd + totalAU), 0);
+    // La fila de sección debe mostrar la ADMINISTRACIÓN REAL: cada subsección con su
+    // factor prestacional ya aplicado (1.1 ×1.45, 1.3 ×1.70) y SIN Imprevistos ni
+    // Utilidad (que van aparte, en el pie). Antes sumaba en crudo y metía la Utilidad
+    // adentro, dando un número que no correspondía a nada.
+    const totalSec = (sec.subsecciones || []).reduce((s, sub) => {
+      if (sub.esSeparado) return s;                       // 1.9 Imprevistos / 1.10 Utilidad
+      const fac = sub.id === "s1_1" ? 1.45 : sub.id === "s1_3" ? 1.70 : 1;
+      return s + calcAUSubseccion(sub, cd, cd + totalAU) * fac;
+    }, 0);
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: sec.id
     }, /*#__PURE__*/React.createElement("tr", {
@@ -7362,44 +7370,17 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
     const next = { ...saved, ...patch };
     setPolizas(cid, next);
 
-    // Sincronizar total polizas a subseccion 1.8 del AU (solo obra)
+    // Al tocar una póliza hay que RE-CONVERGER el A+U, no escribir de un solo tiro.
+    // Pólizas, estampillas y transacciones se calculan sobre el costo total y a la vez
+    // están dentro de él: un solo paso deja el proyecto subvalorado.
     if (cid === "obra" && setAU && proyecto.au) {
-      const plazo = Number(next.plazoContractual) || 0;
-      const vBase = totalBase || totalProyecto || 0;
-      const tot = (next.polizasActivas || []).reduce((s, p) => {
-        const pct      = Number(p.pct) || 0;
-        const pctPrima = Number(p.pctPrima) || 0;
-        const mEx      = Number(p.mesesExtra) || 0;
-        const va       = Math.round(vBase * pct / 100);
-        const valor    = Math.round(va * pctPrima / 100);
-        const dias     = Math.round((plazo + mEx) * 365 / 12);
-        const siva     = dias > 0 ? Math.round(valor * dias / 365) : 0;
-        return s + Math.round(siva * 1.19);
-      }, 0);
-      const au = JSON.parse(JSON.stringify(proyecto.au));
-      const sec0 = (au.secciones || [])[0];
-      const sub = sec0 ? (sec0.subsecciones || []).find(s => s.id === "s1_8") : null;
-      if (sub) {
-        const existIdx = sub.items.findIndex(i =>
-          (i.descripcion || "").toLowerCase().includes("póliza") ||
-          (i.descripcion || "").toLowerCase().includes("poliza")
-        );
-        const nuevoItem = {
-          id:          existIdx >= 0 ? sub.items[existIdx].id : ("pol_au_" + Date.now()),
-          descripcion: "Pólizas",
-          unidad:      "un",
-          valorFijo:   tot,
-          porcentaje:  null,
-          baseCalculo: "cd"
-        };
-        if (existIdx >= 0) sub.items[existIdx] = nuevoItem;
-        else sub.items.push(nuevoItem);
-        // Upsert Transacciones Bancarias: (vBase × 0.004) × 0.5
-        const totTB = Math.round(vBase * 0.004 * 0.5);
-        const tbIdx = sub.items.findIndex(i => (i.descripcion || "").toLowerCase().includes("transacci"));
-        const tbItem = { id: tbIdx >= 0 ? sub.items[tbIdx].id : ("tb_au_" + Date.now()), descripcion:"Transacciones Bancarias", unidad:"un", valorFijo:totTB, porcentaje:null, baseCalculo:"cd" };
-        if (tbIdx >= 0) sub.items[tbIdx] = tbItem; else sub.items.push(tbItem);
-        setAU(au);
+      const G = window.__PREX || {};
+      if (G.apus && G.recursos) {
+        const pTmp = Object.assign({}, proyecto, {
+          polizasPorComp: Object.assign({}, proyecto.polizasPorComp || {}, { obra: next })
+        });
+        const conv = convergerAU(pTmp, G.apus, G.recursos, G.catEst || []);
+        if (conv && conv.au) setAU(conv.au);
       }
     }
   };
@@ -7902,18 +7883,14 @@ function TabEstampillas({ proyecto, setEstampillas, setAU, totalProyecto, readOn
 
   React.useEffect(function() {
     if (!setAU || !proyecto.au) return;
-    var au = JSON.parse(JSON.stringify(proyecto.au));
-    var sec0 = (au.secciones||[])[0];
-    var sub  = sec0 ? (sec0.subsecciones||[]).find(function(s){ return s.id==="s1_8"; }) : null;
-    if (!sub) return;
-    var idx = sub.items.findIndex(function(i){ return (i.descripcion||"").toLowerCase().includes("estampilla"); });
-    var item = { id: idx>=0?sub.items[idx].id:"est_au_"+Date.now(), descripcion:"Estampillas", unidad:"un", valorFijo:total, porcentaje:null, baseCalculo:"cd" };
-    if (idx>=0) sub.items[idx]=item; else sub.items.push(item);
-    var totTB = Math.round(vc*0.004*0.5);
-    var tbIdx = sub.items.findIndex(function(i){ return (i.descripcion||"").toLowerCase().includes("transacci"); });
-    var tbItem = { id:tbIdx>=0?sub.items[tbIdx].id:"tb_au_"+Date.now(), descripcion:"Transacciones Bancarias", unidad:"un", valorFijo:totTB, porcentaje:null, baseCalculo:"cd" };
-    if (tbIdx>=0) sub.items[tbIdx]=tbItem; else sub.items.push(tbItem);
-    setAU(au);
+    // Igual que en Pólizas: hay que CONVERGER, no escribir de un solo tiro.
+    // Las estampillas y las transacciones se calculan sobre el costo total y a la vez
+    // están dentro de él (subsección 1.8), así que un paso solo deja el número corto.
+    var G = window.__PREX || {};
+    if (!G.apus || !G.recursos) return;
+    var conv = convergerAU(proyecto, G.apus, G.recursos, G.catEst || []);
+    // Guarda anti-bucle: solo se actualiza si el A+U realmente cambió.
+    if (conv && conv.au && JSON.stringify(conv.au) !== JSON.stringify(proyecto.au)) setAU(conv.au);
   }, [total, proyecto.municipioId]);
 
   var S = {
@@ -8253,7 +8230,122 @@ function calcPol(p, vBase, plazo) {
     return {va:va,valor:valor,tt:tt,dias:dias,siva:siva,civa:civa};
   }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CONVERGENCIA A+U · Pólizas, Estampillas y Transacciones Bancarias se calculan
+// sobre el COSTO TOTAL, pero a la vez viven DENTRO de él (subsección 1.8):
+//
+//   Costo Total ──► Pólizas + Estampillas + Transacciones ──► Administración 1.8
+//        ▲                                                            │
+//        └──────────────── suben el Costo Total ◄────────────────────┘
+//
+// Un solo paso NO basta: deja el proyecto subvalorado. Hay que iterar hasta que
+// la base usada y el total resultante sean el mismo número.
+// ═══════════════════════════════════════════════════════════════════════════
+function _hallarSub18(au) {
+  var secs = (au && au.secciones) || [];
+  for (var i = 0; i < secs.length; i++) {
+    var subs = secs[i].subsecciones || [];
+    for (var j = 0; j < subs.length; j++) {
+      var sb = subs[j], tit = String(sb.titulo || '').toLowerCase();
+      if (sb.id === 's1_8' || String(sb.numero) === '1.8' || tit.indexOf('otros') === 0) return sb;
+    }
+  }
+  return null;
+}
+
+function _escribirItems18(proj, vBase, catEst) {
+  var au = proj.au, sub = _hallarSub18(au);
+  if (!sub) return false;
+  sub.items = sub.items || [];
+
+  var polData = ((proj.polizasPorComp || {})['obra']) || {};
+  var plazo   = Number(polData.plazoContractual) || Number(au.plazo) || 0;
+  var totPol  = (polData.polizasActivas || []).reduce(function(s2, p) {
+    var va    = Math.round(vBase * (Number(p.pct) || 0) / 100);
+    var valor = Math.round(va * (Number(p.pctPrima) || 0) / 100);
+    var dias  = Math.round((plazo + (Number(p.mesesExtra) || 0)) * 365 / 12);
+    var siva  = dias > 0 ? Math.round(valor * dias / 365) : 0;
+    return s2 + Math.round(siva * 1.19);
+  }, 0);
+
+  var munGrp = (catEst || []).find(function(g){ return g.id === proj.municipioId; }) || null;
+  var totEst = (munGrp ? (munGrp.items || []) : []).reduce(function(s2, e) {
+    return s2 + Math.round(vBase * (Number(e.pctDef) || 0) / 100);
+  }, 0);
+
+  var totTB = Math.round(vBase * 0.004 * 0.5);   // 4x1000 sobre la mitad = 0,2%
+
+  function upsert(match, descripcion, valor, pref) {
+    var idx = sub.items.findIndex(function(i){ return match(String(i.descripcion || '').toLowerCase()); });
+    var it  = { id: idx >= 0 ? sub.items[idx].id : (pref + Date.now()),
+                descripcion: descripcion, unidad: 'un',
+                valorFijo: valor, porcentaje: null, baseCalculo: 'cd' };
+    if (idx >= 0) sub.items[idx] = it; else sub.items.push(it);
+  }
+  upsert(function(d){ return d.indexOf('póliza')>=0 || d.indexOf('poliza')>=0; }, 'Pólizas', totPol, 'pol_au_');
+  upsert(function(d){ return d.indexOf('estampilla')>=0; }, 'Estampillas', totEst, 'est_au_');
+  upsert(function(d){ return d.indexOf('transacci')>=0; }, 'Transacciones Bancarias', totTB, 'tb_au_');
+  return true;
+}
+
+// Devuelve el proyecto con la 1.8 ya convergida. No muta el original.
+function convergerAU(proyecto, apus, recursos, catEst, maxIter) {
+  if (!proyecto || !proyecto.au) return proyecto;
+  var comps = proyecto.componentes || [];
+  if (comps.length && comps.indexOf('obra') === -1) return proyecto;
+  var proj = JSON.parse(JSON.stringify(proyecto));
+  var MAX  = maxIter || 100;
+  for (var i = 0; i < MAX; i++) {
+    var base  = calcProyecto(proj, apus, recursos).total;
+    if (!_escribirItems18(proj, base, catEst)) return proyecto;
+    var nuevo = calcProyecto(proj, apus, recursos).total;
+    if (Math.abs(nuevo - base) < 1) break;   // base usada == total resultante
+  }
+  return proj;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DETECTOR DE ÍTEMS PROBLEMÁTICOS
+// Un ítem que apunta a un APU borrado se convierte en $0 EN SILENCIO (el código
+// hace apus.find(...) y si no lo encuentra usa 0). En un presupuesto de miles de
+// millones nadie nota un renglón en cero. Esta función los saca a la luz.
+// ═══════════════════════════════════════════════════════════════════════════
+function detectarProblemas(proyecto, apus, recursos) {
+  var probs = [];
+  var presups = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+    ? proyecto.presupuestosObra
+    : [{ id:'p0', nombre:'Presupuesto Obra', capitulos: proyecto.capitulos||[] }];
+
+  presups.forEach(function(ps) {
+    (ps.capitulos||[]).forEach(function(cap) {
+      (cap.items||[]).forEach(function(item, ii) {
+        var apu = apus.find(function(a){ return a.id === item.apuId; });
+        var ref = (ps.nombre||'Obra') + ' · Cap. ' + (cap.numero||'?') + '.' + (ii+1);
+        var nombre = item.descripcion || '';
+        if (!apu) {
+          probs.push({ tipo:'huerfano', ref:ref, nombre: nombre || '(sin nombre)',
+            detalle:'Apunta a un APU que ya no existe → vale $0' });
+          return;
+        }
+        var apuEf = getApuEfectivo(apu, proyecto);
+        var vu = calcAPUTotal(apuEf, recursos, getPctHerramienta(proyecto, ps));
+        if (!(vu > 0)) {
+          probs.push({ tipo:'apu_cero', ref:ref, nombre: apuEf.nombre || nombre,
+            detalle:'El APU existe pero su valor unitario es $0 (¿sin recursos?)' });
+        } else if (!(Number(item.cantidad) > 0)) {
+          probs.push({ tipo:'cant_cero', ref:ref, nombre: apuEf.nombre || nombre,
+            detalle:'Cantidad en 0 → el ítem no suma nada' });
+        }
+      });
+    });
+  });
+  return probs;
+}
+
 function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
+  // El Excel es el entregable: se converge SIEMPRE antes de generarlo, pase lo que
+  // pase en la app. Así el archivo nunca sale con la 1.8 desfasada.
+  proyecto = convergerAU(proyecto, apus, recursos, catEst || []);
   proyecto = Object.assign({}, proyecto, { _catalogoEst: catEst || [] });
   var res      = calcProyecto(proyecto, apus, recursos);
   var cd       = res.cd;
@@ -8343,11 +8435,19 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
   // Hoja de pólizas (Obra / Interventoría / EDESO) con fórmulas vivas que
   // reproducen paso a paso el mismo cálculo redondeado del sistema.
-  function hojaPolizas(polizas, valorBase, plazo, nombreHoja, refBase) {
+  function hojaPolizas(polizas, valorBase, plazo, nombreHoja, refBase, notaBase) {
     var ws = {}, r = 0;
-    // Si se conoce la celda donde vive el valor base, se enlaza (trazabilidad);
-    // si no, se escribe el número.
-    var VB = refBase ? refBase : String(NUM(valorBase));
+    // Fila 1: la BASE ASEGURADA, en una sola celda. Todas las pólizas de la hoja
+    // apuntan a ella, así que cambiándola se recalcula toda la hoja.
+    sc(ws,r,0,'Base asegurada',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+    sc(ws,r,1,'',{fill:FG("1F2937"),border:brd});
+    var filaBase = r;
+    if(refBase) fc(ws,r,2,refBase,valorBase,{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
+    else nc(ws,r,2,valorBase,{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
+    sc(ws,r,3,notaBase||'',{font:FT("D1D5DB",false,10),fill:FG("1F2937"),border:brd});
+    [4,5,6,7,8,9].forEach(function(ci){ sc(ws,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+    var VB = refA(filaBase,2);   // $C$1 — todas las fórmulas de la hoja la usan
+    r++; r++;
     ['Póliza','% Valor','V.Asegurar','% Prima','VA×%Prima','Plazo (m)','+ Meses','Días','Prima s/IVA','Prima c/IVA']
       .forEach(function(h,ci){ sc(ws,r,ci,h,ST.hdr()); });
     r++;
@@ -8368,12 +8468,16 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       r++;
     });
     var last = r-1;
+    var filaTotPol = r;
     sc(ws,r,0,'TOTAL PÓLIZAS c/IVA',ST.tot());
     [1,2,3,4,5,6,7,8].forEach(function(ci){ sc(ws,r,ci,'',ST.tot()); });
     if(last>=first) fc(ws,r,9,'SUM('+rng(first,last,9)+')',totP,ST.tot());
     else n(ws,r,9,0);
     setRange(ws,[{wch:35},{wch:10},{wch:16},{wch:10},{wch:16},{wch:10},{wch:8},{wch:8},{wch:16},{wch:16}]);
-    XLSX.utils.book_append_sheet(wb, ws, nombreUnico(nombreHoja));
+    var nmPol = nombreUnico(nombreHoja);
+    XLSX.utils.book_append_sheet(wb, ws, nmPol);
+    return { ws: ws, nombre: nmPol, refTotal: link(nmPol, ref(filaTotPol,9)),
+             refBaseCell: link(nmPol, refA(filaBase,2)), filaBase: filaBase, total: totP };
   }
 
   // ── ENLACES ENTRE HOJAS ──────────────────────────────────────────────────
@@ -8386,7 +8490,12 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var refVU     = {};   // psId -> apuId -> 'APUs · X'!F12   (V. Unitario del APU)
   var refPrecio = {};   // recursoId -> 'Recursos'!E5        (precio del recurso)
   var refTotAU  = null; // 'Cálculo A+U'!H22                 (COSTO TOTAL C.D.+C.I.)
-  var refAdminAU = null, refUtilAU = null, refCDAU = null;
+  var refAdminAU = null, refUtilAU = null, refCDAU = null, refObraTot = null;
+  var hojasExtras = [];   // SG-SST / PMA / PMT / Gestión Social (se añaden al final)
+  var refExtra = {};      // campo -> celda TOTAL de su hoja
+  var refPolObraTot = null, refEstTot = null;   // totales de Pólizas Obra / Estampillas
+  var _totPolObra = 0, _totEstObra = 0;
+  var _verif = null;      // datos para el bloque de VERIFICACIÓN del A+U
   var refIntTot = null; // 'Presupuesto Interventoría'!H..   (VALOR TOTAL interventoría)
   var refFichaB = null; // 'Ficha Financiera'!B..            (SUBTOTAL RECURSOS)
   var hojasFin  = [];   // hojas construidas ya, pero añadidas al final del libro
@@ -8517,7 +8626,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   });
 
   // ── 1. PRESUPUESTOS DE OBRA ───────────────────────────────────────────────
-  var refCapPs = {};   // psId -> [ {ref, nombre} ] para enlazar desde el Resumen
+  var refCapPs = {};    // psId -> [ {ref} ] para enlazar desde el Resumen
+  var refsCDPs = [];    // celdas COSTO DIRECTO de cada hoja de presupuesto
   presups.forEach(function(ps) {
     var caps = ps.capitulos || [];
     var cdPs = caps.reduce(function(sum, cap) {
@@ -8602,8 +8712,81 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var nm = nombreUnico(ps.nombre||'Presupuesto');
     // Guardar dónde quedó cada capítulo para que el Resumen los enlace
     refCapPs[ps.id] = capsRefs.map(function(cr){ return {ref: link(nm, ref(cr.fila,5)), valor: cr.valor}; });
+    refsCDPs.push(link(nm, ref(filaCD,5)));   // COSTO DIRECTO de esta hoja → lo usa el Cálculo A+U
     XLSX.utils.book_append_sheet(wb, ws, nm);
   });
+
+  // ── EXTRAS: SG-SST / PMA / PMT / GESTIÓN SOCIAL ─────────────────────────
+  var extrasDefs = [
+    { campo:"sgSst",          titulo:"SG-SST" },
+    { campo:"pma",            titulo:"PMA" },
+    { campo:"pmt",            titulo:"PMT" },
+    { campo:"gestionSocial",  titulo:"Gestion Social" }
+  ];
+  extrasDefs.forEach(function(ed) {
+    var secs = proyecto["extras_"+ed.campo];
+    if(!secs || !secs.length) return;
+    var wsEx = {}, r = 0;
+
+    // Título
+    sc(wsEx,r,0,ed.titulo,{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,1,"",{fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,2,"",{fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,3,"",{fill:FG("1F2937"),border:brd});
+    sc(wsEx,r,4,"",{fill:FG("1F2937"),border:brd}); r++; r++;
+
+    // Headers
+    ["Sección / Ítem","Und","Cantidad","V. Unitario","Factor","Total"].forEach(function(h,ci){
+      sc(wsEx,r,ci,h,ST.hdr());
+    }); r++;
+
+    var grandTotal = 0, refsSecEx = [];
+    secs.forEach(function(sec) {
+      var factor = sec.factorPrestacional||1;
+      var itemsEx = sec.items||[];
+      var subT = itemsEx.reduce(function(ss,it){
+        return ss + (it.cantidad||0)*(it.valorUnitario||0);
+      },0);
+      var secTotal = subT * factor;
+      grandTotal += secTotal;
+      var filaSecEx = r;
+
+      // Section header
+      [0,1,2,3,4,5].forEach(function(ci){ sc(wsEx,r,ci,"",ST.cap()); });
+      sc(wsEx,r,0,safe(sec.titulo||sec.nombre||""),ST.cap());
+      if(factor !== 1) sc(wsEx,r,4,"x"+factor,ST.cap());
+      if(itemsEx.length) fc(wsEx,filaSecEx,5,'SUM('+rng(filaSecEx+1,filaSecEx+itemsEx.length,5)+')',secTotal,ST.tot());
+      else nc(wsEx,filaSecEx,5,0,ST.tot());
+      refsSecEx.push(ref(filaSecEx,5));
+      r++;
+
+      // Items — Total = Cantidad × V.Unitario × Factor
+      itemsEx.forEach(function(it,ii) {
+        var vt = (it.cantidad||0)*(it.valorUnitario||0)*factor;
+        var stR = ii%2===0?ST.rowA():ST.rowB();
+        sc(wsEx,r,0,safe(it.descripcion||it.desc||""),stR);
+        sc(wsEx,r,1,safe(it.unidad||""),{fill:stR.fill,border:brd,alignment:C_AL});
+        ndc(wsEx,r,2,it.cantidad||0,{fill:stR.fill,border:brd,alignment:R_AL});
+        nc(wsEx,r,3,it.valorUnitario||0,ST.mon(stR));
+        ndc(wsEx,r,4,factor,{fill:stR.fill,border:brd,alignment:C_AL});
+        fc(wsEx,r,5,ref(r,2)+'*'+ref(r,3)+'*'+ref(r,4),vt,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+        r++;
+      });
+    });
+
+    // Grand total
+    r++;
+    [0,1,2,3,4].forEach(function(ci){ sc(wsEx,r,ci,"",ST.tot2()); });
+    sc(wsEx,r,0,"TOTAL "+ed.titulo,ST.tot2());
+    if(refsSecEx.length) fc(wsEx,r,5,refsSecEx.join('+'),grandTotal,ST.tot2()); else nc(wsEx,r,5,0,ST.tot2()); r++;
+
+    wsEx['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:5}}];
+    setRange(wsEx,[{wch:50},{wch:8},{wch:10},{wch:18},{wch:8},{wch:18}]);
+    var nmEx = nombreUnico(ed.titulo);
+    refExtra[ed.campo] = link(nmEx, ref(r-1,5));   // celda TOTAL de esta hoja
+    hojasExtras.push({ws:wsEx, nm:nmEx});
+  });
+
 
   // ── 2. CÁLCULO A+U ────────────────────────────────────────────────────────
   // Réplica EXACTA de la tabla que se ve en la pestaña "Cálculo A+U":
@@ -8625,7 +8808,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     sc(wsAU,r,0,'Costo Directo (C.D.)',ST.lbl());
     [1,2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.lbl()); });
     var filaCDau = r;
-    nc(wsAU,r,7,cd,ST.mon()); r++;
+    // C.D. = suma del COSTO DIRECTO de cada hoja de presupuesto
+    if(refsCDPs.length) fc(wsAU,r,7,refsCDPs.join('+'),cd,ST.mon());
+    else nc(wsAU,r,7,cd,ST.mon());
+    r++;
     r++;
 
     // Encabezados — idénticos a la pantalla
@@ -8634,6 +8820,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     r++;
 
     var refsAdmin = [];   // celdas que suman la Administración (A)
+    var fila18Pol = null, fila18Est = null, fila18TB = null;
+    var _val18Pol = 0, _val18Est = 0, _val18TB = 0;
 
     (au.secciones||[]).forEach(function(sec) {
       // Fila de SECCIÓN — su total es la Administración REAL: cada subsección ya
@@ -8663,6 +8851,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         itsAU.forEach(function(it, ii) {
           var stR = ii%2===0?ST.rowA():ST.rowB();
           var vIt = calcAUItem(it, sub.tipo, cd, baseTot);
+          // Recordar dónde quedan los 3 ítems circulares, para verificarlos después
+          var _d = String(it.descripcion||'').toLowerCase();
+          if(_d.indexOf('póliza')>=0 || _d.indexOf('poliza')>=0) { fila18Pol = r; _val18Pol = vIt; }
+          else if(_d.indexOf('estampilla')>=0) { fila18Est = r; _val18Est = vIt; }
+          else if(_d.indexOf('transacci')>=0)  { fila18TB  = r; _val18TB  = vIt; }
           var esPersonal = sub.tipo==='personal';
           var esOtrosFijo = sub.tipo==='otros' && it.valorFijo;
           var esOtrosPct  = sub.tipo==='otros' && it.porcentaje!=null && !it.valorFijo;
@@ -8771,22 +8964,42 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     fc(wsAU,r,7,ref(filaCD2,7)+'+'+ref(filaA,7)+'+'+ref(filaU,7),res.total,ST.tot2()); r++;
 
     var refsEx2 = [ref(filaTotAU,7)];
-    if(extras.sgSst>0){ sc(wsAU,r,1,'SG-SST',ST.rowA()); n(wsAU,r,7,extras.sgSst); refsEx2.push(ref(r,7)); r++; }
-    if(extras.pma>0){   sc(wsAU,r,1,'PMA',ST.rowA());    n(wsAU,r,7,extras.pma);   refsEx2.push(ref(r,7)); r++; }
-    if(extras.pmt>0){   sc(wsAU,r,1,'PMT',ST.rowA());    n(wsAU,r,7,extras.pmt);   refsEx2.push(ref(r,7)); r++; }
-    if(extras.gestionSocial>0){ sc(wsAU,r,1,'Gestión Social',ST.rowA()); n(wsAU,r,7,extras.gestionSocial); refsEx2.push(ref(r,7)); r++; }
+    var filaCostosTot = null;
+    // Cada extra se enlaza a la celda TOTAL de su propia hoja (el sistema los guarda
+    // redondeados a pesos, por eso el ROUND).
+    function filaExtra(campo, etiqueta, valor) {
+      if(!(valor>0)) return;
+      sc(wsAU,r,1,etiqueta,ST.rowA());
+      if(refExtra[campo]) fc(wsAU,r,7,'ROUND('+refExtra[campo]+',0)',valor,ST.mon());
+      else n(wsAU,r,7,valor);
+      refsEx2.push(ref(r,7)); r++;
+    }
+    filaExtra('sgSst','SG-SST',extras.sgSst);
+    filaExtra('pma','PMA',extras.pma);
+    filaExtra('pmt','PMT',extras.pmt);
+    filaExtra('gestionSocial','Gestión Social',extras.gestionSocial);
     if(totalExtras>0){
       sc(wsAU,r,1,'COSTOS TOTALES',ST.tot());
       [0,2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.tot()); });
+      filaCostosTot = r;
       fc(wsAU,r,7,refsEx2.join('+'),res.total+totalExtras,ST.tot()); r++;
     }
 
+    wsAU['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:7}},    // título CÁLCULO A+U
+                       {s:{r:1,c:0}, e:{r:1,c:6}}];   // etiqueta Costo Directo (C.D.)
     setRange(wsAU,[{wch:8},{wch:52},{wch:8},{wch:8},{wch:10},{wch:18},{wch:8},{wch:18}]);
+    // El bloque de VERIFICACIÓN se escribe abajo, cuando ya existan las hojas de
+    // Pólizas y Estampillas contra las que hay que compararse.
+    _verif = { ws: wsAU, r: r+1, filaTot: filaTotAU,
+               pol: fila18Pol, est: fila18Est, tb: fila18TB,
+               vPol: _val18Pol, vEst: _val18Est, vTB: _val18TB };
     var nmAU = nombreUnico('Cálculo A+U');
     refTotAU  = link(nmAU, ref(filaTotAU,7));   // COSTO TOTAL (C.D. + C.I.)
     refAdminAU = link(nmAU, ref(filaA,7));      // A — Administración
     refUtilAU  = link(nmAU, ref(filaU,7));      // U — Utilidad
     refCDAU    = link(nmAU, ref(filaCDau,7));   // Costo Directo
+    // Costo de obra para la Ficha = COSTO TOTAL, o COSTOS TOTALES si hay extras
+    refObraTot = link(nmAU, ref(filaCostosTot!==null?filaCostosTot:filaTotAU, 7));
     XLSX.utils.book_append_sheet(wb, wsAU, nmAU);
   }
 
@@ -8794,7 +9007,9 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   if(tieneObra) {
     var polObra = ((proyecto.polizasPorComp||{}).obra)||{};
     var plz = Number(polObra.plazoContractual)||Number((proyecto.au||{}).plazo)||0;
-    hojaPolizas(polObra.polizasActivas||[], res.total, plz, 'Pólizas Obra', refTotAU);
+    var hObra = hojaPolizas(polObra.polizasActivas||[], res.total, plz, 'Pólizas Obra', refTotAU,
+      '← COSTO TOTAL (C.D. + C.I.) del Cálculo A+U');
+    refPolObraTot = hObra.refTotal; _totPolObra = hObra.total;
   }
 
   // ── 4. ESTAMPILLAS ────────────────────────────────────────────────────────
@@ -8817,9 +9032,12 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       r++;
     });
     s(wsE,r,0,'TOTAL ESTAMPILLAS');
+    var _filaTotEst = r;
     if(activas.length) fc(wsE,r,2,'SUM('+rng(filaE1,r-1,2)+')',totE,ST.tot()); else n(wsE,r,2,0);
     setRange(wsE,[{wch:40},{wch:10},{wch:16}]);
-    XLSX.utils.book_append_sheet(wb, wsE, 'Estampillas');
+    var nmEst = nombreUnico('Estampillas');
+    refEstTot = link(nmEst, ref(_filaTotEst,2)); _totEstObra = totE;
+    XLSX.utils.book_append_sheet(wb, wsE, nmEst);
   }
 
   // ── 5. PRESUPUESTO INTERVENTORÍA ─────────────────────────────────────────
@@ -8943,6 +9161,33 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   }
 
   // ── Calcular totales correctos (igual que VER) ──────────────────────────
+  // ── VERIFICACIÓN DE CUADRE (en la hoja Cálculo A+U) ──────────────────────
+  // Los 3 ítems circulares de la 1.8 se comparan contra las hojas donde realmente
+  // se calculan. Si no cuadran, la celda lo dice: nunca un descuadre silencioso.
+  if(_verif) {
+    var wsV = _verif.ws, rv = _verif.r;
+    sc(wsV,rv,0,'VERIFICACIÓN',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsV,rv,ci,'',{fill:FG("1F2937"),border:brd}); });
+    rv++;
+    var _chk = function(etiqueta, filaItem, expr, esperado, actual) {
+      if(filaItem===null || filaItem===undefined) return;
+      sc(wsV,rv,0,'',ST.rowA());
+      sc(wsV,rv,1,etiqueta,ST.rowA());
+      [2,3,4,5,6].forEach(function(ci){ sc(wsV,rv,ci,'',ST.rowA()); });
+      var ok = Math.abs(esperado-actual) < 1;
+      wsV[XLSX.utils.encode_cell({r:rv,c:7})] = { t:'s',
+        f:'IF(ROUND('+expr+'-'+ref(filaItem,7)+',0)=0,"✓ cuadra","⚠ DESCUADRE: debería ser "&TEXT('+expr+',"#,##0"))',
+        v: ok ? '✓ cuadra' : ('⚠ DESCUADRE: debería ser '+Math.round(esperado)),
+        s: { font:FT(ok?'15803D':'B91C1C',true), fill:FG(ok?'F0FDF4':'FEF2F2'), border:brd } };
+      rv++;
+    };
+    if(refPolObraTot) _chk('Pólizas 1.8  vs  hoja Pólizas Obra', _verif.pol, refPolObraTot, _totPolObra, _verif.vPol);
+    if(refEstTot)     _chk('Estampillas 1.8  vs  hoja Estampillas', _verif.est, refEstTot, _totEstObra, _verif.vEst);
+    _chk('Transacciones Bancarias 1.8  =  0,2% del COSTO TOTAL', _verif.tb,
+         'ROUND('+ref(_verif.filaTot,7)+'*0.002,0)', Math.round(res.total*0.002), _verif.vTB);
+    setRange(wsV, wsV['!cols']);
+  }
+
   var _extrasObraExp = (proyecto.au||{}).extras||{};
   var _obraTotal = res.total + ((_extrasObraExp.sgSst||0)+(_extrasObraExp.pma||0)+(_extrasObraExp.pmt||0)+(_extrasObraExp.gestionSocial||0));
   var _intervSub  = calcTotalPresupInterv(proyecto.presupInterv);
@@ -8955,78 +9200,188 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   if(tieneInt) {
     var polInt = ((proyecto.polizasPorComp||{}).interventoria)||{};
     var plzI = Number(polInt.plazoContractual)||Number((proyecto.presupInterv||{}).plazo)||Number((proyecto.au||{}).plazo)||0;
-    hojaPolizas(polInt.polizasActivas||[], _intervTotal, plzI, 'Pólizas Interventoría', refIntTot);
+    hojaPolizas(polInt.polizasActivas||[], _intervTotal, plzI, 'Pólizas Interventoría', refIntTot,
+      '← VALOR TOTAL del Presupuesto de Interventoría');
   }
   var totalExtrasObra = (_extrasObraExp.sgSst||0)+(_extrasObraExp.pma||0)+(_extrasObraExp.pmt||0)+(_extrasObraExp.gestionSocial||0);
   var _fichaR = calcFichaFinanciera(proyecto, _obraTotal, _intervTotal, 0, 50);
   var _fichaBase = _fichaR.totalRecursos || _obraTotal; // SUBTOTAL RECURSOS A ADMINISTRAR
 
+  // ── 7. PÓLIZAS EDESO ─────────────────────────────────────────────────────
+  // OJO: la base (SUBTOTAL RECURSOS) depende de estas pólizas y viceversa — el
+  // sistema lo resuelve iterando. En Excel no se puede enlazar en los dos sentidos
+  // (sería referencia circular), así que aquí la base va como valor y es la Ficha
+  // la que se enlaza a esta hoja.
+  var refPolEdeso = null, _hojaEd = null;
+  if(tieneObra || tieneInt) {
+    var polEd = ((proyecto.polizasPorComp||{}).edeso)||{};
+    var plzEd = Number(polEd.plazoContractual)||0;
+    _hojaEd = hojaPolizas(polEd.polizasActivas||[], _fichaBase, plzEd, 'Pólizas EDESO', null,
+      '← SUBTOTAL RECURSOS A ADMINISTRAR (Ficha Financiera). Se calcula por iteración, por eso va como valor y no como enlace.');
+    refPolEdeso = _hojaEd.refTotal;
+  }
+
   // ── 8. FICHA FINANCIERA ───────────────────────────────────────────────────
+  // Todo enlazado: Costo de obra → Cálculo A+U, Interventoría → su presupuesto,
+  // Pólizas EDESO → su hoja, y el resto son fórmulas encadenadas dentro de la hoja.
   if(tieneObra || tieneInt) {
   var wsFF = {}, r = 0;
   var ff = proyecto.fichaFinanciera||{};
   var R = _fichaR;
-  var pctHon = ff.pctHonoarios||0.08;
-
-  sc(wsFF,r,0,'FICHA FINANCIERA',{font:FT("FFFFFF",true,14),fill:FG("1F2937"),border:brd}); r++; r++;
-  sc(wsFF,r,0,'Concepto',ST.hdr()); sc(wsFF,r,1,'Valor',ST.hdr()); r++;
-  var ffRows = [
-    {l:'Costo de Obra (C.D.+C.I.)', v:R.obraTotal, tot:false},
-    {l:'Interventoría', v:R.intervTotal, tot:false},
-    {l:'Costos Indirectos del Proyecto', v:R.subtotalIndirecto, tot:false},
-    {l:'Pólizas y Garantías EDESO', v:R.polizasEdeso||0, tot:false},
-    {l:'SUBTOTAL RECURSOS A ADMINISTRAR', v:R.totalRecursos, tot:true},
-    {l:'Honorarios A.D.R.', v:R.honorarios, tot:false},
-    {l:'IVA 19%', v:R.iva, tot:false},
-    {l:'TOTAL HONORARIOS POR ADMINISTRACIÓN', v:R.honorarios+R.iva, tot:true},
-    {l:'VALOR TOTAL DE RECURSOS A INVERTIR', v:R.totalContrato, tot:true},
-  ];
+  var pctHon = ff.pctHonoarios!==undefined ? ff.pctHonoarios : 0.08;
   var nmFF = nombreUnico('Ficha Financiera');
-  ffRows.forEach(function(row) {
-    sc(wsFF,r,0,row.l, row.tot?ST.tot2():ST.lbl());
-    if(row.l==='Costo de Obra (C.D.+C.I.)' && refTotAU && !totalExtrasObra)
-      fc(wsFF,r,1,refTotAU,row.v, ST.mon());
-    else nc(wsFF,r,1,row.v, row.tot?ST.tot2():ST.mon());
-    if(row.l==='SUBTOTAL RECURSOS A ADMINISTRAR') refFichaB = link(nmFF, ref(r,1));
-    r++;
-  });
+  var tieneConsult = comps.includes('consultoria');
+
+  sc(wsFF,r,0,'FICHA FINANCIERA',{font:FT("FFFFFF",true,14),fill:FG("1F2937"),border:brd});
+  [1,2,3,4].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+  r++; r++;
+
+  sc(wsFF,r,0,'Concepto',ST.hdr());
+  [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.hdr()); });
+  sc(wsFF,r,4,'Valor',ST.hdr()); r++;
+
+  // Filas del resumen financiero (col 4 = Valor)
+  var fObra = r;
+  sc(wsFF,r,0,'Costo de obra',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+  if(refObraTot) fc(wsFF,r,4,refObraTot,R.obraTotal,ST.mon()); else nc(wsFF,r,4,R.obraTotal,ST.mon());
   r++;
 
-  // Componentes desglosados
+  var fInt = r;
+  sc(wsFF,r,0,'Interventoría',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+  if(refIntTot && R.intervTotal) fc(wsFF,r,4,refIntTot,R.intervTotal,ST.mon()); else nc(wsFF,r,4,R.intervTotal,ST.mon());
+  r++;
+
+  var fCons = null;
+  if(tieneConsult) {
+    fCons = r;
+    sc(wsFF,r,0,'Consultoría / Diseño',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+    nc(wsFF,r,4,R.consultTotal||0,ST.mon()); r++;
+  }
+
+  var fInd = r;   // Costos indirectos: se llena al final (= suma de los componentes de abajo)
+  sc(wsFF,r,0,'Costos indirectos del proyecto',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+  r++;
+
+  var fSub = r;
+  sc(wsFF,r,0,'SUBTOTAL RECURSOS A ADMINISTRAR',ST.tot2()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.tot2()); });
+  var sumDir = ref(fObra,4)+'+'+ref(fInt,4)+(fCons!==null?('+'+ref(fCons,4)):'');
+  fc(wsFF,r,4,'ROUND('+sumDir+',0)+'+ref(fInd,4), R.totalRecursos, ST.tot2());
+  refFichaB = link(nmFF, ref(fSub,4));
+  r++; r++;
+
+  var fHon = r;
+  sc(wsFF,r,0,'HONORARIOS A.D.R.',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+  fc(wsFF,r,4,'ROUND(ROUND('+sumDir+',0)*'+pctHon+',0)', R.honorarios, ST.mon());
+  r++;
+
+  var fIva = r;
+  sc(wsFF,r,0,'IVA 19%',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+  fc(wsFF,r,4,'ROUND('+ref(fHon,4)+'*0.19,0)', R.iva, ST.mon());
+  r++;
+
+  sc(wsFF,r,0,'TOTAL HONORARIOS POR ADMINISTRACIÓN',ST.tot2()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.tot2()); });
+  fc(wsFF,r,4,ref(fHon,4)+'+'+ref(fIva,4), R.honorarios+R.iva, ST.tot2());
+  r++;
+
+  sc(wsFF,r,0,'VALOR TOTAL DE RECURSOS A INVERTIR',ST.tot2()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.tot2()); });
+  fc(wsFF,r,4,ref(fSub,4)+'+'+ref(fHon,4)+'+'+ref(fIva,4), R.totalContrato, ST.tot2());
+  r++; r++;
+
+  // ── Componentes de Costos Indirectos ────────────────────────────────────
   sc(wsFF,r,0,'Componentes de Costos Indirectos',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
   sc(wsFF,r,1,'Cant.',ST.hdr()); sc(wsFF,r,2,'Meses',ST.hdr());
   sc(wsFF,r,3,'V. Unitario',ST.hdr()); sc(wsFF,r,4,'Total',ST.hdr()); r++;
+
+  var refsGrupo = [];   // totales de grupo que suman los Costos Indirectos
   var compDefs = [
-    {key:'componentesPersonal',  label:'Personal'},
-    {key:'componentesSocial',     label:'Social'},
-    {key:'componentesLogistico',  label:'Logístico'},
-    {key:'componentesDiseno',     label:'Diseño / Consultoría'}
+    {key:'componentesPersonal',  label:'Personal',   sinUnitario:true },
+    {key:'componentesSocial',    label:'Social'    },
+    {key:'componentesLogistico', label:'Logístico' }
   ];
   compDefs.forEach(function(ct) {
     var items = (ff[ct.key]||[]).filter(function(it){ return it.activo!==false; });
     if(!items.length) return;
-    [0,1,2,3,4].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
-    sc(wsFF,r,0,ct.label,ST.cap()); r++;
+    var filaG = r, totG = 0;
+    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
+    sc(wsFF,r,0,ct.label,ST.cap());
+    r++;
     items.forEach(function(it, ii) {
       var v = (Number(it.cantidad)||0)*(Number(it.meses)||1)*(Number(it.valorUnit)||0);
+      totG += v;
       var stR = ii%2===0?ST.rowA():ST.rowB();
-      sc(wsFF,r,0,safe(it.descripcion),stR);
-      ndc(wsFF,r,1,Number(it.cantidad)||0,{fill:stR.fill,border:brd,alignment:C_AL});
-      n(wsFF,r,2,Number(it.meses)||1,'#,##0.##');
-      nc(wsFF,r,3,it.valorUnit||0,ST.mon(stR));
-      fc(wsFF,r,4,ref(r,1)+'*'+ref(r,2)+'*'+ref(r,3),v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL}); r++;
+      sc(wsFF,r,0,'  '+safe(it.descripcion),stR);
+      if(ct.sinUnitario) {
+        // Personal: igual que en el sistema, no se muestran cantidad ni valor unitario
+        sc(wsFF,r,1,'',{fill:stR.fill,border:brd});
+        n(wsFF,r,2,Number(it.meses)||1,'#,##0.##');
+        sc(wsFF,r,3,'',{fill:stR.fill,border:brd});
+        nc(wsFF,r,4,v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+      } else {
+        ndc(wsFF,r,1,Number(it.cantidad)||0,{fill:stR.fill,border:brd,alignment:C_AL});
+        n(wsFF,r,2,Number(it.meses)||1,'#,##0.##');
+        nc(wsFF,r,3,it.valorUnit||0,ST.mon(stR));
+        fc(wsFF,r,4,ref(r,1)+'*'+ref(r,2)+'*'+ref(r,3),v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+      }
+      r++;
     });
+    fc(wsFF,filaG,4,'SUM('+rng(filaG+1,r-1,4)+')',totG,ST.tot());
+    refsGrupo.push(ref(filaG,4));
   });
 
-  setRange(wsFF,[{wch:45},{wch:10},{wch:8},{wch:18},{wch:18}]);
-  XLSX.utils.book_append_sheet(wb, wsFF, nmFF);
+  // Pólizas y Garantías EDESO — ahora va aquí dentro, enlazada a su hoja
+  if((R.polizasEdeso||0) > 0 || refPolEdeso) {
+    var filaEd = r;
+    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
+    sc(wsFF,r,0,'Pólizas y Garantías EDESO',ST.cap());
+    if(refPolEdeso) fc(wsFF,r,4,refPolEdeso,R.polizasEdeso||0,ST.tot());
+    else nc(wsFF,r,4,R.polizasEdeso||0,ST.tot());
+    refsGrupo.push(ref(filaEd,4));
+    r++;
   }
 
-  // ── 8b. PÓLIZAS EDESO (después de la Ficha: su base sale de allí) ────────
-  if(tieneObra || tieneInt) {
-    var polEd = ((proyecto.polizasPorComp||{}).edeso)||{};
-    var plzEd = Number(polEd.plazoContractual)||0; // En "Ver", EDESO no sugiere plazo automático
-    hojaPolizas(polEd.polizasActivas||[], _fichaBase, plzEd, 'Pólizas EDESO', refFichaB);
+  // Diseño / Consultoría — informativo: NO entra en los costos indirectos
+  var itemsDis = (ff.componentesDiseno||[]).filter(function(it){ return it.activo!==false; });
+  if(itemsDis.length) {
+    var filaD = r, totD = 0;
+    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+    sc(wsFF,r,0,'Diseño / Consultoría (informativo)',ST.lbl());
+    r++;
+    itemsDis.forEach(function(it, ii) {
+      var v = Number(it.valor)||((Number(it.cantidad)||0)*(Number(it.meses)||1)*(Number(it.valorUnit)||0));
+      totD += v;
+      var stR = ii%2===0?ST.rowA():ST.rowB();
+      sc(wsFF,r,0,'  '+safe(it.descripcion),stR);
+      [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:stR.fill,border:brd}); });
+      nc(wsFF,r,4,v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+      r++;
+    });
+    fc(wsFF,filaD,4,'SUM('+rng(filaD+1,r-1,4)+')',totD,ST.lbl());
+  }
+
+  // Ya conocemos los grupos: Costos indirectos = suma de ellos (redondeada, igual que el sistema)
+  if(refsGrupo.length) fc(wsFF,fInd,4,'ROUND('+refsGrupo.join('+')+',0)', R.subtotalIndirecto, ST.mon());
+  else nc(wsFF,fInd,4, R.subtotalIndirecto, ST.mon());
+
+  setRange(wsFF,[{wch:45},{wch:10},{wch:8},{wch:18},{wch:20}]);
+  XLSX.utils.book_append_sheet(wb, wsFF, nmFF);
+
+  // ── AVISO DE BASE DESACTUALIZADA ────────────────────────────────────────
+  // La base de las pólizas EDESO no se puede enlazar (sería referencia circular),
+  // así que se pone un semáforo: si alguien edita el Excel y el SUBTOTAL cambia,
+  // esta celda lo grita en vez de dejar pasar un descuadre silencioso.
+  if(_hojaEd && refFichaB) {
+    var wsEd = _hojaEd.ws, fb = _hojaEd.filaBase;
+    var kAviso = XLSX.utils.encode_cell({r:fb+1, c:0});
+    wsEd[kAviso] = { t:'s', f:'IF(ROUND('+refFichaB+'-'+ref(fb,2)+',0)=0,"✓ Base al día",'+
+                    '"⚠ BASE DESACTUALIZADA — el SUBTOTAL de la Ficha cambió. Copia el nuevo valor aquí arriba o vuelve a exportar desde el sistema.")',
+                    v:'✓ Base al día',
+                    s:{font:FT('15803D',true),fill:FG('F0FDF4'),border:brd} };
+    [1,2,3,4,5].forEach(function(ci){
+      wsEd[XLSX.utils.encode_cell({r:fb+1, c:ci})] = { t:'s', v:'', s:{fill:FG('F0FDF4'),border:brd} };
+    });
+    var cols = wsEd['!cols'];
+    setRange(wsEd, cols);
+  }
   }
 
   // ── 9. RESUMEN ────────────────────────────────────────────────────────────
@@ -9087,10 +9442,18 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   sc(wsR,r,1,'COSTO TOTAL (C.D. + C.I.)',ST.tot2());
   fc(wsR,r,2,ref(filaCDr,2)+'+'+ref(filaAr,2)+'+'+ref(filaUr,2),costoTotalR,ST.tot2()); r++;
   var refsEx = [ref(filaTotR,2)];
-  if(extras2.sgSst>0){ s(wsR,r,1,'SG-SST'); n(wsR,r,2,extras2.sgSst); s(wsR,r,3,cdTotal>0?(extras2.sgSst/cdTotal*100).toFixed(3)+'%':''); refsEx.push(ref(r,2)); r++; }
-  if(extras2.pma>0){   s(wsR,r,1,'PMA');    n(wsR,r,2,extras2.pma);   s(wsR,r,3,cdTotal>0?(extras2.pma/cdTotal*100).toFixed(3)+'%':'');   refsEx.push(ref(r,2)); r++; }
-  if(extras2.pmt>0){   s(wsR,r,1,'PMT');    n(wsR,r,2,extras2.pmt);   s(wsR,r,3,cdTotal>0?(extras2.pmt/cdTotal*100).toFixed(3)+'%':'');   refsEx.push(ref(r,2)); r++; }
-  if(extras2.gestionSocial>0){ s(wsR,r,1,'Gestión Social'); n(wsR,r,2,extras2.gestionSocial); s(wsR,r,3,cdTotal>0?(extras2.gestionSocial/cdTotal*100).toFixed(3)+'%':''); refsEx.push(ref(r,2)); r++; }
+  function filaExtraR(campo, etiqueta, valor) {
+    if(!(valor>0)) return;
+    s(wsR,r,1,etiqueta);
+    if(refExtra[campo]) fc(wsR,r,2,'ROUND('+refExtra[campo]+',0)',valor,ST.mon());
+    else n(wsR,r,2,valor);
+    s(wsR,r,3,cdTotal>0?(valor/cdTotal*100).toFixed(3)+'%':'');
+    refsEx.push(ref(r,2)); r++;
+  }
+  filaExtraR('sgSst','SG-SST',extras2.sgSst);
+  filaExtraR('pma','PMA',extras2.pma);
+  filaExtraR('pmt','PMT',extras2.pmt);
+  filaExtraR('gestionSocial','Gestión Social',extras2.gestionSocial);
   if(totEx2>0){
     [0,1,2,3].forEach(function(ci){ sc(wsR,r,ci,'',ST.tot()); });
     sc(wsR,r,1,'COSTOS TOTALES',ST.tot());
@@ -9104,73 +9467,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   hojasFin.forEach(function(h){ XLSX.utils.book_append_sheet(wb, h.ws, h.nm); });
 
   // ── EXPORT ───────────────────────────────────────────────────────────────
-  // ── EXTRAS: SG-SST / PMA / PMT / GESTIÓN SOCIAL ─────────────────────────
-  var extrasDefs = [
-    { campo:"sgSst",          titulo:"SG-SST" },
-    { campo:"pma",            titulo:"PMA" },
-    { campo:"pmt",            titulo:"PMT" },
-    { campo:"gestionSocial",  titulo:"Gestion Social" }
-  ];
-  extrasDefs.forEach(function(ed) {
-    var secs = proyecto["extras_"+ed.campo];
-    if(!secs || !secs.length) return;
-    var wsEx = {}, r = 0;
-
-    // Título
-    sc(wsEx,r,0,ed.titulo,{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,1,"",{fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,2,"",{fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,3,"",{fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,4,"",{fill:FG("1F2937"),border:brd}); r++; r++;
-
-    // Headers
-    ["Sección / Ítem","Und","Cantidad","V. Unitario","Factor","Total"].forEach(function(h,ci){
-      sc(wsEx,r,ci,h,ST.hdr());
-    }); r++;
-
-    var grandTotal = 0, refsSecEx = [];
-    secs.forEach(function(sec) {
-      var factor = sec.factorPrestacional||1;
-      var itemsEx = sec.items||[];
-      var subT = itemsEx.reduce(function(ss,it){
-        return ss + (it.cantidad||0)*(it.valorUnitario||0);
-      },0);
-      var secTotal = subT * factor;
-      grandTotal += secTotal;
-      var filaSecEx = r;
-
-      // Section header
-      [0,1,2,3,4,5].forEach(function(ci){ sc(wsEx,r,ci,"",ST.cap()); });
-      sc(wsEx,r,0,safe(sec.titulo||sec.nombre||""),ST.cap());
-      if(factor !== 1) sc(wsEx,r,4,"x"+factor,ST.cap());
-      if(itemsEx.length) fc(wsEx,filaSecEx,5,'SUM('+rng(filaSecEx+1,filaSecEx+itemsEx.length,5)+')',secTotal,ST.tot());
-      else nc(wsEx,filaSecEx,5,0,ST.tot());
-      refsSecEx.push(ref(filaSecEx,5));
-      r++;
-
-      // Items — Total = Cantidad × V.Unitario × Factor
-      itemsEx.forEach(function(it,ii) {
-        var vt = (it.cantidad||0)*(it.valorUnitario||0)*factor;
-        var stR = ii%2===0?ST.rowA():ST.rowB();
-        sc(wsEx,r,0,safe(it.descripcion||it.desc||""),stR);
-        sc(wsEx,r,1,safe(it.unidad||""),{fill:stR.fill,border:brd,alignment:C_AL});
-        ndc(wsEx,r,2,it.cantidad||0,{fill:stR.fill,border:brd,alignment:R_AL});
-        nc(wsEx,r,3,it.valorUnitario||0,ST.mon(stR));
-        ndc(wsEx,r,4,factor,{fill:stR.fill,border:brd,alignment:C_AL});
-        fc(wsEx,r,5,ref(r,2)+'*'+ref(r,3)+'*'+ref(r,4),vt,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
-        r++;
-      });
-    });
-
-    // Grand total
-    r++;
-    [0,1,2,3,4].forEach(function(ci){ sc(wsEx,r,ci,"",ST.tot2()); });
-    sc(wsEx,r,0,"TOTAL "+ed.titulo,ST.tot2());
-    if(refsSecEx.length) fc(wsEx,r,5,refsSecEx.join('+'),grandTotal,ST.tot2()); else nc(wsEx,r,5,0,ST.tot2()); r++;
-
-    setRange(wsEx,[{wch:50},{wch:8},{wch:10},{wch:18},{wch:8},{wch:18}]);
-    XLSX.utils.book_append_sheet(wb, wsEx, ed.titulo.slice(0,31));
-  });
+  // ── EXTRAS: hojas construidas antes (para poder enlazarlas desde el A+U) ──
+  hojasExtras.forEach(function(h){ XLSX.utils.book_append_sheet(wb, h.ws, h.nm); });
 
   XLSX.writeFile(wb, (proyecto.nombre||'Proyecto').replace(/[\/\\?*\[\]:]/g,'').slice(0,50)+'.xlsx');
 }
@@ -10418,6 +10716,11 @@ function ModalExportExcel({proyecto, apus, recursos, onClose, catalogoEstampilla
   const tieneInterv= comps.includes("interventoria");
   const tieneConsult=comps.includes("consultoria");
   const apusUsados = getApusUsados(proyecto, apus, recursos);
+  // Ítems que valen $0 (APU borrado, APU sin recursos, o cantidad en 0)
+  const _probs = React.useMemo(
+    () => detectarProblemas(proyecto, apus, recursos),
+    [proyecto, apus, recursos]
+  );
 
   const OPCIONES = [
     { id:"todo",      label:"📦 Todo el proyecto",     desc:"Todas las hojas",                    show:true },
@@ -10444,6 +10747,21 @@ function ModalExportExcel({proyecto, apus, recursos, onClose, catalogoEstampilla
       React.createElement("div",{style:{color:"var(--ink3)",fontSize:13,marginBottom:16}},
         "¿Qué deseas exportar del proyecto ",
         React.createElement("strong",null,proyecto.nombre),"?"
+      ),
+      // Aviso de ítems que valen $0 — es un entregable, no debe salir con renglones mudos
+      _probs.length>0 && React.createElement("div",{style:{
+          background:"#FEF2F2",border:"1.5px solid #FCA5A5",borderRadius:10,
+          padding:"12px 14px",marginBottom:16
+        }},
+        React.createElement("div",{style:{fontWeight:800,color:"#B91C1C",fontSize:13,marginBottom:6}},
+          "⚠ "+_probs.length+(_probs.length===1?" ítem no está sumando":" ítems no están sumando")),
+        React.createElement("div",{style:{fontSize:11.5,color:"#7F1D1D",lineHeight:1.6,maxHeight:130,overflowY:"auto"}},
+          _probs.slice(0,8).map((p,i)=>React.createElement("div",{key:i,style:{marginBottom:3}},
+            React.createElement("strong",null,p.ref),": ",p.nombre," — ",p.detalle)),
+          _probs.length>8 && React.createElement("div",{style:{fontStyle:"italic"}},"… y "+(_probs.length-8)+" más")
+        ),
+        React.createElement("div",{style:{fontSize:11,color:"#7F1D1D",marginTop:8,fontStyle:"italic"}},
+          "Puedes exportar igual, pero estos renglones van en $0.")
       ),
       React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
         OPCIONES.map(op=>React.createElement("button",{
@@ -12106,64 +12424,12 @@ const mergeItemExterno = React.useCallback((event, row) => {
     setProyectos(prev=>prev.map(p=>p.id===pActivo.id?{...p,finalizado:false,snapshot:null}:p));
   };
 const sincronizarPolizasAU = (proyecto) => {
-    // Recalcula polizas y estampillas de obra y los inyecta en s1_8 del AU
-    const polData = ((proyecto.polizasPorComp || {})["obra"]) || {};
-    const plazo   = Number(polData.plazoContractual) || Number((proyecto.au||{}).plazo) || 0;
-    const vBase   = calcProyecto(proyecto, apus, recursos).total;
-    // Total pólizas
-    const totPol = (polData.polizasActivas || []).reduce((s, p) => {
-      const pct      = Number(p.pct) || 0;
-      const pctPrima = Number(p.pctPrima) || 0;
-      const mEx      = Number(p.mesesExtra) || 0;
-      const va       = Math.round(vBase * pct / 100);
-      const valor    = Math.round(va * pctPrima / 100);
-      const dias     = Math.round((plazo + mEx) * 365 / 12);
-      const siva     = dias > 0 ? Math.round(valor * dias / 365) : 0;
-      return s + Math.round(siva * 1.19);
-    }, 0);
-    // Total estampillas — usa municipioId + catálogo
-    const munGrp = (catalogoEstampillas||[]).find(g => g.id === proyecto.municipioId) || null;
-    const estItems = munGrp ? (munGrp.items||[]) : [];
-    const totEst = estItems.reduce((s,e) => s + Math.round(vBase*(Number(e.pctDef)||0)/100), 0);
-    if (!proyecto.au) return proyecto;
-    const au   = JSON.parse(JSON.stringify(proyecto.au));
-    const sec0 = (au.secciones || [])[0];
-    const sub  = sec0 ? (sec0.subsecciones || []).find(s => s.id === "s1_8") : null;
-    if (!sub) return proyecto;
-    // Upsert Pólizas
-    const polIdx = sub.items.findIndex(i =>
-      (i.descripcion || "").toLowerCase().includes("póliza") ||
-      (i.descripcion || "").toLowerCase().includes("poliza")
-    );
-    const polItem = { id: polIdx >= 0 ? sub.items[polIdx].id : ("pol_au_" + Date.now()), descripcion:"Pólizas", unidad:"un", valorFijo:totPol, porcentaje:null, baseCalculo:"cd" };
-    if (polIdx >= 0) sub.items[polIdx] = polItem; else sub.items.push(polItem);
-    // Upsert Estampillas
-    const estIdx = sub.items.findIndex(i =>
-      (i.descripcion || "").toLowerCase().includes("estampilla")
-    );
-    const estItem = { id: estIdx >= 0 ? sub.items[estIdx].id : ("est_au_" + Date.now()), descripcion:"Estampillas", unidad:"un", valorFijo:totEst, porcentaje:null, baseCalculo:"cd" };
-    if (estIdx >= 0) sub.items[estIdx] = estItem; else sub.items.push(estItem);
-    // Upsert Transacciones Bancarias: (vBase × 0.004) × 0.5
-    const totTB  = Math.round(vBase * 0.004 * 0.5);
-    const tbIdx  = sub.items.findIndex(i =>
-      (i.descripcion || "").toLowerCase().includes("transacci")
-    );
-    const tbItem = { id: tbIdx >= 0 ? sub.items[tbIdx].id : ("tb_au_" + Date.now()), descripcion:"Transacciones Bancarias", unidad:"un", valorFijo:totTB, porcentaje:null, baseCalculo:"cd" };
-    if (tbIdx >= 0) sub.items[tbIdx] = tbItem; else sub.items.push(tbItem);
-    return { ...proyecto, au };
+    // Delegado a la función global: itera hasta el punto fijo real y encuentra la
+    // subsección 1.8 por id, número o título (antes solo por id, y si no la hallaba
+    // se salía en silencio dejando el proyecto subvalorado).
+    return convergerAU(proyecto, apus, recursos, catalogoEstampillas || []);
   };
-  const sincronizarIterativo = (p, maxN) => {
-    var proj = JSON.parse(JSON.stringify(p));
-    var MAX = maxN || 100;
-    var prevTotal = 0;
-    for (var i = 0; i < MAX; i++) {
-      proj = sincronizarPolizasAU(proj);
-      var newTotal = calcProyecto(proj, apus, recursos).total;
-      if (Math.abs(newTotal - prevTotal) < 1) break; // converged
-      prevTotal = newTotal;
-    }
-    return proj;
-  };
+  const sincronizarIterativo = (p) => convergerAU(p, apus, recursos, catalogoEstampillas || []);
 
   const abrirEditor = p => {
     if (p.finalizado) { alert("Este proyecto está finalizado. Solo un administrador puede reabrirlo."); return; }
@@ -13430,6 +13696,22 @@ const sincronizarPolizasAU = (proyecto) => {
       className: `tab${tabDetalle === t.id ? " on" : ""}`,
       onClick: () => setTabDetalle(t.id)
     }, t.label))),
+    (() => {
+      // Semáforo: ítems que no están sumando (APU borrado, APU sin recursos, cantidad 0).
+      // Sin esto, un renglón en $0 pasa inadvertido dentro de cientos de ítems.
+      const probs = detectarProblemas(pActivo, apus, recursos);
+      if (!probs.length) return null;
+      return React.createElement("div", { className:"no-print", style:{
+        background:"#FEF2F2", border:"1.5px solid #FCA5A5", borderRadius:12,
+        padding:"12px 16px", margin:"12px 0"
+      }},
+        React.createElement("div", { style:{fontWeight:800,color:"#B91C1C",fontSize:13,marginBottom:6} },
+          "⚠ " + probs.length + (probs.length===1 ? " ítem no está sumando al presupuesto" : " ítems no están sumando al presupuesto")),
+        React.createElement("div", { style:{fontSize:12,color:"#7F1D1D",lineHeight:1.7,maxHeight:150,overflowY:"auto"} },
+          probs.map((p,i) => React.createElement("div", {key:i},
+            React.createElement("strong",null,p.ref), ": ", p.nombre, " — ", p.detalle)))
+      );
+    })(),
     (tabDetalle === "resumen_obra") && renderResumenObra(),
     (tabDetalle === "fichaFinanciera") && (() => {
       const _extrasObra = (pActivo.au||{}).extras||{}; const _obraTotal = calcProyecto(pActivo, apus, recursos).total + ((_extrasObra.sgSst||0)+(_extrasObra.pma||0)+(_extrasObra.pmt||0)+(_extrasObra.gestionSocial||0));
@@ -15148,6 +15430,10 @@ function App() {
   const [moData,             setMODataRaw]              = useState({ smmlv: 1750905, trabajadores: [], cuadrillas: [] });
   const [subTitle,           setSubTitle]               = useState(null);
 
+  // Datos base accesibles desde cualquier pestaña, para poder converger el A+U
+  // (pólizas / estampillas / transacciones) sin tener que pasarlos por props.
+  window.__PREX = { apus: apus, recursos: recursos, catEst: catalogoEstampillas || [] };
+
   const migrarProyectos = ps=>(ps||[]).map(p=>({...p,au:migrarAU(p.au),capitulos:p.capitulos||[]}));
 
   // ── Load data from Supabase ───────────────────────────
@@ -15611,6 +15897,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(
 window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, calcAPUTotal, calcLinea, calcAUItem, calcAUSubseccion, calcTotalPresupInterv, calcFichaFinanciera, getApusUsados, fmt, fmtN) {
   var ex = document.getElementById('__pf__');
   if (ex) ex.remove();
+
+  // El PDF es entregable: se converge siempre antes de imprimir (pólizas, estampillas
+  // y transacciones dependen del costo total y a la vez están dentro de él).
+  var _G = window.__PREX || {};
+  pActivo = convergerAU(pActivo, apus, recursos, _G.catEst || []);
 
   var res = calcProyecto(pActivo, apus, recursos);
   var au = pActivo.au || {};
