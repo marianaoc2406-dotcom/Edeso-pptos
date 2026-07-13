@@ -588,7 +588,9 @@ function calcTotalSinPolizas(p, apus, recursos) {
   // para usarlo como base en el calculo de polizas (evita referencia circular)
   const cd = calcCD(p, apus, recursos);
   const au = p.au;
-  let personal11 = 0, resto = 0, pctI = 0, pctU = 0;
+  // personal13 faltaba declararse (ReferenceError) y la subsección 1.3 caía en
+  // "resto" sin su factor prestacional ×1.70.
+  let personal11 = 0, personal13 = 0, resto = 0, pctI = 0, pctU = 0;
   if (au && au.secciones) {
     au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
       if (sub.id === "s1_9") {
@@ -596,10 +598,12 @@ function calcTotalSinPolizas(p, apus, recursos) {
       } else if (sub.id === "s1_10") {
         pctU = (sub.items[0]?.porcentaje) || 0;
       } else if (sub.id === "s1_1") {
-        sub.items.forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+        (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+      } else if (sub.id === "s1_3") {
+        (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
       } else {
         // Para s1_8 excluir items de polizas
-        sub.items.forEach(item => {
+        (sub.items || []).forEach(item => {
           const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
                            (item.descripcion || "").toLowerCase().includes("poliza");
           if (!(sub.id === "s1_8" && esPoliza)) {
@@ -4919,6 +4923,8 @@ function ModalSelectorPlantilla({
 // ═══════════════════════════════════════════════════════
 function TabAU({
   perfil, session, proyectoId,
+  proyecto,
+  setPActivo,          // ← faltaba: sin esto, cambiar el plazo lanzaba ReferenceError
   au: auProp,
   setAu,
   cd,
@@ -4927,9 +4933,10 @@ function TabAU({
   readOnly,
   obsProps
 }) {
-  // PMA/PMT/SST/GS se guardan en au.extras
-  const extras = (auProp||{}).extras || { sgSst:0, pma:0, pmt:0, gestionSocial:0 };
-  const totalExtras = (extras.sgSst||0)+(extras.pma||0)+(extras.pmt||0)+(extras.gestionSocial||0);
+  // PMA/PMT/SST/GS: se CALCULAN de sus propias hojas (no de la caché au.extras,
+  // que se desincronizaba y contaminaba el costo total).
+  const extras = getExtras(proyecto || { au: auProp });
+  const totalExtras = getExtrasTotal(proyecto || { au: auProp });
   const setExtras = (field,val) => { if(window.__markEditing) window.__markEditing("extras_"+field); setAu(prev => ({...prev, extras:{...(prev.extras||{}), [field]:val}})); };
   const au = auProp || auVacio();
   const [modalItem, setModalItem] = useState(null);
@@ -5143,7 +5150,7 @@ function TabAU({
                 });
                 return Object.assign({}, prev, { plazo: v, secciones: secciones });
               });
-              setPActivo(function(p) {
+              if (setPActivo) setPActivo(function(p) {
                 var polPorComp = Object.assign({}, p.polizasPorComp || {});
                 ["obra","interventoria","consultoria"].forEach(function(comp) {
                   var pd = polPorComp[comp] || {};
@@ -5187,21 +5194,21 @@ function TabAU({
     accent: "#7C3AED"
   })),
   // ── Sección PMA / PMT / SG-SST / Gestión Social ────────────────
+  // Solo lectura: estos valores salen de sus propias hojas (SG-SST, PMA, PMT,
+  // Gestión Social). Editarlos aquí a mano los desincronizaría de su detalle.
   React.createElement("div",{className:"card",style:{padding:"16px 20px",marginBottom:8}},
-    React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+    React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}},
       React.createElement("span",{style:{fontWeight:700,fontSize:13,color:"#7C3AED"}},"PMA · PMT · SG-SST · Gestión Social"),
       React.createElement("span",{style:{fontFamily:"var(--mono)",fontWeight:700,color:"#7C3AED",fontSize:13}},fmt(totalExtras))
     ),
+    React.createElement("div",{style:{fontSize:11,color:"var(--ink4)",marginBottom:12}},
+      "Calculado en cada hoja. Para cambiarlo, edita la hoja correspondiente."),
     React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}},
       [["SG-SST","sgSst"],["PMA","pma"],["PMT","pmt"],["Gestión Social","gestionSocial"]].map(function(pair){ var label=pair[0],key=pair[1];
         return React.createElement("div",{key,style:{display:"flex",alignItems:"center",gap:8,background:"#F5F3FF",borderRadius:8,padding:"8px 12px"}},
           React.createElement("span",{style:{fontSize:12,color:"#7C3AED",fontWeight:600,minWidth:100}},label),
-          React.createElement("input",{className:"ifield",type:"number",min:0,disabled:readOnly,
-            style:{fontFamily:"var(--mono)",fontWeight:700,textAlign:"right",flex:1},
-            value:extras[key]||"",
-            placeholder:"$ 0",
-            onChange:function(e){setExtras(key, parseFloat(e.target.value)||0);}
-          }),
+          React.createElement("span",{style:{fontFamily:"var(--mono)",fontWeight:700,textAlign:"right",flex:1,fontSize:13,color:"var(--ink)"}},
+            fmt(extras[key]||0)),
           React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",minWidth:40,textAlign:"right"}},
             cd>0?fmtN((extras[key]||0)/cd*100,3)+"%":""
           )
@@ -8231,6 +8238,48 @@ function calcPol(p, vBase, plazo) {
   }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// EXTRAS (SG-SST / PMA / PMT / Gestión Social)
+//
+// El valor de cada extra vive en su propia hoja (proyecto.extras_<campo>: secciones
+// con ítems y factor prestacional). Antes se guardaba además una COPIA en
+// au.extras.<campo>, que solo se refrescaba si abrías esa pestaña en modo edición.
+// Esa copia se desincronizaba y contaminaba el costo total del proyecto.
+//
+// Regla nueva: si la hoja existe, ELLA MANDA. La copia solo se usa como respaldo
+// para proyectos viejos que nunca tuvieron hoja.
+// ═══════════════════════════════════════════════════════════════════════════
+function calcExtraDeHoja(secs) {
+  return (secs || []).reduce(function(st, sec) {
+    var sub = (sec.items || []).reduce(function(s2, it) {
+      return s2 + (Number(it.cantidad) || 0) * (Number(it.valorUnitario) || 0);
+    }, 0);
+    return st + sub * (Number(sec.factorPrestacional) || 1);
+  }, 0);
+}
+
+function getExtra(proyecto, campo) {
+  if (!proyecto) return 0;
+  var secs = proyecto['extras_' + campo];
+  if (Array.isArray(secs) && secs.length) return Math.round(calcExtraDeHoja(secs));
+  // Sin hoja: se respeta el valor guardado (proyectos antiguos)
+  return Math.round(Number(((proyecto.au || {}).extras || {})[campo]) || 0);
+}
+
+function getExtras(proyecto) {
+  return {
+    sgSst:         getExtra(proyecto, 'sgSst'),
+    pma:           getExtra(proyecto, 'pma'),
+    pmt:           getExtra(proyecto, 'pmt'),
+    gestionSocial: getExtra(proyecto, 'gestionSocial')
+  };
+}
+
+function getExtrasTotal(proyecto) {
+  var e = getExtras(proyecto);
+  return e.sgSst + e.pma + e.pmt + e.gestionSocial;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CONVERGENCIA A+U · Pólizas, Estampillas y Transacciones Bancarias se calculan
 // sobre el COSTO TOTAL, pero a la vez viven DENTRO de él (subsección 1.8):
 //
@@ -8432,6 +8481,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   function fpc(ws,r,c,formula,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={t:"n",f:formula,v:NUM(val),z:"0.00%",s:st||{fill:FG("F3F4F6"),border:brd,alignment:C_AL}}; }
   // Número que se ve como porcentaje pero vale 5 (no 0.05) — para % de pólizas
   function npct(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:NUM(val),t:"n",z:'0.00"%"',s:st||{fill:FG("FFFFFF"),border:brd,alignment:C_AL}}; }
+  // Numérico con borde y formato libre (plazo, meses, días…)
+  function nz(ws,r,c,val,z,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:NUM(val),t:"n",z:z||"#,##0",s:st||{fill:FG("FFFFFF"),border:brd,alignment:C_AL}}; }
 
   // Hoja de pólizas (Obra / Interventoría / EDESO) con fórmulas vivas que
   // reproducen paso a paso el mismo cálculo redondeado del sistema.
@@ -8460,9 +8511,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       fc(ws,r,2,'ROUND('+VB+'*'+ref(r,1)+'/100,0)',c2.va);
       npct(ws,r,3,Number(p.pctPrima)||0);
       fc(ws,r,4,'ROUND('+ref(r,2)+'*'+ref(r,3)+'/100,0)',c2.valor);
-      n(ws,r,5,plazo,'0');
-      n(ws,r,6,Number(p.mesesExtra)||0,'0');
-      fc(ws,r,7,'ROUND(('+ref(r,5)+'+'+ref(r,6)+')*365/12,0)',c2.dias,ST.mon(),'0');
+      nz(ws,r,5,plazo,'0');
+      nz(ws,r,6,Number(p.mesesExtra)||0,'0');
+      fc(ws,r,7,'ROUND(('+ref(r,5)+'+'+ref(r,6)+')*365/12,0)',c2.dias,
+         {fill:FG("FFFFFF"),border:brd,alignment:C_AL},'0');
       fc(ws,r,8,'IF('+ref(r,7)+'>0,ROUND('+ref(r,4)+'*'+ref(r,7)+'/365,0),0)',c2.siva);
       fc(ws,r,9,'ROUND('+ref(r,8)+'*1.19,0)',c2.civa);
       r++;
@@ -8493,6 +8545,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var refAdminAU = null, refUtilAU = null, refCDAU = null, refObraTot = null;
   var hojasExtras = [];   // SG-SST / PMA / PMT / Gestión Social (se añaden al final)
   var refExtra = {};      // campo -> celda TOTAL de su hoja
+  var refFM = null;      // celda del Factor Multiplicador (hoja propia)
+  var _wsIntv = null;    // para enlazar después la fila de pólizas a su hoja
   var refPolObraTot = null, refEstTot = null;   // totales de Pólizas Obra / Estampillas
   var _totPolObra = 0, _totEstObra = 0;
   var _verif = null;      // datos para el bloque de VERIFICACIÓN del A+U
@@ -8794,8 +8848,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   if(tieneObra) {
     var wsAU = {}, r = 0;
     var au = proyecto.au || {};
-    var extras = au.extras || {};
-    var totalExtras = (extras.sgSst||0)+(extras.pma||0)+(extras.pmt||0)+(extras.gestionSocial||0);
+    var extras = getExtras(proyecto);          // calculado de las hojas, no de la caché
+    var totalExtras = getExtrasTotal(proyecto);
 
     // El sistema usa (cd + totalAU) como base para los ítems tipo "otros" con base=total
     var totalAU_ = calcAUTotal(au, cd);
@@ -9020,24 +9074,106 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var mg = catEst2.find(function(g){ return g.id===munId; });
     var activas = mg ? (mg.items||[]) : [];
 
-    ['Estampilla','%','Valor'].forEach(function(h,c){ s(wsE,r,c,h); }); r++;
+    // Base: el COSTO TOTAL del proyecto. Se pone en una celda visible y todas las
+    // estampillas apuntan a ella.
+    sc(wsE,r,0,'Base gravable',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+    sc(wsE,r,1,'',{fill:FG("1F2937"),border:brd});
+    var filaBaseE = r;
+    fc(wsE,r,2,(refTotAU||String(NUM(res.total))),res.total,
+       {font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
+    r++; r++;
+
+    ['Estampilla','%','Valor'].forEach(function(c2,ci){ sc(wsE,r,ci,c2,ST.hdr()); }); r++;
     var totE = 0, filaE1 = r;
-    activas.forEach(function(e) {
+    activas.forEach(function(e,ii) {
       // El sistema redondea cada estampilla a pesos -> aquí también (ROUND en Excel)
       var val = Math.round(res.total*(Number(e.pctDef)||0)/100);
       totE += val;
-      s(wsE,r,0,safe(e.nombre||e.tipo));
-      npct(wsE,r,1,Number(e.pctDef)||0);
-      fc(wsE,r,2,'ROUND('+(refTotAU||String(NUM(res.total)))+'*'+ref(r,1)+'/100,0)',val);
+      var stR = ii%2===0?ST.rowA():ST.rowB();
+      sc(wsE,r,0,safe(e.nombre||e.tipo),stR);
+      npct(wsE,r,1,Number(e.pctDef)||0,{fill:stR.fill,border:brd,alignment:C_AL});
+      fc(wsE,r,2,'ROUND('+refA(filaBaseE,2)+'*'+ref(r,1)+'/100,0)',val,ST.mon(stR));
       r++;
     });
-    s(wsE,r,0,'TOTAL ESTAMPILLAS');
+    sc(wsE,r,0,'TOTAL ESTAMPILLAS',ST.tot());
+    sc(wsE,r,1,'',ST.tot());
     var _filaTotEst = r;
-    if(activas.length) fc(wsE,r,2,'SUM('+rng(filaE1,r-1,2)+')',totE,ST.tot()); else n(wsE,r,2,0);
-    setRange(wsE,[{wch:40},{wch:10},{wch:16}]);
+    if(activas.length) fc(wsE,r,2,'SUM('+rng(filaE1,r-1,2)+')',totE,ST.tot()); else nc(wsE,r,2,0,ST.tot());
+    wsE['!merges'] = [{s:{r:filaBaseE,c:0}, e:{r:filaBaseE,c:1}}];
+    setRange(wsE,[{wch:42},{wch:12},{wch:18}]);
     var nmEst = nombreUnico('Estampillas');
     refEstTot = link(nmEst, ref(_filaTotEst,2)); _totEstObra = totE;
     XLSX.utils.book_append_sheet(wb, wsE, nmEst);
+  }
+
+  // ── 4b. FACTOR MULTIPLICADOR ─────────────────────────────────────────────
+  // Réplica de la calculadora del sistema: grupos, ítems, subtotales y
+  //   FM = 1,00 (salario base) + suma de todas las cargas / 100
+  // Todo con fórmulas: si cambias un %, el FM y TODA la interventoría se recalculan.
+  if(tieneInt) {
+    var wsFM = {}, r = 0;
+    var fmD = Object.assign({}, FM_DEFAULTS, ((proyecto.presupInterv||{}).fmData)||{});
+    var nmFM = nombreUnico('Factor Multiplicador');
+
+    sc(wsFM,r,0,'⚙️ FACTOR MULTIPLICADOR',{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
+    [1,2].forEach(function(ci){ sc(wsFM,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+    r++;
+    sc(wsFM,r,0,'A.1 Salario Mensual (base fija)',{font:FT("92400E",true),fill:FG("FFFBEB"),border:brd});
+    sc(wsFM,r,1,'',{fill:FG("FFFBEB"),border:brd});
+    var filaBaseFM = r;
+    nz(wsFM,r,2,1,'0.0000',{font:FT("92400E",true),fill:FG("FFFBEB"),border:brd,alignment:R_AL});
+    r++;
+    sc(wsFM,r,0,'Los demás se ingresan como % sobre el salario',{font:FT("92400E",false,10),fill:FG("FFFBEB"),border:brd});
+    [1,2].forEach(function(ci){ sc(wsFM,r,ci,'',{fill:FG("FFFBEB"),border:brd}); });
+    r++; r++;
+
+    ['Concepto','%','Equivalente'].forEach(function(h,ci){ sc(wsFM,r,ci,h,ST.hdr()); }); r++;
+
+    var refsSub = [];
+    FM_GRUPOS.forEach(function(grp) {
+      var filaG = r, subt = 0;
+      var colG = grp.color.replace('#','');
+      var bgG  = grp.bg.replace('#','');
+      sc(wsFM,r,0,grp.titulo,{font:FT(colG,true),fill:FG(bgG),border:brd});
+      sc(wsFM,r,1,'',{fill:FG(bgG),border:brd});
+      sc(wsFM,r,2,'',{fill:FG(bgG),border:brd});
+      r++;
+      grp.items.forEach(function(item, ii) {
+        var v = Number(fmD[item.key]) || 0;
+        subt += v;
+        var stR = ii%2===0?ST.rowA():ST.rowB();
+        sc(wsFM,r,0,'  '+item.label,stR);
+        nz(wsFM,r,1,v,'0.00"%"',{fill:stR.fill,border:brd,alignment:R_AL});
+        fc(wsFM,r,2,ref(r,1)+'/100',v/100,{fill:stR.fill,border:brd,alignment:R_AL},'0.0000');
+        r++;
+      });
+      // Subtotal del grupo: igual que en pantalla → "Subtotal: X% = 0.XXXX"
+      fc(wsFM,filaG,1,'SUM('+rng(filaG+1,r-1,1)+')',subt,
+         {font:FT(colG,true),fill:FG(bgG),border:brd,alignment:R_AL},'0.00"%"');
+      fc(wsFM,filaG,2,ref(filaG,1)+'/100',subt/100,
+         {font:FT(colG,true),fill:FG(bgG),border:brd,alignment:R_AL},'0.0000');
+      refsSub.push(ref(filaG,1));
+    });
+
+    r++;
+    var filaSumFM = r;
+    sc(wsFM,r,0,'TOTAL CARGAS',ST.tot());
+    var sumaFM = Object.keys(FM_DEFAULTS).reduce(function(a,k){ return a+(Number(fmD[k])||0); },0);
+    fc(wsFM,r,1,refsSub.join('+'),sumaFM,{font:FT("FFFFFF",true),fill:FG("991B1B"),border:brd,alignment:R_AL},'0.00"%"');
+    fc(wsFM,r,2,ref(r,1)+'/100',sumaFM/100,{font:FT("FFFFFF",true),fill:FG("991B1B"),border:brd,alignment:R_AL},'0.0000');
+    r++;
+
+    var filaFM = r;
+    sc(wsFM,r,0,'FACTOR MULTIPLICADOR  =  1,00 + cargas',ST.tot2());
+    sc(wsFM,r,1,'',ST.tot2());
+    fc(wsFM,r,2,ref(filaBaseFM,2)+'+'+ref(filaSumFM,2), 1+sumaFM/100,
+       {font:FT("FFFFFF",true,13),fill:FG("991B1B"),border:brd,alignment:R_AL},'0.0000');
+    r++;
+
+    refFM = link(nmFM, refA(filaFM,2));
+    wsFM['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:2}}];
+    setRange(wsFM,[{wch:46},{wch:12},{wch:14}]);
+    XLSX.utils.book_append_sheet(wb, wsFM, nmFM);
   }
 
   // ── 5. PRESUPUESTO INTERVENTORÍA ─────────────────────────────────────────
@@ -9058,14 +9194,17 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     r++; r++;
 
     // Factor Multiplicador desglose
-    sc(wsI,r,0,"Factor Multiplicador (FM)",ST.hdr()); sc(wsI,r,1,String(fm),ST.hdr()); r++;
-    var fmKeys = Object.keys(FM_DEFAULTS||{});
-    fmKeys.forEach(function(k) {
-      var val = Number((pi.fmData||{})[k])||Number((FM_DEFAULTS||{})[k])||0;
-      if(!val) return;
-      sc(wsI,r,0,"  "+k,ST.rowA()); sc(wsI,r,1,val+"%",{fill:FG("FFFFFF"),border:brd,alignment:C_AL}); r++;
-    });
+    // El desglose del FM vive en su propia hoja (igual que la calculadora del sistema).
+    // Aquí solo se muestra el resultado, enlazado a esa hoja.
+    sc(wsI,r,0,"Factor Multiplicador (FM)",ST.lbl());
+    [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.lbl()); });
+    if(refFM) fc(wsI,r,7,refFM,fm,{font:FT("1D4ED8",true,12),fill:FG("EFF6FF"),border:brd,alignment:R_AL},'0.0000');
+    else nz(wsI,r,7,fm,'0.0000',{font:FT("1D4ED8",true,12),fill:FG("EFF6FF"),border:brd,alignment:R_AL});
     r++;
+    sc(wsI,r,0,"Ver el desglose completo en la hoja «Factor Multiplicador»",
+       {font:FT("6B7280",false,10),fill:FG("F9FAFB"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("F9FAFB"),border:brd}); });
+    r++; r++;
 
     // Column headers
     ["Ítem","Und","Cantidad","V. Mes Base","Ded.","Meses","Factor","Total"].forEach(function(h,ci){
@@ -9085,7 +9224,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       var filaCapI = r;
       [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.cap()); });
       sc(wsI,r,0,safe(cap.titulo||cap.nombre||""),ST.cap());
-      if(cap.tipo==="personal") sc(wsI,r,6,"×"+fm,ST.cap());
+      if(cap.tipo==="personal" && refFM) fc(wsI,filaCapI,6,refFM,fm,ST.cap(),'"×"0.0000');
+      else if(cap.tipo==="personal") sc(wsI,r,6,"×"+fm,ST.cap());
       if(itemsI.length) fc(wsI,filaCapI,7,'SUM('+rng(filaCapI+1,filaCapI+itemsI.length,7)+')',capT,ST.tot());
       else nc(wsI,filaCapI,7,0,ST.tot());
       refsCapI.push(ref(filaCapI,7));
@@ -9101,7 +9241,9 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         nc(wsI,r,3,it.valorMesBase||it.valorUnitario||0,ST.mon(stR));
         ndc(wsI,r,4,cap.tipo==="personal"?(Number(it.dedicacion)||1):1,{fill:stR.fill,border:brd,alignment:R_AL});
         n(wsI,r,5,cap.tipo==="personal"?(Number(it.meses)||0):(Number(it.meses)||1),'#,##0.##');
-        ndc(wsI,r,6,cap.tipo==="personal"?fm:1,{fill:stR.fill,border:brd,alignment:C_AL});
+        // Factor → enlazado a la hoja "Factor Multiplicador"
+        if(cap.tipo==="personal" && refFM) fc(wsI,r,6,refFM,fm,{fill:stR.fill,border:brd,alignment:C_AL},'0.0000');
+        else ndc(wsI,r,6,cap.tipo==="personal"?fm:1,{fill:stR.fill,border:brd,alignment:C_AL});
         // Total = Cantidad × V.Base × Ded × Meses × Factor  (C×D×E×F×G)
         fc(wsI,r,7,ref(r,2)+'*'+ref(r,3)+'*'+ref(r,4)+'*'+ref(r,5)+'*'+ref(r,6),itV,
            {font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
@@ -9117,7 +9259,30 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     if(refsCapI.length) fc(wsI,r,7,refsCapI.join('+'),subtotal12,ST.tot()); else nc(wsI,r,7,0,ST.tot());
     r++;
 
-    // Estampillas
+    // ── COSTOS DE PERFECCIONAMIENTO ─────────────────────────────────────
+    // Ojo: esto también es CIRCULAR. Las estampillas, las pólizas y el 4x1000 se
+    // calculan sobre el SUBTOTAL GENERAL / VALOR TOTAL, y a la vez están dentro de
+    // ellos. El sistema lo resuelve iterando (calcResumenInterv). En Excel no se
+    // puede cerrar el bucle, así que la BASE va en una celda visible (ya convergida)
+    // y todo lo demás son fórmulas que apuntan a ella. Abajo hay una celda que avisa
+    // si la base se desactualiza.
+    r++;
+    sc(wsI,r,0,"Base de perfeccionamiento (SUBTOTAL GENERAL convergido)",
+       {font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+    [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("1F2937"),border:brd}); });
+    var filaBaseP = r;
+    nc(wsI,r,7,RR.subtotalGeneral,{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
+    r++;
+
+    // IVA: 19% del subtotal (1+2). Esto NO es circular.
+    var filaIva = r;
+    sc(wsI,r,0,"IVA 19% — Base antes de impuestos y pólizas",ST.rowA());
+    [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.rowA()); });
+    fc(wsI,r,7,'ROUND('+ref(filaSub12,7)+'*0.19,0)',RR.iva,ST.mon()); r++;
+    r++;
+
+    // Estampillas — cada una = % sobre la base
+    var refImp = null;
     if(_piEst.length) {
       [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.lbl()); });
       sc(wsI,r,0,"COSTOS DE PERFECCIONAMIENTO (IMPUESTOS)",ST.lbl()); r++;
@@ -9125,38 +9290,77 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         var val = Math.round(RR.subtotalGeneral*(Number(e.pctDef)||0)/100);
         var stR = ii%2===0?ST.rowA():ST.rowB();
         sc(wsI,r,0,"  Estampilla "+safe(e.nombre||e.tipo||""),stR);
-        sc(wsI,r,6,safe((e.pctDef||0)+"%"),{fill:stR.fill,border:brd,alignment:C_AL});
-        nc(wsI,r,7,val,ST.mon(stR)); r++;
+        [1,2,3,4,5].forEach(function(ci){ sc(wsI,r,ci,"",stR); });
+        npct(wsI,r,6,Number(e.pctDef)||0,{fill:stR.fill,border:brd,alignment:C_AL});
+        fc(wsI,r,7,'ROUND('+refA(filaBaseP,7)+'*'+ref(r,6)+'/100,0)',val,ST.mon(stR));
+        r++;
       });
-      sc(wsI,r,0,"Total Estampillas",ST.rowA());
-      nc(wsI,r,7,RR.impuestos,ST.mon()); r++;
+      var filaTotImp = r;
+      sc(wsI,r,0,"Total Estampillas",ST.tot());
+      [1,2,3,4,5].forEach(function(ci){ sc(wsI,r,ci,"",ST.tot()); });
+      npct(wsI,r,6,(RR.tasaTotal||0)*100,{font:{bold:true},fill:FG("FEE2E2"),border:brd,alignment:C_AL});
+      // El sistema redondea la TASA TOTAL sobre la base (no suma los redondeos uno a uno)
+      fc(wsI,r,7,'ROUND('+refA(filaBaseP,7)+'*'+ref(r,6)+'/100,0)',RR.impuestos,ST.tot());
+      refImp = ref(filaTotImp,7);
+      r++;
     }
+    r++;
 
-    // Pólizas interventoría
+    // Pólizas + 4x1000
+    var refPolI = null, refTB = null;
     var nPols = (_piPolD.polizasActivas||[]).length;
+    var filaPolI = null;
     if(nPols) {
       [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.lbl()); });
       sc(wsI,r,0,"COSTOS DE PERFECCIONAMIENTO (PÓLIZAS Y TRANSACCIONES BANCARIAS)",ST.lbl()); r++;
+      filaPolI = r;
       sc(wsI,r,0,"  Pólizas y garantías ("+nPols+" pólizas · plazo "+_piPlazo+" meses)",ST.rowA());
-      nc(wsI,r,7,RR.primasTotal,ST.mon()); r++;
-      sc(wsI,r,0,"  50% Impuesto 4/1000 (0.2% sobre valor total)",ST.rowB());
-      nc(wsI,r,7,RR.tb,ST.mon()); r++;
+      [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.rowA()); });
+      nc(wsI,r,7,RR.primasTotal,ST.mon());   // se enlaza a su hoja más abajo
+      refPolI = ref(filaPolI,7);
+      r++;
+      // 4x1000 sobre la mitad = 0,2% del VALOR TOTAL (= base + IVA)
+      sc(wsI,r,0,"  50% Impuesto 4/1000 (0,2% sobre valor total)",ST.rowB());
+      [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.rowB()); });
+      fc(wsI,r,7,'ROUND(('+refA(filaBaseP,7)+'+'+ref(filaIva,7)+')*0.002,0)',RR.tb,ST.mon());
+      refTB = ref(r,7);
+      r++;
     }
 
     // Totales finales
     r++;
+    var filaSubG = r;
     [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.cap()); });
-    sc(wsI,r,0,"SUBTOTAL GENERAL",ST.cap()); nc(wsI,r,7,RR.subtotalGeneral,ST.tot()); r++;
-    sc(wsI,r,0,"IVA 19% — Base antes de impuestos y pólizas",ST.rowA());
-    nc(wsI,r,7,RR.iva,ST.mon()); r++;
+    sc(wsI,r,0,"SUBTOTAL GENERAL",ST.cap());
+    var partes = [ref(filaSub12,7)];
+    if(refImp)  partes.push(refImp);
+    if(refPolI) partes.push(refPolI);
+    if(refTB)   partes.push(refTB);
+    fc(wsI,r,7,partes.join('+'),RR.subtotalGeneral,ST.tot()); r++;
+
     [0,1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",ST.tot2()); });
     sc(wsI,r,0,"VALOR TOTAL INTERVENTORÍA",ST.tot2());
     var filaVTI = r;
-    nc(wsI,r,7,RR.valorTotal,ST.tot2()); r++;
+    fc(wsI,r,7,ref(filaSubG,7)+'+'+ref(filaIva,7),RR.valorTotal,ST.tot2()); r++;
 
-    setRange(wsI,[{wch:50},{wch:8},{wch:10},{wch:18},{wch:8},{wch:8},{wch:8},{wch:18}]);
+    // Semáforo: ¿la base sigue al día?
+    r++;
+    sc(wsI,r,0,"VERIFICACIÓN",{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("1F2937"),border:brd}); });
+    r++;
+    sc(wsI,r,0,"La base de perfeccionamiento debe ser igual al SUBTOTAL GENERAL",ST.rowA());
+    [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.rowA()); });
+    wsI[XLSX.utils.encode_cell({r:r,c:7})] = { t:'s',
+      f:'IF(ROUND('+ref(filaSubG,7)+'-'+ref(filaBaseP,7)+',0)=0,"✓ cuadra",'+
+        '"⚠ BASE DESACTUALIZADA: copia "&TEXT('+ref(filaSubG,7)+',"#,##0")&" en la celda de arriba")',
+      v:'✓ cuadra',
+      s:{font:FT('15803D',true),fill:FG('F0FDF4'),border:brd} };
+    r++;
+
+    setRange(wsI,[{wch:52},{wch:8},{wch:10},{wch:18},{wch:8},{wch:8},{wch:10},{wch:18}]);
     var nmI = nombreUnico("Presupuesto Interventoría");
     refIntTot = 'ROUND('+link(nmI, ref(filaVTI,7))+',0)';   // el sistema redondea esta base
+    _wsIntv = { ws: wsI, filaPol: filaPolI, nombre: nmI };
     XLSX.utils.book_append_sheet(wb, wsI, nmI);
   }
 
@@ -9188,8 +9392,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     setRange(wsV, wsV['!cols']);
   }
 
-  var _extrasObraExp = (proyecto.au||{}).extras||{};
-  var _obraTotal = res.total + ((_extrasObraExp.sgSst||0)+(_extrasObraExp.pma||0)+(_extrasObraExp.pmt||0)+(_extrasObraExp.gestionSocial||0));
+  var _extrasObraExp = getExtras(proyecto);
+  var _obraTotal = res.total + getExtrasTotal(proyecto);
   var _intervSub  = calcTotalPresupInterv(proyecto.presupInterv);
   var _intervPolD = ((proyecto.polizasPorComp||{}).interventoria)||{};
   var _intervPlazo= Number(_intervPolD.plazoContractual)||Number((proyecto.presupInterv||{}).plazo)||0;
@@ -9200,10 +9404,17 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   if(tieneInt) {
     var polInt = ((proyecto.polizasPorComp||{}).interventoria)||{};
     var plzI = Number(polInt.plazoContractual)||Number((proyecto.presupInterv||{}).plazo)||Number((proyecto.au||{}).plazo)||0;
-    hojaPolizas(polInt.polizasActivas||[], _intervTotal, plzI, 'Pólizas Interventoría', refIntTot,
-      '← VALOR TOTAL del Presupuesto de Interventoría');
+    // La base va como VALOR: el VALOR TOTAL depende de estas pólizas y viceversa
+    // (bucle). Se enlaza en el sentido útil: el presupuesto apunta a esta hoja.
+    var hInt = hojaPolizas(polInt.polizasActivas||[], _intervTotal, plzI, 'Pólizas Interventoría', null,
+      '← VALOR TOTAL del Presupuesto de Interventoría (calculado por iteración)');
+    // Ahora sí: la fila "Pólizas y garantías" del presupuesto apunta a esta hoja
+    if(_wsIntv && _wsIntv.filaPol !== null && _wsIntv.filaPol !== undefined) {
+      fc(_wsIntv.ws, _wsIntv.filaPol, 7, hInt.refTotal, hInt.total, ST.mon());
+      setRange(_wsIntv.ws, _wsIntv.ws['!cols']);
+    }
   }
-  var totalExtrasObra = (_extrasObraExp.sgSst||0)+(_extrasObraExp.pma||0)+(_extrasObraExp.pmt||0)+(_extrasObraExp.gestionSocial||0);
+  var totalExtrasObra = getExtrasTotal(proyecto);
   var _fichaR = calcFichaFinanciera(proyecto, _obraTotal, _intervTotal, 0, 50);
   var _fichaBase = _fichaR.totalRecursos || _obraTotal; // SUBTOTAL RECURSOS A ADMINISTRAR
 
@@ -9215,7 +9426,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var refPolEdeso = null, _hojaEd = null;
   if(tieneObra || tieneInt) {
     var polEd = ((proyecto.polizasPorComp||{}).edeso)||{};
-    var plzEd = Number(polEd.plazoContractual)||0;
+    // Mismo plazo que usa calcFichaFinanciera: si no hay plazo contractual explícito,
+    // cae a la duración de la ficha. Antes el Excel caía a 0 y las pólizas EDESO
+    // salían distintas a las del sistema.
+    var plzEd = Number(polEd.plazoContractual) || Number((proyecto.fichaFinanciera||{}).duracion) || 0;
     _hojaEd = hojaPolizas(polEd.polizasActivas||[], _fichaBase, plzEd, 'Pólizas EDESO', null,
       '← SUBTOTAL RECURSOS A ADMINISTRAR (Ficha Financiera). Se calcula por iteración, por eso va como valor y no como enlace.');
     refPolEdeso = _hojaEd.refTotal;
@@ -9386,7 +9600,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
   // ── 9. RESUMEN ────────────────────────────────────────────────────────────
   var wsR = {}, r = 0;
-  var extras2 = (proyecto.au||{}).extras||{};
+  var extras2 = getExtras(proyecto);
   var totEx2 = (extras2.sgSst||0)+(extras2.pma||0)+(extras2.pmt||0)+(extras2.gestionSocial||0);
 
   s(wsR,r,0,'RESUMEN GENERAL'); r++; r++;
@@ -10421,6 +10635,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     }
     if(tabActiva==="calculo_au") {
       return React.createElement(TabAU,{
+        proyecto: proyecto,
         au:proyecto.au||{}, setAu:()=>{},
         cd:calcCD(proyecto,apus,recursos),
         total:calcProyecto(proyecto,apus,recursos).total,
@@ -10511,8 +10726,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera") {
       const seccFF = (proyecto.fichaFinanciera||{}).secciones||[];
       const _cdObs = calcCD(proyecto,apus,recursos);
-      const _extrasObs = (proyecto.au||{}).extras||{};
-      const _obraObs = calcProyecto(proyecto,apus,recursos).total + ((_extrasObs.sgSst||0)+(_extrasObs.pma||0)+(_extrasObs.pmt||0)+(_extrasObs.gestionSocial||0));
+      const _obraObs = calcProyecto(proyecto,apus,recursos).total + getExtrasTotal(proyecto);
       const _intervSubObs = calcTotalPresupInterv(proyecto.presupInterv);
       const _intervPolDObs = ((proyecto.polizasPorComp||{})["interventoria"])||{};
       const _intervEstObs = getEstampillasMunicipio(catalogoEstampillas||[], proyecto.municipioId, "interv");
@@ -11910,33 +12124,7 @@ function ModuloManoObra({moData, setMOData, setRecursosProp}) {
 }
 
 
-// ═══════════════════════════════════════════════════════
-// PRESUPUESTO OBRA TAB — wrapper for a single presupuesto
-// ═══════════════════════════════════════════════════════
-function PresupuestoObraBody({ proyecto, setCapitulos, apus, recursos, perfil, session, presupNombre }) {
-  // Uses the existing obra presupuesto render by wrapping setPActivo
-  // to intercept capitulos changes and route them to the right presupuesto
-  var wrapSetPActivo = function(updater) {
-    if (typeof updater === "function") {
-      // Extract capitulos change and route to setCapitulos
-      var fake = Object.assign({}, proyecto);
-      var result = updater(fake);
-      if (result.capitulos !== fake.capitulos) {
-        setCapitulos(result.capitulos);
-      }
-    }
-  };
-  // Re-use the existing editor presupuesto obra render
-  // by calling the external render function with our proxy
-  return React.createElement(PresupuestoObraRender, {
-    proyecto: proyecto,
-    setPActivo: wrapSetPActivo,
-    apus: apus,
-    recursos: recursos,
-    perfil: perfil,
-    session: session
-  });
-}
+
 
 
 function PresupuestoObraTab({ proyecto, presupuesto, setPActivo, setCapitulos, apus, recursos, perfil, session, allPresups }) {
@@ -12875,26 +13063,6 @@ const sincronizarPolizasAU = (proyecto) => {
       });
     }
   }, "\u21BB Recalcular"),
-  React.createElement("button",{className:"btn-s",style:{background:"#065F46",color:"#fff",border:"none"},
-    title:"Busca cada ítem por nombre y lo vincula al APU correcto del catálogo",
-    onClick:()=>{
-      let vinculados=0,noEncontrados=[];
-      setPActivo(p=>{
-        const relinkCaps=(caps)=>(caps||[]).map(cap=>({...cap,items:(cap.items||[]).map(item=>{
-          if(item.apuId&&apus.find(a=>a.id===item.apuId)) return item;
-          const desc=(item.descripcion||"").trim().toLowerCase();
-          let match=apus.find(a=>(a.nombre||"").trim().toLowerCase()===desc);
-          if(!match) match=apus.find(a=>desc.length>20&&(a.nombre||"").toLowerCase().includes(desc.slice(0,40)));
-          if(!match) match=apus.find(a=>desc.length>20&&desc.includes((a.nombre||"").toLowerCase().slice(0,40)));
-          if(match){vinculados++;return{...item,apuId:match.id,unidad:match.unidad||item.unidad};}
-          if(item.descripcion) noEncontrados.push(item.descripcion.slice(0,50));
-          return item;
-        })}));
-        const newPresups=(p.presupuestosObra||[]).map(ps=>({...ps,capitulos:relinkCaps(ps.capitulos)}));
-        return{...p,presupuestosObra:newPresups,capitulos:relinkCaps(p.capitulos)};
-      });
-      setTimeout(()=>alert(`✓ ${vinculados} ítems vinculados.${noEncontrados.length?"\n\nNo encontrados:\n"+noEncontrados.slice(0,5).join("\n"):""}`),300);
-    }},"🔗 Re-vincular APUs"),
   /*#__PURE__*/React.createElement("button",{className:"btn-p",onClick:guardar},"Guardar"))), /*#__PURE__*/React.createElement("div", {
     className: "tabs no-print"
   }, (() => {
@@ -12940,7 +13108,7 @@ const sincronizarPolizasAU = (proyecto) => {
     }, t.l));
   })()), (tabEditor === "apus_usados") && React.createElement(DetalleAPUsUsados, { apus: apus, recursos: recursos, proyecto: pActivo, perfil: perfil, session: session, esLectura: false, setPActivo: setPActivo }),
   (tabEditor === "fichaFinanciera") && (() => {
-    const _extrasObra = (pActivo.au||{}).extras||{}; const _obraTotal = calcProyecto(pActivo, apus, recursos).total + ((_extrasObra.sgSst||0)+(_extrasObra.pma||0)+(_extrasObra.pmt||0)+(_extrasObra.gestionSocial||0));
+    const _obraTotal = calcProyecto(pActivo, apus, recursos).total + getExtrasTotal(pActivo);
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
     const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
     const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
@@ -12953,8 +13121,7 @@ const sincronizarPolizasAU = (proyecto) => {
       const _consultTotal= _consultSub > 0 ? calcResumenInterv(_consultSub, _consultEst, _consultPolD.polizasActivas||[], _consultPlazo).valorTotal : 0;
       return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo, readOnly: false, obraTotal: _obraTotal, intervTotal: _intervTotal, consultTotal: _consultTotal, catalogoPolizas: catalogoPolizas || [], plantillasFicha: plantillasFicha||[], cd: calcCD(pActivo,apus,recursos) });
   })(), (tabEditor === "polizas_edeso") && (() => {
-    const _extrasEdeso = (pActivo.au||{}).extras||{};
-    const _obraTotal  = calcProyecto(pActivo, apus, recursos).total + ((_extrasEdeso.sgSst||0)+(_extrasEdeso.pma||0)+(_extrasEdeso.pmt||0)+(_extrasEdeso.gestionSocial||0));
+    const _obraTotal = calcProyecto(pActivo, apus, recursos).total + getExtrasTotal(pActivo);
     const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
     const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
     const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
@@ -13356,6 +13523,8 @@ const sincronizarPolizasAU = (proyecto) => {
   tabEditor === "pmt" && React.createElement(TabExtrasModulo, { titulo:"PMT", campo:"pmt", plantilla:PLANTILLA_PMT, proyecto:pActivo, setPActivo, setAu:nuevoAu=>setPActivo(p=>({...p,au:typeof nuevoAu==="function"?nuevoAu(p.au||auVacio()):nuevoAu})), au:pActivo.au||auVacio(), cd:calcCD(pActivo,apus,recursos), readOnly:esLectura }),
   tabEditor === "gsocial" && React.createElement(TabExtrasModulo, { titulo:"Gestión Social", campo:"gestionSocial", plantilla:PLANTILLA_GS, proyecto:pActivo, setPActivo, setAu:nuevoAu=>setPActivo(p=>({...p,au:typeof nuevoAu==="function"?nuevoAu(p.au||auVacio()):nuevoAu})), au:pActivo.au||auVacio(), cd:calcCD(pActivo,apus,recursos), readOnly:esLectura }),
   tabEditor === "au" && pActivo && /*#__PURE__*/React.createElement(TabAU, {
+    proyecto: pActivo,
+    setPActivo: setPActivo,
     au: pActivo.au || auVacio(),
     setAu: nuevoAu => {
       setPActivo(p => ({
@@ -13542,7 +13711,7 @@ const sincronizarPolizasAU = (proyecto) => {
       }),
       (()=>{
         const res=calcProyecto(pActivo,apus,recursos);
-        const extras=(pActivo.au||{}).extras||{};
+        const extras=getExtras(pActivo);
         const cdTotal=res.cd;
         const auAdmin=res.auGastos||0;
         const uTotal=Math.round(cdTotal*(res.pctU||0)/100);
@@ -13714,7 +13883,7 @@ const sincronizarPolizasAU = (proyecto) => {
     })(),
     (tabDetalle === "resumen_obra") && renderResumenObra(),
     (tabDetalle === "fichaFinanciera") && (() => {
-      const _extrasObra = (pActivo.au||{}).extras||{}; const _obraTotal = calcProyecto(pActivo, apus, recursos).total + ((_extrasObra.sgSst||0)+(_extrasObra.pma||0)+(_extrasObra.pmt||0)+(_extrasObra.gestionSocial||0));
+      const _obraTotal = calcProyecto(pActivo, apus, recursos).total + getExtrasTotal(pActivo);
       const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
       const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
       const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
@@ -13728,8 +13897,7 @@ const sincronizarPolizasAU = (proyecto) => {
       return React.createElement(TabFichaFinanciera, { proyecto: pActivo, setPActivo: () => {}, readOnly: true, obraTotal: _obraTotal, intervTotal: _intervTotal, consultTotal: _cTotal, catalogoPolizas: catalogoPolizas || [] });
     })(),
     (tabDetalle === "polizas_edeso") && (() => {
-      const _extrasEdeso = (pActivo.au||{}).extras||{};
-      const _obraTotal  = calcProyecto(pActivo, apus, recursos).total + ((_extrasEdeso.sgSst||0)+(_extrasEdeso.pma||0)+(_extrasEdeso.pmt||0)+(_extrasEdeso.gestionSocial||0));
+      const _obraTotal = calcProyecto(pActivo, apus, recursos).total + getExtrasTotal(pActivo);
       const _intervSub  = calcTotalPresupInterv(pActivo.presupInterv);
       const _intervPolD = ((pActivo.polizasPorComp||{})["interventoria"])||{};
       const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
@@ -14118,6 +14286,7 @@ const sincronizarPolizasAU = (proyecto) => {
     tabDetalle === "pmt" && React.createElement(TabExtrasModulo, { titulo:"PMT", campo:"pmt", plantilla:PLANTILLA_PMT, proyecto:pActivo, setPActivo:()=>{}, setAu:()=>{}, au:pActivo.au||auVacio(), cd:calcCD(pActivo,apus,recursos), readOnly:true }),
     tabDetalle === "gsocial" && React.createElement(TabExtrasModulo, { titulo:"Gesti\xF3n Social", campo:"gestionSocial", plantilla:PLANTILLA_GS, proyecto:pActivo, setPActivo:()=>{}, setAu:()=>{}, au:pActivo.au||auVacio(), cd:calcCD(pActivo,apus,recursos), readOnly:true }),
     tabDetalle === "calculo_au" && React.createElement(TabAU, {
+      proyecto: pActivo,
       au: pActivo.au || auVacio(),
       setAu: () => {},
       cd: res.cd,
@@ -15903,10 +16072,15 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
   var _G = window.__PREX || {};
   pActivo = convergerAU(pActivo, apus, recursos, _G.catEst || []);
 
+  // El cuerpo de esta función usa el nombre "proyecto" en varios sitios, pero el
+  // parámetro se llama "pActivo". Faltaba este alias: sin él la impresión lanzaba
+  // ReferenceError y el botón simplemente no hacía nada.
+  var proyecto = pActivo;
+
   var res = calcProyecto(pActivo, apus, recursos);
   var au = pActivo.au || {};
-  var extras = au.extras || {};
-  var totEx = (extras.sgSst||0)+(extras.pma||0)+(extras.pmt||0)+(extras.gestionSocial||0);
+  var extras = getExtras(pActivo);          // calculado de sus hojas, no de la caché
+  var totEx = getExtrasTotal(pActivo);
   var comps = pActivo.componentes || [];
   var hasObra   = comps.includes('obra') || comps.length===0;
   var hasInt    = comps.includes('interventoria');
