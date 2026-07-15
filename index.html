@@ -15842,7 +15842,24 @@ function App() {
           if(key==="recursos")            setRecursosRaw(value||[]);
           if(key==="apus")                setApusRaw(value||[]);
           if(key==="plantillas")          setPlantillasRaw(value||PLANTILLAS_AU_INIT);
-          if(key==="proyectos")           setProyectosRaw(migrarProyectos(value||[]));
+          if(key==="proyectos") {
+            // value viene PODADO (sin secciones pesadas). Fusionar solo metadatos
+            // para no borrar el presupuesto/A+U que este usuario tiene en memoria.
+            const entrante = migrarProyectos(value||[]);
+            setProyectosRaw(prev => {
+              const prevById = {};
+              (prev||[]).forEach(p=>{ prevById[String(p.id)] = p; });
+              const merged = entrante.map(pR => {
+                const pL = prevById[String(pR.id)];
+                if(!pL) return pR;
+                return { ...pL, ...pR,
+                  capitulos: pL.capitulos, au: pL.au, polizasPorComp: pL.polizasPorComp,
+                  estampillas: pL.estampillas, presupInterv: pL.presupInterv, presupConsult: pL.presupConsult };
+              });
+              (prev||[]).forEach(pL=>{ if(!merged.find(m=>String(m.id)===String(pL.id))) merged.push(pL); });
+              return merged;
+            });
+          }
           if(key==="catalogoPolizas")     setCatalogoPolizasRaw(value||[]);
           if(key==="catalogoEstampillas") setCatalogoEstampillasRaw(value||[]);
           if(key==="plantillasInt")       setPlantillasIntRaw(value||[]);
@@ -16009,10 +16026,22 @@ function App() {
     const d=typeof v==="function"?v(plantillasFicha):v;
     setPlantillasFichaRaw(d); guardar("plantillas_ficha",d,"Plantillas Ficha","Actualizó Plantillas Ficha Financiera");
   };
+  // Campos que se guardan POR SECCIÓN (clave psec_ID_xxx). NO deben viajar dentro
+  // de la clave monolítica "proyectos": si lo hicieran, un guardado de la lista
+  // pisaría el presupuesto/A+U/pólizas que el otro usuario acaba de guardar aparte.
+  const SEC_HEAVY = ["capitulos","au","polizasPorComp","estampillas","presupInterv","presupConsult"];
+  const podarSecciones = (arr) => (arr||[]).map(p => {
+    const clon = {...p};
+    SEC_HEAVY.forEach(f => { delete clon[f]; });
+    return clon;
+  });
+
   const setProyectos = v=>{
     const d=typeof v==="function"?v(proyectos):v;
     const a=inferirAccion("Proyectos",proyectos,d);
-    setProyectosRaw(d); guardar("proyectos",d,"Proyectos",a);
+    setProyectosRaw(d);
+    // La lista global guarda solo metadatos; el contenido pesado va por su sección.
+    guardar("proyectos", podarSecciones(d), "Proyectos", a);
   };
   const setCatalogoPolizas = v=>{
     const d=typeof v==="function"?v(catalogoPolizas):v;
