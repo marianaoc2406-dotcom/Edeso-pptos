@@ -12414,12 +12414,13 @@ function ModuloProyectos({
     clearTimeout(window.__editingTimer__);
     window.__editingTimer__ = setTimeout(() => {
       _editingRef.current = false;
-      // Clean up sections older than 3s
+      // Conservar la marca 12s: uno se detiene a pensar o mirar un número sin dejar
+      // de estar "editando" esa sección. 3s era muy poco y dejaba pasar el pisón.
       var now = Date.now();
       Object.keys(_editingSecs.current).forEach(function(k) {
-        if(now - _editingSecs.current[k] > 3000) delete _editingSecs.current[k];
+        if(now - _editingSecs.current[k] > 12000) delete _editingSecs.current[k];
       });
-    }, 3000);
+    }, 12000);
   }, []);
   React.useEffect(() => {
     window.__markEditing = _markEditing;
@@ -12617,27 +12618,34 @@ const mergeItemExterno = React.useCallback((event, row) => {
       if(!pActivo||String(pActivo.id)!==String(proyId)) return;
       var secEditing = window.__editingSecs_current||{};
       var now = Date.now();
+      // Si el usuario está editando ACTIVAMENTE esta sección, no aplicar encima la
+      // versión del otro (la recibirá al soltar). Antes "au" y "caps" se aplicaban
+      // siempre y pisaban lo que la persona estaba escribiendo.
+      var editandoEsta = secEditing[sec] && (now - secEditing[sec] < 12000);
       setPActivo(p=>{
         if(!p||String(p.id)!==String(proyId)) return p;
         if(sec==="meta") return {...p,...(value||{})};
         // Caps: fusionar en lugar de reemplazar
         if(sec==="caps") {
+          if(editandoEsta) return p;
           return {...p, capitulos: mergeCapsArrays(p.capitulos, value)};
         }
         // AU: merge extras preservando los que el usuario esté editando
         if(sec==="au") {
+          if(editandoEsta) return p;
           var extrasLocal=(p.au||{}).extras||{};
           var extrasRemoto=(value||{}).extras||{};
           var mergedExtras={};
           Object.keys({...extrasLocal,...extrasRemoto}).forEach(function(k) {
             var extSec="extras_"+k;
-            var editingExt=secEditing[extSec]&&(now-secEditing[extSec]<3000);
+            var editingExt=secEditing[extSec]&&(now-secEditing[extSec]<12000);
             mergedExtras[k]=editingExt?extrasLocal[k]:(extrasRemoto[k]!=null?extrasRemoto[k]:extrasLocal[k]);
           });
           return {...p,au:{...(value||{}),extras:mergedExtras}};
         }
         // Interventoría / Consultoría: fusionar capítulos también
         if(sec==="interv"||sec==="consult") {
+          if(editandoEsta) return p;
           const field=SEC_FIELD[sec];
           const local=p[field]||{};
           const remoto=value||{};
@@ -12648,7 +12656,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
         }
         var field=SEC_FIELD[sec];
         // Para otras secciones: solo aplicar si el usuario no está editando activamente
-        var isEditing = secEditing[sec]&&(now-secEditing[sec]<5000);
+        var isEditing = secEditing[sec]&&(now-secEditing[sec]<12000);
         if(isEditing) return p;
         return field?{...p,[field]:value!=null?value:p[field]}:p;
       });
@@ -12774,6 +12782,7 @@ const sincronizarPolizasAU = (proyecto) => {
   };
 
   const addCap = () => {
+    _markEditing("caps");
     const n = (pActivo.capitulos||[]).length + 1;
     const newCap = { id: Date.now(), numero: String(n), nombre: "NUEVO CAPÍTULO", tipo: "obra", orden: n, items: [] };
     setPActivo(p => {
@@ -12791,16 +12800,19 @@ const sincronizarPolizasAU = (proyecto) => {
     dbSaveCap(newCap, pActivo.id);
   };
   const delCap = id => {
+    _markEditing("caps");
     setPActivo(p => mutateActiveCaps(p, caps => caps.filter(c => c.id !== id)));
     dbDelCap(id, pActivo.id);
   };
   const updCap = (id, campo, val) => {
+    _markEditing("caps");
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === id ? {...c,[campo]:val} : c)));
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===id);
     if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id);
   };
 
   const addItem = capId => {
+    _markEditing("caps");
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = { id: Date.now(), apuId: null, descripcion: "", unidad: "", cantidad: 1, orden: (cap?.items?.length||0) };
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === capId ? {...c, items: [...(c.items||[]), item]} : c)));
@@ -12809,10 +12821,12 @@ const sincronizarPolizasAU = (proyecto) => {
     if(cap) dbSaveItem(item, capId, cap.numero, pActivo.id);
   };
   const delIt = (capId, itemId) => {
+    _markEditing("caps");
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c)));
     dbDelItem(itemId, pActivo.id);
   };
   const moverItem = (fromCapId, itemId, toCapId, beforeItemId) => {
+    _markEditing("caps");
     if (fromCapId === toCapId && beforeItemId == null) return;
     setPActivo(p => mutateActiveCaps(p, caps => {
       const item = (caps.find(c=>c.id===fromCapId)?.items||[]).find(i=>i.id===itemId);
@@ -12839,6 +12853,7 @@ const sincronizarPolizasAU = (proyecto) => {
     if(cap&&item) { clearTimeout(window.__updItTimer__); window.__updItTimer__=setTimeout(()=>dbSaveItem({...item,[campo]:val},capId,cap.numero,pActivo.id),500); }
   };
   const selApu = apu => {
+    _markEditing("caps");
     const { capId, itemId } = showApuModal;
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c)));
     setShowApuModal(null);
@@ -12848,6 +12863,7 @@ const sincronizarPolizasAU = (proyecto) => {
   };
   const selMultipleApus = () => {
     if (!selectedApuIds.length || !showApuModal) return;
+    _markEditing("caps");
     const { capId, itemId } = showApuModal;
     const cap = getActiveCapitulos(pActivo).find(c => c.id === capId);
     if (!cap) return;
@@ -12867,6 +12883,7 @@ const sincronizarPolizasAU = (proyecto) => {
   };
   // ── Vincular un ítem a un APU (mismo patrón que selApu) ──
   const _linkItemToApu = (capId, itemId, apu) => {
+    _markEditing("caps");
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).map(i=>i.id===itemId?{...i,apuId:apu.id,descripcion:apu.nombre,unidad:apu.unidad}:i)} : c)));
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===capId);
     const item = cap?.items?.find(i=>i.id===itemId);
@@ -15721,6 +15738,47 @@ function App() {
       if(sec==="meta") proyBase[idx]={...proyBase[idx],...(row.value||{})};
       else { const f=SEC_FIELD[sec]; if(f) proyBase[idx]={...proyBase[idx],[f]:(row.value!=null?row.value:proyBase[idx][f])}; }
     });
+    // Tercer paso: reconstruir los CAPÍTULOS desde las tablas por fila
+    // (capitulos_presupuesto / items_presupuesto). Son la fuente autoritativa del
+    // presupuesto: como ya no se guarda el bloque "caps", los capítulos creados por
+    // cualquiera de los dos usuarios viven aquí. Se combinan con el bloque viejo por
+    // si un proyecto todavía no tiene filas (proyectos antiguos).
+    try {
+      const [{data:capsRows}, {data:itemsRows}] = await Promise.all([
+        _sb.from("capitulos_presupuesto").select("*"),
+        _sb.from("items_presupuesto").select("*")
+      ]);
+      if(capsRows && capsRows.length) {
+        // Agrupar por proyecto
+        const porProy = {};
+        capsRows.forEach(c=>{
+          (porProy[String(c.proyecto_id)] ||= {caps:{}, orden:[]});
+          porProy[String(c.proyecto_id)].caps[String(c.id)] = {
+            id:c.id, numero:c.numero, nombre:c.nombre, tipo:c.tipo||"obra",
+            orden:c.orden||0, items:[]
+          };
+        });
+        (itemsRows||[]).forEach(it=>{
+          const g = porProy[String(it.proyecto_id)];
+          if(!g) return;
+          const cap = g.caps[String(it.capitulo_id)];
+          if(!cap) return;
+          cap.items.push({
+            id:it.id, apuId:it.apu_id, descripcion:it.descripcion||"",
+            unidad:it.unidad||"", cantidad:Number(it.cantidad)||0, orden:it.orden_item||0
+          });
+        });
+        Object.keys(porProy).forEach(pid=>{
+          const idx = proyBase.findIndex(p=>String(p.id)===String(pid));
+          if(idx===-1) return;
+          const caps = Object.values(porProy[pid].caps)
+            .sort((a,b)=>(a.orden||0)-(b.orden||0))
+            .map(c=>({...c, items:c.items.sort((a,b)=>(a.orden||0)-(b.orden||0))}));
+          proyBase[idx] = {...proyBase[idx], capitulos: caps};
+        });
+      }
+    } catch(e){ console.error("Carga de capítulos por fila falló, se usa el bloque:", e); }
+
     setProyectosRaw(proyBase);
     setDataReady(true);
   };
@@ -15733,6 +15791,11 @@ function App() {
   // ── Real-time subscription ────────────────────────────
   // Sección-level save: guarda solo la parte del proyecto que cambió
   const guardarSeccion = (proyectoId, seccion, data) => {
+    // "caps" se persiste ítem por ítem (tablas capitulos_presupuesto / items_presupuesto)
+    // y se recibe con mergeCapExterno/mergeItemExterno. Guardarla TAMBIÉN como bloque
+    // arrastraba la copia vieja de capítulos y pisaba el trabajo del otro usuario.
+    // Por eso el bloque ya no se escribe para esta sección.
+    if (seccion === "caps") return;
     const key = `psec_${proyectoId}_${seccion}`;
     setSaveStatus("Guardando...");
     _sb.from("app_data").upsert({
