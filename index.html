@@ -1060,7 +1060,7 @@ const CSS = `
 // ═══════════════════════════════════════════════════════
 function Sidebar({
   modulo, setModulo, counts,
-  onExportar, onImportar, onLimpiarRecursos, onLimpiarApus,
+  onExportar, onImportar,
   perfil, onLogout, sidebarOpen, setSidebarOpen, usuariosActivos
 }) {
   const esAdmin = perfil?.rol === 'admin';
@@ -1144,15 +1144,11 @@ function Sidebar({
       }, "⬆️ Importar backup",
         React.createElement("input", { type:"file", accept:".json", style:{display:"none"}, onChange:onImportar })
       ),
-      !esVisorOrJefe&&React.createElement("div", { className:"sb-section" }, "Limpiar"),
-      !esVisorOrJefe&&React.createElement("button", {
-        onClick:onLimpiarRecursos,
-        style:{width:"100%",marginBottom:4,padding:"6px 8px",background:"#2a1a1a",border:"1px solid #4a2d2d",borderRadius:5,color:"#c87e7e",cursor:"pointer",fontSize:12,textAlign:"left"}
-      }, "🗑️ Borrar todos los recursos"),
-      !esVisorOrJefe&&React.createElement("button", {
-        onClick:onLimpiarApus,
-        style:{width:"100%",marginBottom:12,padding:"6px 8px",background:"#2a1a1a",border:"1px solid #4a2d2d",borderRadius:5,color:"#c87e7e",cursor:"pointer",fontSize:12,textAlign:"left"}
-      }, "🗑️ Borrar todos los APUs"),
+      // "Borrar todos los recursos" y "Borrar todos los APUs" ELIMINADOS.
+      // Borraban el catálogo entero sin comprobar si los proyectos los estaban usando:
+      //   · sin APUs  -> cada ítem de cada presupuesto queda huérfano y vale $0 en silencio
+      //   · sin recursos -> todos los APUs valen $0 -> el C.D. de TODOS los proyectos se va a cero
+      // Un clic y un "Aceptar" bastaban. Para limpiar, se usa Exportar/Importar backup.
       React.createElement("div", { className:"sb-brand" },
         React.createElement("strong", null, "PREX"), " · Costos y Presupuestos",
         React.createElement("br", null),
@@ -1201,6 +1197,56 @@ function MetricCard({
     className: "metric-sub"
   }, sub));
 }
+// ═══════════════════════════════════════════════════════════════════════════
+// ¿QUIÉN USA ESTO?  Antes de borrar un APU o un recurso hay que saber a quién se
+// lleva por delante. Borrar un APU deja los ítems que lo usan apuntando al vacío,
+// y el sistema los convierte en $0 SIN AVISAR. Borrar un recurso deja el APU
+// entero en $0. Estas funciones cuentan el daño real, con nombres y cantidades.
+// ═══════════════════════════════════════════════════════════════════════════
+function _presupsDe(proy) {
+  return (proy.presupuestosObra && proy.presupuestosObra.length)
+    ? proy.presupuestosObra
+    : [{ id:'p0', nombre:'Presupuesto Obra', capitulos: proy.capitulos||[] }];
+}
+
+// Proyectos e ítems que quedarían en $0 si se borran estos APUs
+function usoDeApus(apuIds, proyectos) {
+  var ids = new Set(apuIds);
+  var out = { nItems: 0, proyectos: [] };
+  (proyectos || []).forEach(function(proy) {
+    var n = 0;
+    _presupsDe(proy).forEach(function(ps) {
+      (ps.capitulos || []).forEach(function(cap) {
+        (cap.items || []).forEach(function(it) { if (ids.has(it.apuId)) n++; });
+      });
+    });
+    if (n > 0) { out.nItems += n; out.proyectos.push({ nombre: proy.nombre || '(sin nombre)', nItems: n }); }
+  });
+  return out;
+}
+
+// APUs (y por arrastre, proyectos) afectados si se borran estos recursos
+function usoDeRecursos(recIds, apus, proyectos) {
+  var ids = new Set(recIds);
+  var apusAfectados = (apus || []).filter(function(a) {
+    return (a.lineas || []).some(function(l) { return ids.has(l.recursoId); });
+  });
+  var uso = usoDeApus(apusAfectados.map(function(a){ return a.id; }), proyectos);
+  return { apus: apusAfectados, nApus: apusAfectados.length, nItems: uso.nItems, proyectos: uso.proyectos };
+}
+
+// Texto de advertencia listo para el modal
+function textoUso(uso) {
+  if (!uso.proyectos.length) return null;
+  var lista = uso.proyectos.slice(0, 5).map(function(p) {
+    return '• ' + p.nombre + ' (' + p.nItems + (p.nItems === 1 ? ' ítem)' : ' ítems)');
+  }).join('\n');
+  if (uso.proyectos.length > 5) lista += '\n• … y ' + (uso.proyectos.length - 5) + ' proyecto(s) más';
+  return '⚠ EN USO: ' + uso.nItems + (uso.nItems === 1 ? ' ítem' : ' ítems') +
+         ' en ' + uso.proyectos.length + (uso.proyectos.length === 1 ? ' proyecto' : ' proyectos') +
+         ' quedarán en $0:\n\n' + lista;
+}
+
 function ConfirmModal({
   item,
   msg,
@@ -1753,7 +1799,16 @@ function ModuloRecursos({
     onClick: guardar
   }, editId ? "Guardar" : "Crear recurso")))), delItem && /*#__PURE__*/React.createElement(ConfirmModal, {
     item: delItem.nombre,
-    msg: "Si est\xE1 en un APU, los c\xE1lculos se ver\xE1n afectados.",
+    msg: (() => {
+      const G = window.__PREX || {};
+      const u = usoDeRecursos([delItem.id], G.apus || [], G.proyectos || []);
+      if (!u.nApus) return "No está en ningún APU. Se puede borrar con tranquilidad.";
+      let t = "⚠ EN USO en " + u.nApus + (u.nApus === 1 ? " APU" : " APUs") +
+              ": esos APUs perderán este recurso de su cálculo.";
+      const tu = textoUso(u);
+      if (tu) t += "\n\n" + tu.replace("⚠ EN USO: ", "Impacto en proyectos: ");
+      return t;
+    })(),
     onConfirm: () => {
       setRecursos(p => p.filter(r => r.id !== delItem.id));
       setDelItem(null);
@@ -1811,7 +1866,13 @@ function ModuloAPUs({
   const deselectAll = () => setSelectedApus(new Set());
   const deleteSelected = () => {
     if (!selectedApus.size) return;
-    if (!confirm(`¿Eliminar ${selectedApus.size} APU(s) seleccionados?`)) return;
+    // Antes solo preguntaba "¿Eliminar N APUs?" sin decir que dejaba ítems en $0.
+    const uso = usoDeApus([...selectedApus], (window.__PREX||{}).proyectos);
+    const aviso = textoUso(uso);
+    const msg = `¿Eliminar ${selectedApus.size} APU(s) seleccionados?\n\n` +
+                (aviso ? aviso + '\n\nEsta acción no se puede deshacer.'
+                       : 'Ninguno está en uso en proyectos.');
+    if (!confirm(msg)) return;
     setApus(prev => prev.filter(a => !selectedApus.has(a.id)));
     setSelectedApus(new Set());
   };
@@ -4099,7 +4160,8 @@ function ModuloAPUs({
     }
   }, apus.length, " APUs en base global")), delItem && /*#__PURE__*/React.createElement(ConfirmModal, {
     item: delItem.nombre,
-    msg: "Los \xEDtems de proyectos que lo usen perder\xE1n su valor.",
+    msg: textoUso(usoDeApus([delItem.id], (window.__PREX||{}).proyectos))
+         || "No está en uso en ningún proyecto. Se puede borrar con tranquilidad.",
     onConfirm: () => {
       setApus(p => p.filter(a => a.id !== delItem.id));
       setDelItem(null);
@@ -12439,19 +12501,41 @@ const mergeItemExterno = React.useCallback((event, row) => {
   const secTimers      = React.useRef({});
   const lastSavedRef   = React.useRef({}); // último valor guardado por sección
 
-  // Guardado de seguridad cada 10 segundos — independiente de detección de cambios
+  // Guardado de seguridad cada 10 segundos — SOLO de la sección que corresponde a
+  // la pestaña abierta. Antes guardaba las 6 secciones, así que si Ana editaba el
+  // presupuesto, su autosave también reescribía el A+U con la copia VIEJA que ella
+  // tenía en memoria, pisando lo que Beto acababa de guardar en el A+U. Ahora cada
+  // quien solo persiste lo que realmente está editando.
+  const tabEditorRef = React.useRef(tabEditor);
+  React.useEffect(()=>{ tabEditorRef.current = tabEditor; }, [tabEditor]);
+
+  const seccionDeTab = (tab) => {
+    if(!tab) return null;
+    if(tab.startsWith("presupuesto_obra")) return "caps";
+    if(tab === "presupuesto_interventoria") return "interv";
+    if(tab === "presupuesto_consultoria")   return "consult";
+    if(tab === "au" || tab === "calculo_au") return "au";
+    if(tab.startsWith("polizas"))            return "pol";
+    if(tab === "estampillas")                return "est";
+    return null;
+  };
+
   useEffect(()=>{
     if(!pActivo||vista!=="editor"||!guardarSeccion) return;
     const secciones = {caps:"capitulos",au:"au",pol:"polizasPorComp",est:"estampillas",interv:"presupInterv",consult:"presupConsult"};
     const iv = setInterval(()=>{
       if(!pActivo||vista!=="editor") return;
-      Object.entries(secciones).forEach(([sec,field])=>{
-        const actual = JSON.stringify(pActivo[field]);
-        if(actual !== lastSavedRef.current[sec]) {
-          lastSavedRef.current[sec] = actual;
-          guardarSeccion(pActivo.id, sec, pActivo[field]);
-        }
+      const secActiva = seccionDeTab(tabEditorRef.current);
+      if(!secActiva) return;
+      const field = secciones[secActiva];
+      Object.entries(secciones).forEach(([sec,f])=>{
+        if(sec!==secActiva) lastSavedRef.current[sec] = JSON.stringify(pActivo[f]);
       });
+      const actual = JSON.stringify(pActivo[field]);
+      if(actual !== lastSavedRef.current[secActiva]) {
+        lastSavedRef.current[secActiva] = actual;
+        guardarSeccion(pActivo.id, secActiva, pActivo[field]);
+      }
     }, 10000);
     return ()=>clearInterval(iv);
   },[pActivo?.id, vista]);
@@ -15601,7 +15685,8 @@ function App() {
 
   // Datos base accesibles desde cualquier pestaña, para poder converger el A+U
   // (pólizas / estampillas / transacciones) sin tener que pasarlos por props.
-  window.__PREX = { apus: apus, recursos: recursos, catEst: catalogoEstampillas || [] };
+  window.__PREX = { apus: apus, recursos: recursos, catEst: catalogoEstampillas || [],
+                    proyectos: proyectos || [] };
 
   const migrarProyectos = ps=>(ps||[]).map(p=>({...p,au:migrarAU(p.au),capitulos:p.capitulos||[]}));
 
@@ -15981,14 +16066,6 @@ function App() {
     };
     reader.readAsText(file);
   };
-  const onLimpiarRecursos=()=>{
-    if(!window.confirm(`¿Eliminar TODOS los recursos (${recursos.length})?\n\nEsta acción no se puede deshacer.`))return;
-    setRecursos([]);
-  };
-  const onLimpiarApus=()=>{
-    if(!window.confirm(`¿Eliminar TODOS los APUs (${apus.length})?\n\nEsta acción no se puede deshacer.`))return;
-    setApus([]);
-  };
 
   // ── Gates ─────────────────────────────────────────────
   if(!_sb) return React.createElement("div",{style:{padding:40,fontFamily:"var(--sans)",
@@ -16013,7 +16090,7 @@ function App() {
     },"☰"),
     React.createElement(Sidebar,{
       modulo,setModulo:m=>{setModulo(m);setSubTitle(null);},
-      counts,onExportar,onImportar,onLimpiarRecursos,onLimpiarApus,
+      counts,onExportar,onImportar,
       perfil,onLogout,sidebarOpen,setSidebarOpen,usuariosActivos
     }),
     React.createElement("div",{className:"main-area",style:{marginLeft:sidebarOpen?232:0,transition:"margin-left .25s"}},
