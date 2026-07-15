@@ -5212,14 +5212,12 @@ function TabAU({
                 });
                 return Object.assign({}, prev, { plazo: v, secciones: secciones });
               });
-              if (setPActivo) setPActivo(function(p) {
-                var polPorComp = Object.assign({}, p.polizasPorComp || {});
-                ["obra","interventoria","consultoria"].forEach(function(comp) {
-                  var pd = polPorComp[comp] || {};
-                  polPorComp[comp] = Object.assign({}, pd, { plazoContractual: v });
-                });
-                return Object.assign({}, p, { polizasPorComp: polPorComp });
-              });
+              // NOTA: antes esto también escribía plazoContractual en polizasPorComp
+              // (obra/interv/consult). Eso hacía que cambiar el plazo desde el A+U
+              // reescribiera la sección de PÓLIZAS y pisara lo que el otro usuario
+              // estuviera guardando ahí. Ya no hace falta: las pólizas toman el plazo
+              // del A+U por defecto (auPlazoSug) cuando no tienen uno propio. El plazo
+              // del proyecto vive SOLO en el A+U.
             }
           }) : React.createElement("span", { style:{fontFamily:"var(--mono)",fontWeight:800,fontSize:15,color:"var(--ink)"} }, au.plazo || 0),
           React.createElement("span", { style:{fontSize:12,color:"var(--ink4)"} }, "meses"),
@@ -6419,19 +6417,9 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
                     });
                     return Object.assign({}, prev, { plazo:v, capitulos:caps });
                   });
-                  // 2. Propagate to pólizas interventoría plazoContractual if not manually overridden
-                  var SK2 = SK === "presupInterv" ? "interventoria" : "consultoria";
-                  setPActivo(function(p) {
-                    var polComp = Object.assign({}, (p.polizasPorComp||{}));
-                    var polSec  = Object.assign({}, (polComp[SK2]||{}));
-                    // Only update if plazo was previously equal to oldP or was 0
-                    if (!polSec.plazoContractual || Number(polSec.plazoContractual)===oldP) {
-                      polSec.plazoContractual = v;
-                      polComp[SK2] = polSec;
-                      return Object.assign({}, p, { polizasPorComp: polComp });
-                    }
-                    return p;
-                  });
+                  // (Se eliminó la propagación a polizasPorComp: reescribía la sección
+                  //  de pólizas al cambiar el plazo y pisaba el trabajo del otro usuario.
+                  //  Las pólizas de interventoría toman este plazo por defecto.)
                 }
               }),
               React.createElement("span", { style:{fontSize:11,color:"var(--ink4)"} }, "meses")
@@ -12536,7 +12524,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
         lastSavedRef.current[secActiva] = actual;
         guardarSeccion(pActivo.id, secActiva, pActivo[field]);
       }
-    }, 10000);
+    }, 4000);
     return ()=>clearInterval(iv);
   },[pActivo?.id, vista]);
 
@@ -12559,17 +12547,27 @@ const mergeItemExterno = React.useCallback((event, row) => {
     };
     const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
 
+    // BLINDAJE MULTIUSUARIO: solo se persiste la sección que corresponde a la pestaña
+    // abierta. Si un handler ensucia OTRA sección de rebote (p.ej. cambiar el plazo
+    // tocaba pólizas), ese cambio se refleja en pantalla pero NO se guarda desde una
+    // pestaña ajena, así no pisa lo que el otro usuario está haciendo en esa sección.
+    const secDeTabActiva = seccionDeTab(tabEditorRef.current);
     Object.entries(secciones).forEach(([sec,field])=>{
       if(JSON.stringify(pActivo[field])!==JSON.stringify(prev[field])){
+        // Mantener la huella al día aunque no guardemos, para no disparar un guardado
+        // viejo al cambiar de pestaña.
+        if(secDeTabActiva && sec!==secDeTabActiva){
+          lastSavedRef.current[sec] = JSON.stringify(pActivo[field]);
+          return;
+        }
         window.__hasPendingChanges__ = true;
-        // Broadcast presence: qué sección estoy editando
         if(window.__presenceTrack__) window.__presenceTrack__(sec, pActivo.id);
         clearTimeout(secTimers.current[sec]);
         secTimers.current[sec]=setTimeout(()=>{
           lastSavedRef.current[sec] = JSON.stringify(pActivo[field]);
           window.__hasPendingChanges__ = false;
           guardarSeccion(pActivo.id, sec, pActivo[field]);
-        }, 700);
+        }, 250);
       }
     });
     if(metaFields.some(f=>JSON.stringify(pActivo[f])!==JSON.stringify(prev[f]))){
@@ -12577,7 +12575,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
       secTimers.current.meta=setTimeout(()=>{
         const meta=Object.fromEntries(metaFields.map(f=>[f,pActivo[f]]));
         guardarSeccion(pActivo.id,"meta",{...meta,id:pActivo.id});
-      }, 700);
+      }, 250);
     }
     prevPActivoRef.current=pActivo;
   },[pActivo,vista]);
@@ -15110,7 +15108,9 @@ class ErrorBoundary extends React.Component {
 // ═══════════════════════════════════════════════════════
 const SUPABASE_URL = "https://itetylglpquxvarzdxaq.supabase.co";
 const SUPABASE_KEY = "sb_publishable_rJ6cPku0Adho9yzt4HC5KA_nuK5xvly";
-const _sb = window.supabase?.createClient(SUPABASE_URL, SUPABASE_KEY);
+const _sb = window.supabase?.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  realtime: { params: { eventsPerSecond: 20 } }
+});
 
 // Inferir descripción del cambio comparando arrays
 function inferirAccion(modulo, anterior, nuevo_) {
