@@ -12734,7 +12734,21 @@ const sincronizarPolizasAU = (proyecto) => {
     // se salía en silencio dejando el proyecto subvalorado).
     return convergerAU(proyecto, apus, recursos, catalogoEstampillas || []);
   };
-  const sincronizarIterativo = (p) => convergerAU(p, apus, recursos, catalogoEstampillas || []);
+  const sincronizarIterativo = (p) => {
+    const conv = convergerAU(p, apus, recursos, catalogoEstampillas || []);
+    // Igualar EXACTAMENTE lo que hace el botón Recalcular: además de converger, copia
+    // el plazo del A+U a las pólizas que no tengan uno propio. Sin esto, abrir el
+    // proyecto convergía distinto que Recalcular y el VALOR TOTAL "saltaba" al recalcular.
+    const au = conv.au || {};
+    const polPorComp = Object.assign({}, conv.polizasPorComp || {});
+    ["obra","interventoria","consultoria"].forEach(comp => {
+      const pd = polPorComp[comp] || {};
+      if (!pd.plazoContractual && au.plazo) {
+        polPorComp[comp] = Object.assign({}, pd, { plazoContractual: au.plazo });
+      }
+    });
+    return Object.assign({}, conv, { polizasPorComp: polPorComp });
+  };
 
   const abrirEditor = p => {
     if (p.finalizado) { alert("Este proyecto está finalizado. Solo un administrador puede reabrirlo."); return; }
@@ -12753,6 +12767,20 @@ const sincronizarPolizasAU = (proyecto) => {
     // Sync pActivo.capitulos to first presupuesto's capitulos for legacy render compatibility
     const pFinal = Object.assign({}, pMigrated, { capitulos: firstPs.capitulos||[] });
     setPActivo(pFinal);
+    // Persistir UNA vez el estado ya convergido, para que el VALOR TOTAL no "salte"
+    // la próxima vez que se abra. Solo se guarda si de verdad cambió respecto a lo
+    // almacenado, y solo las secciones del cálculo circular (au / pólizas / estampillas),
+    // nunca el presupuesto — así no interfiere con la edición del otro usuario.
+    try {
+      if (guardarSeccion && !p.finalizado) {
+        const antesAU  = JSON.stringify(p.au || {});
+        const antesPol = JSON.stringify(p.polizasPorComp || {});
+        const antesEst = JSON.stringify(p.estampillas || {});
+        if (JSON.stringify(pFinal.au || {}) !== antesAU)             guardarSeccion(pFinal.id, "au",  pFinal.au);
+        if (JSON.stringify(pFinal.polizasPorComp || {}) !== antesPol) guardarSeccion(pFinal.id, "pol", pFinal.polizasPorComp);
+        if (JSON.stringify(pFinal.estampillas || {}) !== antesEst)    guardarSeccion(pFinal.id, "est", pFinal.estampillas);
+      }
+    } catch(e) { console.error("Persistir convergencia al abrir falló:", e); }
     setTabEditorRaw(comps.includes("obra") ? "presupuesto_obra_" + firstPs.id : "presupuesto_interventoria");
     setVista("editor");
   };
