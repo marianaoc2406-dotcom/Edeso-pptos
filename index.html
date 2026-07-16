@@ -9800,13 +9800,13 @@ function PanelObsProyecto({proyecto, perfil, session, onClose}) {
   const panelCargarRef = React.useRef(null);
   panelCargarRef.current = () => {
     _sb.from("observaciones").select("*")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .is("parent_id", null)
       .order("created_at", {ascending:false})
       .then(({data:roots})=>{
         if(!roots?.length){ setObs([]); setBusy(false); return; }
         _sb.from("observaciones").select("*")
-          .eq("proyecto_id", proyecto.id)
+          .eq("proyecto_id", String(proyecto.id))
           .not("parent_id","is",null)
           .order("created_at",{ascending:true})
           .then(({data:replies})=>{
@@ -9832,7 +9832,7 @@ function PanelObsProyecto({proyecto, perfil, session, onClose}) {
   const enviar = async() => {
     if(!texto.trim()) return;
     const nueva = {
-      proyecto_id:  proyecto.id,
+      proyecto_id:  String(proyecto.id),
       capitulo_id:  replyTo ? replyTo.capitulo_id : "general",
       item_index:   replyTo ? replyTo.item_index  : 0,
       tab_label:    replyTo ? replyTo.tab_label   : "General",
@@ -10016,14 +10016,14 @@ function PanelObservaciones({proyectoId, capituloId, itemIndex, perfil, session,
     if(!open) return;
     _sb.from("observaciones")
       .select("*")
-      .eq("proyecto_id", proyectoId)
+      .eq("proyecto_id", String(proyectoId))
       .eq("capitulo_id", capituloId)
       .eq("item_index", itemIndex)
       .order("created_at", {ascending:true})
       .then(({data})=>{setObs(data||[]);onCountChange&&onCountChange((data||[]).length);});
     const ch=_sb.channel(`obs_${proyectoId}_${capituloId}_${itemIndex}`)
       .on("postgres_changes",{event:"INSERT",schema:"public",table:"observaciones",
-        filter:`proyecto_id=eq.${proyectoId}`},
+        filter:`proyecto_id=eq.${String(proyectoId)}`},
         p=>{
           if(p.new.capitulo_id===capituloId&&p.new.item_index===itemIndex)
             setObs(prev=>[...prev,p.new]);
@@ -10035,7 +10035,7 @@ function PanelObservaciones({proyectoId, capituloId, itemIndex, perfil, session,
   const enviar = async()=>{
     if(!texto.trim()) return;
     const nueva = {
-      proyecto_id: proyectoId, capitulo_id: capituloId, item_index: itemIndex,
+      proyecto_id: String(proyectoId), capitulo_id: capituloId, item_index: itemIndex,
       texto: texto.trim(),
       user_id: session?.user?.id,
       user_email: session?.user?.email,
@@ -10215,7 +10215,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
   const obsTabRef = React.useRef(null);
   obsTabRef.current = () => {
     _sb.from("observaciones").select("*")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .order("created_at", {ascending:true})
       .then(({data})=>{ setAllObs(data||[]); setBusy(false); });
   };
@@ -10232,10 +10232,10 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
   const cargar = ()=>obsTabRef.current();
 
   const obsParaLinea = (capId, idx) =>
-    allObs.filter(o=>o.capitulo_id===capId&&o.item_index===idx&&!o.parent_id);
+    allObs.filter(o=>String(o.capitulo_id)===String(capId)&&String(o.item_index)===String(idx)&&!o.parent_id);
 
   const respuestasDeObs = (obsId) =>
-    allObs.filter(o=>o.parent_id===obsId);
+    allObs.filter(o=>String(o.parent_id)===String(obsId));
 
   const enviar = async(capId, idx, cap, item, parentId=null) => {
     const k = lineKey(capId, idx);
@@ -10243,7 +10243,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
     if(!txt) return;
     const apu = apus.find(a=>a.id===item?.apuId);
     const {error} = await _sb.from("observaciones").insert({
-      proyecto_id:  proyecto.id,
+      proyecto_id:  String(proyecto.id),
       capitulo_id:  capId,
       item_index:   idx,
       tab_label:    "Presupuesto Obra",
@@ -10398,7 +10398,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
             const vu=apuEf?calcAPUTotal(apuEf,recursos,getPctHerramienta(proyecto)):0;
             const vt=(item.cantidad||0)*vu;
             const k=lineKey(cap.id,idx);
-            const cnt=allObs.filter(o=>o.capitulo_id===cap.id&&o.item_index===idx).length;
+            const cnt=allObs.filter(o=>String(o.capitulo_id)===String(cap.id)&&String(o.item_index)===String(idx)).length;
             return React.createElement("div",{key:item.id,
               style:{borderBottom:"1px solid #F3F4F6",
                 background:openId===k?"#FFFBF0":"#fff"}
@@ -10441,7 +10441,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
 function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, setReplyTo, replyTo, textos, setTextos, enviarRespuesta, fmtF}) {
   const [confirmDel, setConfirmDel] = useState(false);
   const esMio = msg.user_id && session?.user?.id && String(msg.user_id) === String(session.user.id);
-  const reps  = allReps.filter(r=>Number(r.parent_id)===Number(msg.id));
+  const reps  = allReps.filter(r=>String(r.parent_id)===String(msg.id));
   const rKey  = "reply__"+msg.id;
 
   const handleEliminar = () => {
@@ -10524,9 +10524,13 @@ function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, se
 function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, openKey, setOpenKey, textos, setTextos, replyTo, setReplyTo}) {
   const lk    = (c,i) => c+"__"+i;
   const k     = lk(cid,idx);
-  const raices= allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
+  // Comparar SIEMPRE como texto: cap.id llega como número y o.capitulo_id como
+  // string desde la base → con === (número vs texto) nunca coincidían y los
+  // comentarios existían pero no se pintaban en su línea.
+  const _mismaLinea = o => String(o.capitulo_id)===String(cid) && String(o.item_index)===String(idx);
+  const raices= allObs.filter(o=>_mismaLinea(o)&&!o.parent_id);
   const allReps=allObs.filter(o=>o.parent_id!=null&&o.parent_id!==undefined);
-  const total = allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
+  const total = allObs.filter(_mismaLinea).length;
   const isOpen= openKey===k;
 
   const fmtF = iso => {
@@ -10588,7 +10592,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
   const obsViewRef = React.useRef(null);
   obsViewRef.current = () => {
     _sb.from("observaciones").select("*")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .order("created_at",{ascending:true})
       .then(({data})=>{
         // Conservar burbujas locales aún pendientes (id negativo) para que un
@@ -10601,13 +10605,32 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
       });
   };
 
-  // Set initial tab to first presupuesto
+  // Pestaña inicial: la PRIMERA hoja que tenga comentarios (para que no queden
+  // ocultos en otra hoja al recargar). Si ninguna hoja tiene, abre la primera.
+  const initialTabRef = React.useRef(false);
   useEffect(()=>{
     const firstPs = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
       ? proyecto.presupuestosObra[0]
       : {id:"p0"};
     setTabActiva("presupuesto_obra_"+firstPs.id);
   },[]);
+  // Una vez cargados los comentarios, si la hoja abierta no tiene y otra sí,
+  // saltar a la primera hoja de obra con comentarios (solo la primera vez).
+  useEffect(()=>{
+    if(initialTabRef.current || busy || !allObs.length) return;
+    const hojas = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+      ? proyecto.presupuestosObra
+      : [{id:"p0", capitulos:proyecto.capitulos||[]}];
+    for(const ps of hojas){
+      const ids = new Set((ps.capitulos||[]).map(c=>String(c.id)));
+      if(allObs.some(o=>ids.has(String(o.capitulo_id)))){
+        setTabActiva("presupuesto_obra_"+ps.id);
+        initialTabRef.current = true;
+        return;
+      }
+    }
+    initialTabRef.current = true;
+  },[busy, allObs]);
 
   useEffect(()=>{
     obsViewRef.current();
@@ -10620,16 +10643,16 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
 
   const cargar = ()=>obsViewRef.current();
 
-  const obsDeLinea  = (cid,idx) => allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
-  const repsDe      = (oid)     => allObs.filter(o=>o.parent_id===oid);
-  const totalLinea  = (cid,idx) => allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
+  const obsDeLinea  = (cid,idx) => allObs.filter(o=>String(o.capitulo_id)===String(cid)&&String(o.item_index)===String(idx)&&!o.parent_id);
+  const repsDe      = (oid)     => allObs.filter(o=>String(o.parent_id)===String(oid));
+  const totalLinea  = (cid,idx) => allObs.filter(o=>String(o.capitulo_id)===String(cid)&&String(o.item_index)===String(idx)).length;
 
   const enviar = async(cid, idx, desc, tabLabel, parentId=null, textKey=null) => {
     const k = textKey || lk(cid,idx);
     const txt=(textos[k]||"").trim();
     if(!txt) return;
     const nueva = {
-      proyecto_id:proyecto.id, capitulo_id:cid, item_index:idx,
+      proyecto_id:String(proyecto.id), capitulo_id:cid, item_index:idx,
       tab_label:tabLabel, linea_desc:desc,
       parent_id:parentId||null, texto:txt,
       user_id:session?.user?.id, user_email:session?.user?.email,
@@ -10687,7 +10710,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
   const tieneObra = comps.includes("obra")||comps.length===0;
   const tieneInterv = comps.includes("interventoria");
   const tieneConsult = comps.includes("consultoria");
-  const apusUsados = getApusUsados(proyecto, apus, recursos);
+  const apusUsados = React.useMemo(()=>getApusUsados(proyecto, apus, recursos), [proyecto, apus, recursos]);
   const [apuPsSel, setApuPsSel] = useState(null);
   const presupuestosObra2 = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
     ? proyecto.presupuestosObra
@@ -10716,7 +10739,12 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     {id:"apus_usados",             label:`APUs Proyectos (${apusUsados.length})`, show:apusUsados.length>0},
   ].filter(t=>t.show);
 
-  const res = calcProyecto(proyecto, apus, recursos);
+  // Cálculos pesados MEMOIZADOS: antes se recalculaba el proyecto entero (que
+  // itera hasta 30 veces para converger el A+U) en CADA render — incluso al
+  // teclear un comentario. En proyectos grandes eso ponía lentísimo al visor,
+  // que arranca directo en esta vista. Ahora se calcula una sola vez.
+  const res  = React.useMemo(()=>calcProyecto(proyecto, apus, recursos), [proyecto, apus, recursos]);
+  const cdMemo = React.useMemo(()=>calcCD(proyecto, apus, recursos), [proyecto, apus, recursos]);
 
   // ── Render por tab ────────────────────────────────────────────────────────
   const renderTabContent = () => {
@@ -10769,8 +10797,8 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
       return React.createElement(TabAU,{
         proyecto: proyecto,
         au:proyecto.au||{}, setAu:()=>{},
-        cd:calcCD(proyecto,apus,recursos),
-        total:calcProyecto(proyecto,apus,recursos).total,
+        cd:cdMemo,
+        total:res.total,
         plantillasAU:plantillasAU||[],
         readOnly:true, perfil, session,
         obsProps:{allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo}
@@ -10798,7 +10826,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     if(tabActiva==="estampillas"){
       const estItems = (proyecto.estampillas||[]);
       return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
-        React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:calcProyecto(proyecto,apus,recursos).total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}}),
+        React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:res.total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}}),
         estItems.length > 0 && React.createElement("div",{className:"card"},
           React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones por estampilla"),
           estItems.map((est,ei)=>React.createElement("div",{key:ei,style:{borderBottom:"1px solid #F3F4F6"}},
@@ -10855,8 +10883,8 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     }
     if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera") {
       const seccFF = (proyecto.fichaFinanciera||{}).secciones||[];
-      const _cdObs = calcCD(proyecto,apus,recursos);
-      const _obraObs = calcProyecto(proyecto,apus,recursos).total + getExtrasTotal(proyecto);
+      const _cdObs = cdMemo;
+      const _obraObs = res.total + getExtrasTotal(proyecto);
       const _intervSubObs = calcTotalPresupInterv(proyecto.presupInterv);
       const _intervPolDObs = ((proyecto.polizasPorComp||{})["interventoria"])||{};
       const _intervEstObs = getEstampillasMunicipio(catalogoEstampillas||[], proyecto.municipioId, "interv");
@@ -10975,7 +11003,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
         React.createElement(TabExtrasModulo,{
           titulo:label, campo, plantilla,
           proyecto, setPActivo:()=>{},
-          setAu:()=>{}, au, cd:calcCD(proyecto,apus,recursos), readOnly:true
+          setAu:()=>{}, au, cd:cdMemo, readOnly:true
         }),
         React.createElement("div",{className:"card"},
           React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},`Observaciones sobre ${label}`),
@@ -11037,13 +11065,77 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
         )
       )
     ),
+    // Tabs — con contador de comentarios por pestaña, para que ninguno quede
+    // "escondido" en otra hoja. Se cuenta por los capitulo_id que pertenecen a
+    // cada pestaña (las hojas de obra tienen sus propios capítulos).
+    (()=>{
+      // Mapa capitulo_id -> id de pestaña donde vive ese capítulo (hojas de obra)
+      const capToTab = {};
+      (tabs||[]).forEach(t=>{
+        if(t.id.startsWith("presupuesto_obra_")){
+          const psId=t.id.slice("presupuesto_obra_".length);
+          const ps=(presupuestosObra2||[]).find(x=>String(x.id)===String(psId));
+          (ps&&ps.capitulos||[]).forEach(c=>{ capToTab[String(c.id)]=t.id; });
+        }
+      });
+      // Traduce el capitulo_id de un comentario a la pestaña donde se ve, según
+      // cómo lo guarda cada sección (ver invocaciones de HiloObs):
+      //   au_*          → Cálculo A+U
+      //   pol_obra/…    → Pólizas Obra/Interventoría/…
+      //   estampillas   → Estampillas
+      //   interv_*      → Presupuesto Interventoría
+      //   consult_*     → Presupuesto Consultoría
+      //   ficha_*       → Ficha Financiera
+      //   apu_*         → APUs Proyectos
+      //   sgsst/pma/…   → esa misma pestaña (el cid ES el tabActiva)
+      //   resumen*      → Resumen
+      const tabDeCid = (cidRaw)=>{
+        const cid=String(cidRaw||"");
+        if(capToTab[cid]) return capToTab[cid];           // hojas de obra
+        if(cid.indexOf("au_")===0||cid==="calculo_au"||cid==="au") return "calculo_au";
+        if(cid.indexOf("pol_")===0){
+          const comp=cid.slice(4);
+          if(comp==="obra") return "polizas_obra";
+          if(comp==="interventoria") return "polizas_interventoria";
+          if(comp==="consultoria") return "polizas_consultoria";
+          if(comp==="edeso") return "polizas_edeso";
+          return "polizas_obra";
+        }
+        if(cid==="estampillas") return "estampillas";
+        if(cid.indexOf("interv_")===0) return "presupuesto_interventoria";
+        if(cid.indexOf("consult_")===0) return "presupuesto_consultoria";
+        if(cid.indexOf("ficha")===0) return "fichaFinanciera";
+        if(cid.indexOf("apu_")===0||cid==="apu") return "apus_usados";
+        if(cid==="sgsst"||cid==="pma"||cid==="pmt"||cid==="gsocial") return cid;
+        if(cid.indexOf("resumen")===0) return "resumen";
+        return null;
+      };
+      const cntTab = {};
+      (allObs||[]).forEach(o=>{
+        const tabId=tabDeCid(o.capitulo_id);
+        if(tabId) cntTab[tabId]=(cntTab[tabId]||0)+1;
+      });
+      window.__obsCntTab = cntTab;
+      return null;
+    })(),
     // Tabs
     React.createElement("div",{className:"tabs no-print"},
-      tabs.map(t=>React.createElement("div",{
-        key:t.id,
-        className:`tab${tabActiva===t.id?" on":""}`,
-        onClick:()=>setTabActiva(t.id)
-      },t.label))
+      tabs.map(t=>{
+        const nc=(window.__obsCntTab||{})[t.id]||0;
+        return React.createElement("div",{
+          key:t.id,
+          className:`tab${tabActiva===t.id?" on":""}`,
+          onClick:()=>setTabActiva(t.id),
+          style:{display:"inline-flex",alignItems:"center",gap:6}
+        },
+          t.label,
+          nc>0 && React.createElement("span",{
+            title:nc+" comentario"+(nc>1?"s":""),
+            style:{background:"#FEF3C7",color:"#92400E",border:"1px solid #FDE68A",
+              borderRadius:10,fontSize:10,fontWeight:700,padding:"1px 7px",lineHeight:1.6}
+          },"💬 "+nc)
+        );
+      })
     ),
     // Content
     busy
@@ -12357,12 +12449,13 @@ function ModuloProyectos({
   const esLectura = rol === "jefe" || rol === "visor";
   const esVisor   = rol === "visor";
   const [accesos, setAccesos] = useState([]); // IDs de proyectos que puede ver el visor
+  const [accesosCargados, setAccesosCargados] = useState(false); // ¿ya respondió la BD?
 
   // Cargar accesos del visor desde Supabase
   useEffect(()=>{
-    if(!esVisor||!session) return;
+    if(!esVisor||!session) { setAccesosCargados(true); return; }
     _sb.from("proyecto_accesos").select("proyecto_id").eq("user_id",session.user.id)
-      .then(({data})=>setAccesos((data||[]).map(x=>String(x.proyecto_id))));
+      .then(({data})=>{ setAccesos((data||[]).map(x=>String(x.proyecto_id))); setAccesosCargados(true); });
     const ch=_sb.channel("accesos_"+session.user.id)
       .on("postgres_changes",{event:"*",schema:"public",table:"proyecto_accesos",
         filter:`user_id=eq.${session.user.id}`},
@@ -13239,9 +13332,11 @@ const sincronizarPolizasAU = (proyecto) => {
     className: "empty-icon"
   }, "\uD83C\uDFE2"), /*#__PURE__*/React.createElement("div", {
     className: "empty-title"
-  }, "Sin proyectos"), /*#__PURE__*/React.createElement("div", {
+  }, (esVisor && !accesosCargados) ? "Cargando tus proyectos\u2026" : "Sin proyectos"), /*#__PURE__*/React.createElement("div", {
     className: "empty-desc"
-  }, "Crea el primer proyecto con el bot\xF3n de arriba")))) : filtered.map(p => {
+  }, (esVisor && !accesosCargados)
+      ? "Un momento, estamos trayendo los proyectos con acceso\u2026"
+      : (esVisor ? "A\xFAn no tienes proyectos asignados. Pide acceso a un administrador." : "Crea el primer proyecto con el bot\xF3n de arriba"))))) : filtered.map(p => {
     return /*#__PURE__*/React.createElement("tr", {
       key: p.id
     }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
@@ -14645,7 +14740,7 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
   useEffect(()=>{
     if(!proyecto?.id||!apusUsados?.length) return;
     _sb.from("observaciones").select("capitulo_id,item_index")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .eq("capitulo_id", "apu")
       .then(({data})=>{
         const cnt={};
