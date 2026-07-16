@@ -411,25 +411,54 @@ function calcAUItem(item, tipo, cd, total) {
 function calcAUSubseccion(sub, cd, total) {
   return (sub.items || []).reduce((s, i) => s + calcAUItem(i, sub.tipo, cd, total), 0);
 }
-function calcAUTotal(au, cd) {
-  // IMPORTANTE: sección s1_1 (Personal Prof. y Técnico) se multiplica ×1.45
-  // para incluir prestaciones sociales — igual que calcProyecto
-  if (!au || !au.secciones) return 0;
+// ── Suma de componentes del A+U con una base dada para los ítems "% s/Total" ──
+// baseTot es el COSTO TOTAL que se usa como base de los ítems tipo "otros" con
+// baseCalculo === "total". Antes se pasaba 0 y esos ítems valían $0 en el total
+// del proyecto aunque en pantalla mostraran plata. Ahora TODO el sistema
+// (pantalla, total, convergencia y Excel) usa el mismo punto fijo.
+function __compAU(au, cd, baseTot, excluirPolizas18) {
   let personal11 = 0, personal13 = 0, resto = 0, pctI = 0, pctU = 0;
-  au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
+  if (au && au.secciones) au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
     if (sub.id === 's1_9') {
       pctI = (sub.items[0] && sub.items[0].porcentaje) || 0;
     } else if (sub.id === 's1_10') {
       pctU = (sub.items[0] && sub.items[0].porcentaje) || 0;
     } else if (sub.id === 's1_1') {
-      (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+      (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, baseTot); });
     } else if (sub.id === 's1_3') {
-      (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
+      (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, baseTot); });
     } else {
-      (sub.items || []).forEach(item => { resto += calcAUItem(item, sub.tipo, cd, 0); });
+      (sub.items || []).forEach(item => {
+        if (excluirPolizas18 && sub.id === 's1_8') {
+          const d = (item.descripcion || '').toLowerCase();
+          if (d.includes('póliza') || d.includes('poliza')) return;
+        }
+        resto += calcAUItem(item, sub.tipo, cd, baseTot);
+      });
     }
   }));
-  return personal11 * 1.45 + personal13 * 1.70 + resto + cd * pctU / 100;
+  return { personal11, personal13, resto, pctI, pctU };
+}
+// Itera hasta el punto fijo: la base usada para los "% s/Total" == el total resultante.
+function __compAUConv(au, cd, excluirPolizas18) {
+  let c = __compAU(au, cd, 0, excluirPolizas18);
+  for (let i = 0; i < 30; i++) {
+    const gastos = c.personal11 * 1.45 + c.personal13 * 1.70 + c.resto;
+    const total = cd + gastos + cd * c.pctU / 100;
+    const c2 = __compAU(au, cd, total, excluirPolizas18);
+    const gastos2 = c2.personal11 * 1.45 + c2.personal13 * 1.70 + c2.resto;
+    c = c2;
+    if (Math.abs(gastos2 - gastos) < 0.5) break;
+  }
+  return c;
+}
+function calcAUTotal(au, cd) {
+  // IMPORTANTE: sección s1_1 (Personal Prof. y Técnico) se multiplica ×1.45
+  // para incluir prestaciones sociales — igual que calcProyecto.
+  // Los ítems "% s/Total" se resuelven por punto fijo (antes valían $0 aquí).
+  if (!au || !au.secciones) return 0;
+  const c = __compAUConv(au, cd, false);
+  return c.personal11 * 1.45 + c.personal13 * 1.70 + c.resto + cd * c.pctU / 100;
 }
 // AU total excluyendo el ítem pólizas (para iteración)
 function calcAUSinPoliza(au, cd) {
@@ -529,34 +558,13 @@ function calcProyecto(p, apus, recursos) {
   // I, U        = % sobre CD (manual, subsecciones s1_9 y s1_10)
   // CI          = gastosAdmin + I + U
   // Total       = CD + CI
-  let personal11 = 0,
-    personal13 = 0,
-    resto = 0,
-    pctI = 0,
-    pctU = 0;
-  if (au && au.secciones) {
-    au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
-      if (sub.id === "s1_9") {
-        var _sub$items$;
-        pctI = ((_sub$items$ = sub.items[0]) === null || _sub$items$ === void 0 ? void 0 : _sub$items$.porcentaje) || 0;
-      } else if (sub.id === "s1_10") {
-        var _sub$items$2;
-        pctU = ((_sub$items$2 = sub.items[0]) === null || _sub$items$2 === void 0 ? void 0 : _sub$items$2.porcentaje) || 0;
-      } else if (sub.id === "s1_1") {
-        sub.items.forEach(item => {
-          personal11 += calcAUItem(item, sub.tipo, cd, 0);
-        });
-      } else if (sub.id === "s1_3") {
-        sub.items.forEach(item => {
-          personal13 += calcAUItem(item, sub.tipo, cd, 0);
-        });
-      } else {
-        sub.items.forEach(item => {
-          resto += calcAUItem(item, sub.tipo, cd, 0);
-        });
-      }
-    }));
-  }
+  // Mismo punto fijo que calcAUTotal: los ítems "% s/Total" ya no valen $0.
+  const __c = __compAUConv(au, cd, false);
+  const personal11 = __c.personal11,
+    personal13 = __c.personal13,
+    resto = __c.resto,
+    pctI = __c.pctI,
+    pctU = __c.pctU;
   const prestaciones11 = personal11 * 1.45;
   const prestaciones13 = personal13 * 1.70;
   const gastosAdmin = prestaciones11 + prestaciones13 + resto;
@@ -590,31 +598,9 @@ function calcTotalSinPolizas(p, apus, recursos) {
   const au = p.au;
   // personal13 faltaba declararse (ReferenceError) y la subsección 1.3 caía en
   // "resto" sin su factor prestacional ×1.70.
-  let personal11 = 0, personal13 = 0, resto = 0, pctI = 0, pctU = 0;
-  if (au && au.secciones) {
-    au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
-      if (sub.id === "s1_9") {
-        pctI = (sub.items[0]?.porcentaje) || 0;
-      } else if (sub.id === "s1_10") {
-        pctU = (sub.items[0]?.porcentaje) || 0;
-      } else if (sub.id === "s1_1") {
-        (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
-      } else if (sub.id === "s1_3") {
-        (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
-      } else {
-        // Para s1_8 excluir items de polizas
-        (sub.items || []).forEach(item => {
-          const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
-                           (item.descripcion || "").toLowerCase().includes("poliza");
-          if (!(sub.id === "s1_8" && esPoliza)) {
-            resto += calcAUItem(item, sub.tipo, cd, 0);
-          }
-        });
-      }
-    }));
-  }
-  const gastosAdmin = personal11 * 1.45 + personal13 * 1.70 + resto;
-  const valorAIU = gastosAdmin + cd * pctU / 100;
+  const c = __compAUConv(au, cd, true);   // excluye pólizas 1.8, punto fijo para "% s/Total"
+  const gastosAdmin = c.personal11 * 1.45 + c.personal13 * 1.70 + c.resto;
+  const valorAIU = gastosAdmin + cd * c.pctU / 100;
   return cd + valorAIU;
 }
 
@@ -627,28 +613,9 @@ function calcTotalConvergido(proyecto, apus, recursos) {
   const plazo   = Number(polData.plazoContractual) || 0;
   const polizasActivas = polData.polizasActivas || [];
 
-  // Calcular CI base (sin polizas) para arrancar
-  let personal11 = 0, personal13 = 0, resto = 0, pctU = 0;
-  if (au && au.secciones) {
-    au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
-      if (sub.id === "s1_10") {
-        pctU = (sub.items[0]?.porcentaje) || 0;
-      } else if (sub.id === "s1_1") {
-        sub.items.forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
-      } else if (sub.id === "s1_3") {
-        sub.items.forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
-      } else if (sub.id !== "s1_9") {
-        sub.items.forEach(item => {
-          const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
-                           (item.descripcion || "").toLowerCase().includes("poliza");
-          if (!(sub.id === "s1_8" && esPoliza)) {
-            resto += calcAUItem(item, sub.tipo, cd, 0);
-          }
-        });
-      }
-    }));
-  }
-  const ciBase = personal11 * 1.45 + personal13 * 1.70 + resto + cd * pctU / 100;
+  // CI base (sin pólizas), con punto fijo para los ítems "% s/Total"
+  const __cb = __compAUConv(au, cd, true);
+  const ciBase = __cb.personal11 * 1.45 + __cb.personal13 * 1.70 + __cb.resto + cd * __cb.pctU / 100;
 
   // Función que calcula total de polizas dado un valor base
   const calcPolTotal = (base) => polizasActivas.reduce((s, p) => {
@@ -7449,11 +7416,15 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
 
   // Estado guardado por componente
   const saved = (proyecto.polizasPorComp || {})[cid] || { plazoContractual: 0, polizasActivas: [] };
+  // Ref siempre al día: el canal realtime capturaba un `saved` congelado y podía
+  // pisar pólizas agregadas localmente después de suscribirse.
+  const savedRef = React.useRef(saved);
+  savedRef.current = saved;
 
   // Helpers de estado
-  const updateSaved = (patch) => { if(window.__markEditing) window.__markEditing("pol");
+  const updateSaved = (patch, esRemoto) => { if(!esRemoto && window.__markEditing) window.__markEditing("pol");
     if (readOnly) return;
-    const next = { ...saved, ...patch };
+    const next = { ...savedRef.current, ...patch };
     setPolizas(cid, next);
 
     // Al tocar una póliza hay que RE-CONVERGER el A+U, no escribir de un solo tiro.
@@ -7501,11 +7472,12 @@ function TabPolizas({ proyecto, setPolizas, setAU, totalProyecto, totalBase, com
         const row=p.eventType==="DELETE"?p.old:p.new;
         if(String(row.proyecto_id)!==pid||row.componente_id!==cid) return;
         const pol={id:row.id,nombre:row.nombre,pct:Number(row.pct),pctPrima:Number(row.pct_prima),mesesExtra:Number(row.meses_extra)};
+        const act=(savedRef.current.polizasActivas||[]);
         if(p.eventType==="DELETE"){
-          updateSaved({polizasActivas:(saved.polizasActivas||[]).filter(x=>String(x.id)!==String(row.id))});
+          updateSaved({polizasActivas:act.filter(x=>String(x.id)!==String(row.id))}, true);
         } else {
-          const existe=(saved.polizasActivas||[]).find(x=>String(x.id)===String(row.id));
-          updateSaved({polizasActivas:existe?(saved.polizasActivas||[]).map(x=>String(x.id)===String(row.id)?{...x,...pol}:x):[...(saved.polizasActivas||[]),pol]});
+          const existe=act.find(x=>String(x.id)===String(row.id));
+          updateSaved({polizasActivas:existe?act.map(x=>String(x.id)===String(row.id)?{...x,...pol}:x):[...act,pol]}, true);
         }
       }).subscribe();
     window.__edeso_ch__[chName] = ch;
@@ -8414,6 +8386,20 @@ function _escribirItems18(proj, vBase, catEst) {
   upsert(function(d){ return d.indexOf('estampilla')>=0; }, 'Estampillas', totEst, 'est_au_');
   upsert(function(d){ return d.indexOf('transacci')>=0; }, 'Transacciones Bancarias', totTB, 'tb_au_');
   return true;
+}
+
+// Fusiona presupuestosObra que llega en un meta (PODADO, sin capítulos) con el
+// local: toma nombre/% herramienta del remoto pero CONSERVA los capítulos locales.
+function mergeMetaPresupuestos(local, remoto) {
+  if (!remoto) return local;
+  const locById = {};
+  (local || []).forEach(ps => { locById[String(ps.id)] = ps; });
+  const res = (remoto || []).map(ps => ({
+    ...ps,
+    capitulos: ((locById[String(ps.id)] || {}).capitulos) || ps.capitulos || []
+  }));
+  (local || []).forEach(ps => { if (!res.find(x => String(x.id) === String(ps.id))) res.push(ps); });
+  return res;
 }
 
 // Devuelve el proyecto con la 1.8 ya convergida. No muta el original.
@@ -9494,7 +9480,16 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     }
   }
   var totalExtrasObra = getExtrasTotal(proyecto);
-  var _fichaR = calcFichaFinanciera(proyecto, _obraTotal, _intervTotal, 0, 50);
+  // Consultoría igual que la pestaña Ficha del sistema (antes el Excel pasaba 0
+  // y con consultoría el SUBTOTAL/honorarios/base EDESO salían distintos a la app)
+  var _consultSubX  = calcTotalPresupConsult(proyecto.presupConsult);
+  var _consultPolDX = ((proyecto.polizasPorComp||{}).consultoria)||{};
+  var _consultEstX  = getEstampillasMunicipio(catEst||[], proyecto.municipioId, "interv");
+  var _consultPlazoX= Number(_consultPolDX.plazoContractual)||Number((proyecto.presupConsult||{}).plazo)||0;
+  var _consultTotal = _consultSubX > 0
+    ? Math.round(calcResumenInterv(_consultSubX, _consultEstX, _consultPolDX.polizasActivas||[], _consultPlazoX).valorTotal)
+    : 0;
+  var _fichaR = calcFichaFinanciera(proyecto, _obraTotal, _intervTotal, _consultTotal, 50);
   var _fichaBase = _fichaR.totalRecursos || _obraTotal; // SUBTOTAL RECURSOS A ADMINISTRAR
 
   // ── 7. PÓLIZAS EDESO ─────────────────────────────────────────────────────
@@ -9523,7 +9518,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var R = _fichaR;
   var pctHon = ff.pctHonoarios!==undefined ? ff.pctHonoarios : 0.08;
   var nmFF = nombreUnico('Ficha Financiera');
-  var tieneConsult = comps.includes('consultoria');
+  var tieneConsult = comps.includes('consultoria') || (R.consultTotal||0) > 0;
 
   sc(wsFF,r,0,'FICHA FINANCIERA',{font:FT("FFFFFF",true,14),fill:FG("1F2937"),border:brd});
   [1,2,3,4].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:FG("1F2937"),border:brd}); });
@@ -9536,7 +9531,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   // Filas del resumen financiero (col 4 = Valor)
   var fObra = r;
   sc(wsFF,r,0,'Costo de obra',ST.lbl()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
-  if(refObraTot) fc(wsFF,r,4,refObraTot,R.obraTotal,ST.mon()); else nc(wsFF,r,4,R.obraTotal,ST.mon());
+  // ROUND(...,0): el costo de obra que baja del A+U trae decimales (p.ej. ...,8848).
+  // El sistema lo redondea a entero antes de usarlo en la Ficha; sin este ROUND el
+  // Excel arrastraba el decimal y el SUBTOTAL salía $1 distinto (y desincronizaba la
+  // base de EDESO). Redondeamos aquí igual que el sistema.
+  if(refObraTot) fc(wsFF,r,4,'ROUND('+refObraTot+',0)',Math.round(R.obraTotal),ST.mon()); else nc(wsFF,r,4,Math.round(R.obraTotal),ST.mon());
   r++;
 
   var fInt = r;
@@ -9558,7 +9557,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var fSub = r;
   sc(wsFF,r,0,'SUBTOTAL RECURSOS A ADMINISTRAR',ST.tot2()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.tot2()); });
   var sumDir = ref(fObra,4)+'+'+ref(fInt,4)+(fCons!==null?('+'+ref(fCons,4)):'');
-  fc(wsFF,r,4,'ROUND('+sumDir+',0)+'+ref(fInd,4), R.totalRecursos, ST.tot2());
+  // Igualar EXACTAMENTE a calcFichaFinanciera del sistema:
+  //   subtotalDirecto = round(obra + interv)
+  //   totalRecursos   = round(subtotalDirecto + indirecto)   ← doble redondeo
+  // Antes el Excel omitía el segundo ROUND y salía $1 distinto al sistema.
+  fc(wsFF,r,4,'ROUND(ROUND('+sumDir+',0)+'+ref(fInd,4)+',0)', R.totalRecursos, ST.tot2());
   refFichaB = link(nmFF, ref(fSub,4));
   r++; r++;
 
@@ -9577,7 +9580,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   r++;
 
   sc(wsFF,r,0,'VALOR TOTAL DE RECURSOS A INVERTIR',ST.tot2()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.tot2()); });
-  fc(wsFF,r,4,ref(fSub,4)+'+'+ref(fHon,4)+'+'+ref(fIva,4), R.totalContrato, ST.tot2());
+  fc(wsFF,r,4,'ROUND('+ref(fSub,4)+'+'+ref(fHon,4)+'+'+ref(fIva,4)+',0)', R.totalContrato, ST.tot2());
   r++; r++;
 
   // ── Componentes de Costos Indirectos ────────────────────────────────────
@@ -9763,7 +9766,9 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   // ── EXTRAS: hojas construidas antes (para poder enlazarlas desde el A+U) ──
   hojasExtras.forEach(function(h){ XLSX.utils.book_append_sheet(wb, h.ws, h.nm); });
 
-  XLSX.writeFile(wb, (proyecto.nombre||'Proyecto').replace(/[\/\\?*\[\]:]/g,'').slice(0,50)+'.xlsx');
+  // descargarExcel usa Blob: funciona en file://, GitHub Pages y todos los
+  // navegadores (XLSX.writeFile fallaba en algunos entornos).
+  descargarExcel(wb, (proyecto.nombre||'Proyecto').replace(/[\/\\?*\[\]:]/g,'').slice(0,50)+'.xlsx');
 }
 
 
@@ -9838,7 +9843,15 @@ function PanelObsProyecto({proyecto, perfil, session, onClose}) {
       user_email:   session?.user?.email,
       user_nombre:  perfil?.nombre || session?.user?.email,
     };
-    await _sb.from("observaciones").insert(nueva);
+    const guardadoTexto = texto.trim();
+    const {error} = await _sb.from("observaciones").insert(nueva);
+    if(error){
+      console.error("Guardar observación falló:", error);
+      setTexto(guardadoTexto); // no perder lo escrito
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido")+
+            "\n\nEl texto sigue en el cuadro para reintentar.");
+      return;
+    }
     setTexto(""); setReplyTo(null); cargar();
   };
 
@@ -10028,7 +10041,14 @@ function PanelObservaciones({proyectoId, capituloId, itemIndex, perfil, session,
       user_email: session?.user?.email,
       user_nombre: perfil?.nombre || session?.user?.email,
     };
-    const {data} = await _sb.from("observaciones").insert(nueva).select().single();
+    const guardado = texto.trim();
+    const {data, error} = await _sb.from("observaciones").insert(nueva).select().single();
+    if(error){
+      console.error("Guardar observación falló:", error);
+      setTexto(guardado);
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido"));
+      return;
+    }
     if(data){const next=[...obs,data];setObs(next);onCountChange&&onCountChange(next.length);}
     setTexto("");
   };
@@ -10222,7 +10242,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
     const txt = (textos[k]||"").trim();
     if(!txt) return;
     const apu = apus.find(a=>a.id===item?.apuId);
-    await _sb.from("observaciones").insert({
+    const {error} = await _sb.from("observaciones").insert({
       proyecto_id:  proyecto.id,
       capitulo_id:  capId,
       item_index:   idx,
@@ -10234,6 +10254,12 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
       user_email:   session?.user?.email,
       user_nombre:  perfil?.nombre || session?.user?.email,
     });
+    if(error){
+      console.error("Guardar observación falló:", error);
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido")+
+            "\n\nEl texto sigue en el cuadro para reintentar.");
+      return;
+    }
     setTextos(t=>({...t,[k]:""}));
     setReplyTo(r=>({...r,[k]:null}));
     cargar();
@@ -10564,7 +10590,15 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     _sb.from("observaciones").select("*")
       .eq("proyecto_id", proyecto.id)
       .order("created_at",{ascending:true})
-      .then(({data})=>{ setAllObs(data||[]); setBusy(false); });
+      .then(({data})=>{
+        // Conservar burbujas locales aún pendientes (id negativo) para que un
+        // refresh por realtime no las borre antes de confirmarse el guardado.
+        setAllObs(prev=>{
+          const pend = (prev||[]).filter(o=>o._pendiente && Number(o.id)<0);
+          return [...(data||[]), ...pend];
+        });
+        setBusy(false);
+      });
   };
 
   // Set initial tab to first presupuesto
@@ -10601,24 +10635,43 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
       user_id:session?.user?.id, user_email:session?.user?.email,
       user_nombre:perfil?.nombre||session?.user?.email,
     };
-    // Optimistic update: add immediately to local state
-    const tempObs = {...nueva, id: Date.now(), created_at: new Date().toISOString()};
+    // id temporal NEGATIVO: no colisiona con los id reales (autoincrement > 0),
+    // así el hilo de respuestas no se enreda mientras se confirma el guardado.
+    const tempId = -Date.now();
+    const tempObs = {...nueva, id: tempId, created_at: new Date().toISOString(), _pendiente:true};
     setAllObs(prev=>[...prev, tempObs]);
     setTextos(t=>({...t,[k]:""}));
     setReplyTo(r=>({...r,[k]:false}));
-    // Then save to DB and refresh to get real ID
-    await _sb.from("observaciones").insert(nueva);
-    if(obsViewRef.current) obsViewRef.current();
+    // Guardar y LEER la fila creada (para tener el id real). Si falla, NO se pierde
+    // el comentario: se conserva en pantalla y se avisa qué pasó.
+    const {data, error} = await _sb.from("observaciones").insert(nueva).select().single();
+    if(error){
+      console.error("Guardar observación falló:", error);
+      // Quitar la burbuja temporal y devolver el texto al cuadro para reintentar
+      setAllObs(prev=>prev.filter(o=>o.id!==tempId));
+      setTextos(t=>({...t,[k]:txt}));
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido")+
+            "\n\nEl texto sigue en el cuadro para reintentar.");
+      return;
+    }
+    // Sustituir la burbuja temporal por la real (con id de la BD)
+    setAllObs(prev=>prev.map(o=>o.id===tempId?data:o));
   };
 
   const eliminar = async(obsId) => {
     const id = Number(obsId);
     if(!id) return;
+    // Si es una burbuja temporal (id negativo, aún sin guardar) solo se quita local
+    if(id<0){ setAllObs(prev=>prev.filter(o=>Number(o.id)!==id)); return; }
     // Optimistic: quitar de UI de inmediato
     setAllObs(prev=>prev.filter(o=>Number(o.id)!==id && Number(o.parent_id)!==id));
     // Borrar respuestas primero (por FK), luego el comentario raíz
-    await _sb.from("observaciones").delete().eq("parent_id", id);
-    await _sb.from("observaciones").delete().eq("id", id);
+    const r1 = await _sb.from("observaciones").delete().eq("parent_id", id);
+    const r2 = await _sb.from("observaciones").delete().eq("id", id);
+    if(r1.error||r2.error){
+      console.error("Eliminar observación falló:", r1.error||r2.error);
+      alert("No se pudo eliminar la observación (¿permisos?). Se recargará la lista.");
+    }
     // Refrescar desde servidor
     setTimeout(()=>{ if(obsViewRef.current) obsViewRef.current(); }, 600);
   };
@@ -12363,11 +12416,16 @@ function ModuloProyectos({
     updated_by_name:  perfil?.nombre || session?.user?.email,
   });
 
-  const dbSaveCap = (cap, proyId) => {
+  const dbSaveCap = (cap, proyId, psId) => {
+    // psId = hoja de presupuesto a la que pertenece el capítulo. Se codifica en
+    // `tipo` como "obra_ps:<psId>" para poder reconstruir las hojas al recargar
+    // (antes todo se guardaba como "obra" y los capítulos de hojas múltiples se
+    // mezclaban en una sola al volver a abrir).
+    const tipoRow = psId ? ("obra_ps:"+psId) : (cap.tipo||"obra");
     safeUpsert("capitulos_presupuesto", {
       id: String(cap.id), proyecto_id: String(proyId||pActivo?.id),
       numero: cap.numero, nombre: cap.nombre,
-      tipo: cap.tipo||"obra", orden: cap.orden||0,
+      tipo: tipoRow, orden: cap.orden||0,
       ...dbUser()
     }, "cap_"+(proyId||pActivo?.id)+"_"+cap.id);
   };
@@ -12399,8 +12457,12 @@ function ModuloProyectos({
   const mergeCapExterno = React.useCallback((event, row) => {
     setPActivo(p => {
       if(!p || String(p.id)!==String(row.proyecto_id)) return p;
-      const newCap = { id:row.id, numero:row.numero, nombre:row.nombre, tipo:row.tipo||"obra", orden:row.orden||0, items:[] };
-      const updCap = c => String(c.id)===String(row.id) ? {...c, numero:row.numero, nombre:row.nombre, tipo:row.tipo||c.tipo} : c;
+      // "obra_ps:<psId>" = capítulo de una hoja específica de presupuesto
+      const tRow = String(row.tipo||"obra");
+      const psIdRow = tRow.indexOf("obra_ps:")===0 ? tRow.slice(8) : null;
+      const tipoCap = psIdRow ? "obra" : tRow;
+      const newCap = { id:row.id, numero:row.numero, nombre:row.nombre, tipo:tipoCap, orden:row.orden||0, items:[] };
+      const updCap = c => String(c.id)===String(row.id) ? {...c, numero:row.numero, nombre:row.nombre, tipo:tipoCap||c.tipo} : c;
       // DELETE: solo eliminar si el usuario local no tiene ítems en ese cap
       if(event==="DELETE") {
         const capLocal = (p.capitulos||[]).find(c=>String(c.id)===String(row.id));
@@ -12411,20 +12473,36 @@ function ModuloProyectos({
           presupuestosObra: (p.presupuestosObra||[]).map(ps=>({...ps,capitulos:(ps.capitulos||[]).filter(c=>String(c.id)!==String(row.id))}))
         };
       }
-      // INSERT/UPDATE: actualizar si existe, AGREGAR si no existe
+      // INSERT/UPDATE: actualizar si existe, AGREGAR en la hoja correcta si no
       const existeLeg = (p.capitulos||[]).find(c=>String(c.id)===String(row.id));
       const existePs  = (p.presupuestosObra||[]).some(ps=>(ps.capitulos||[]).find(c=>String(c.id)===String(row.id)));
-      const tipoEsPs  = row.tipo === "obra_ps";
+      const sheets = p.presupuestosObra||[];
+      // Hoja destino: la etiquetada; si la fila es "obra" sin etiqueta, la primera hoja.
+      const destinoPsId = psIdRow || (tipoCap==="obra" && sheets.length ? String(sheets[0].id) : null);
+      const activeTab = (tabEditorRef.current||"");
+      const activePsId = activeTab.indexOf("presupuesto_obra_")===0 ? activeTab.slice("presupuesto_obra_".length) : null;
+      // capitulos (espejo de la hoja activa): agregar si el cap va a la hoja activa
+      // o si es un tipo legacy sin hojas.
+      const vaEnCapitulos = destinoPsId
+        ? (activePsId!==null && String(activePsId)===String(destinoPsId))
+        : true;
+      let nuevasSheets = sheets.map(ps=>({...ps,
+        capitulos: existePs
+          ? (ps.capitulos||[]).map(updCap)
+          : (destinoPsId!==null && String(ps.id)===String(destinoPsId)
+              ? [...(ps.capitulos||[]), newCap]
+              : (ps.capitulos||[]))
+      }));
+      // Si la hoja etiquetada aún no existe localmente, crearla
+      if(!existePs && psIdRow && !nuevasSheets.find(ps=>String(ps.id)===String(psIdRow))){
+        nuevasSheets = [...nuevasSheets, {id:psIdRow, nombre:"Presupuesto Obra", capitulos:[newCap]}];
+      }
       return {
         ...p,
         capitulos: existeLeg
           ? (p.capitulos||[]).map(updCap)
-          : (!tipoEsPs ? [...(p.capitulos||[]), newCap] : (p.capitulos||[])),
-        presupuestosObra: (p.presupuestosObra||[]).map(ps=>({...ps,
-          capitulos: existePs
-            ? (ps.capitulos||[]).map(updCap)
-            : (tipoEsPs ? [...(ps.capitulos||[]), newCap] : (ps.capitulos||[]))
-        }))
+          : (vaEnCapitulos ? [...(p.capitulos||[]), newCap] : (p.capitulos||[])),
+        presupuestosObra: nuevasSheets
       };
     });
   },[]);
@@ -12466,9 +12544,15 @@ const mergeItemExterno = React.useCallback((event, row) => {
         descripcion:row.descripcion||"",
         unidad:row.unidad||"",
         cantidad:Number(row.cantidad)||0,
+        orden:Number(row.orden_item)||0,
       };
       const mergeCaps = (caps) => (caps||[]).map(cap => {
-        if(String(cap.id)!==String(row.capitulo_id)) return cap;
+        if(String(cap.id)!==String(row.capitulo_id)) {
+          // El otro usuario MOVIÓ el ítem a otro capítulo: quitarlo del viejo
+          if(event!=="DELETE" && (cap.items||[]).some(i=>String(i.id)===String(row.id)))
+            return {...cap, items:(cap.items||[]).filter(i=>String(i.id)!==String(row.id))};
+          return cap;
+        }
         if(event==="DELETE") {
           // Solo eliminar si el ítem no fue modificado localmente recientemente
           return {...cap, items: (cap.items||[]).filter(i=>String(i.id)!==String(row.id))};
@@ -12524,6 +12608,12 @@ const mergeItemExterno = React.useCallback((event, row) => {
   // quien solo persiste lo que realmente está editando.
   const tabEditorRef = React.useRef(tabEditor);
   React.useEffect(()=>{ tabEditorRef.current = tabEditor; }, [tabEditor]);
+  // Ref SIEMPRE al día del proyecto activo. El autosave de seguridad corre en un
+  // setInterval cuyo closure captura el pActivo de cuando se abrió el proyecto:
+  // sin este ref, cada 4s guardaba la copia VIEJA encima de lo recién guardado
+  // (y por realtime le llegaba lo viejo al otro usuario).
+  const pActivoRef = React.useRef(pActivo);
+  React.useEffect(()=>{ pActivoRef.current = pActivo; }, [pActivo]);
 
   const seccionDeTab = (tab) => {
     if(!tab) return null;
@@ -12540,17 +12630,20 @@ const mergeItemExterno = React.useCallback((event, row) => {
     if(!pActivo||vista!=="editor"||!guardarSeccion) return;
     const secciones = {caps:"capitulos",au:"au",pol:"polizasPorComp",est:"estampillas",interv:"presupInterv",consult:"presupConsult"};
     const iv = setInterval(()=>{
-      if(!pActivo||vista!=="editor") return;
+      // OJO: usar SIEMPRE el ref, nunca la variable del closure (queda congelada
+      // en la versión de cuando se abrió el proyecto y pisaba los guardados frescos).
+      const pAct = pActivoRef.current;
+      if(!pAct||vista!=="editor") return;
       const secActiva = seccionDeTab(tabEditorRef.current);
       if(!secActiva) return;
       const field = secciones[secActiva];
       Object.entries(secciones).forEach(([sec,f])=>{
-        if(sec!==secActiva) lastSavedRef.current[sec] = JSON.stringify(pActivo[f]);
+        if(sec!==secActiva) lastSavedRef.current[sec] = JSON.stringify(pAct[f]);
       });
-      const actual = JSON.stringify(pActivo[field]);
+      const actual = JSON.stringify(pAct[field]);
       if(actual !== lastSavedRef.current[secActiva]) {
         lastSavedRef.current[secActiva] = actual;
-        guardarSeccion(pActivo.id, secActiva, pActivo[field]);
+        guardarSeccion(pAct.id, secActiva, pAct[field]);
       }
     }, 4000);
     return ()=>clearInterval(iv);
@@ -12573,7 +12666,12 @@ const mergeItemExterno = React.useCallback((event, row) => {
       caps:"capitulos", au:"au", pol:"polizasPorComp",
       est:"estampillas", interv:"presupInterv", consult:"presupConsult"
     };
-    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+    // municipioId y fichaFinanciera antes NO se autoguardaban (solo al pulsar
+    // "Guardar"): si cerrabas la pestaña se perdían. Ahora van en meta.
+    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","snapshot","municipioId","fichaFinanciera","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+    // La ESTRUCTURA de las hojas de presupuesto (id, nombre, % herramienta) también
+    // se autoguarda en meta, PODADA (sin capítulos: esos viven fila por fila).
+    const podarPs = (lista)=> (lista||[]).map(ps=>{ const c={...ps}; delete c.capitulos; return c; });
 
     // BLINDAJE MULTIUSUARIO: solo se persiste la sección que corresponde a la pestaña
     // abierta. Si un handler ensucia OTRA sección de rebote (p.ej. cambiar el plazo
@@ -12598,11 +12696,14 @@ const mergeItemExterno = React.useCallback((event, row) => {
         }, 250);
       }
     });
-    if(metaFields.some(f=>JSON.stringify(pActivo[f])!==JSON.stringify(prev[f]))){
+    const psCambio = JSON.stringify(podarPs(pActivo.presupuestosObra))!==JSON.stringify(podarPs(prev.presupuestosObra));
+    if(psCambio || metaFields.some(f=>JSON.stringify(pActivo[f])!==JSON.stringify(prev[f]))){
       clearTimeout(secTimers.current.meta);
       secTimers.current.meta=setTimeout(()=>{
-        const meta=Object.fromEntries(metaFields.map(f=>[f,pActivo[f]]));
-        guardarSeccion(pActivo.id,"meta",{...meta,id:pActivo.id});
+        const pAct = pActivoRef.current || pActivo;
+        const meta=Object.fromEntries(metaFields.map(f=>[f,pAct[f]]));
+        meta.presupuestosObra = podarPs(pAct.presupuestosObra);
+        guardarSeccion(pAct.id,"meta",{...meta,id:pAct.id});
       }, 250);
     }
     prevPActivoRef.current=pActivo;
@@ -12651,7 +12752,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
       var editandoEsta = secEditing[sec] && (now - secEditing[sec] < 12000);
       setPActivo(p=>{
         if(!p||String(p.id)!==String(proyId)) return p;
-        if(sec==="meta") return {...p,...(value||{})};
+        if(sec==="meta") { const v=value||{}; return {...p,...v, presupuestosObra: v.presupuestosObra!==undefined ? mergeMetaPresupuestos(p.presupuestosObra, v.presupuestosObra) : p.presupuestosObra}; }
         // Caps: fusionar en lugar de reemplazar
         if(sec==="caps") {
           if(editandoEsta) return p;
@@ -12704,12 +12805,23 @@ const mergeItemExterno = React.useCallback((event, row) => {
     return proyectosVisibles.filter(p => p.nombre.toLowerCase().includes(q) || p.codigo.toLowerCase().includes(q) || (p.contratante || "").toLowerCase().includes(q));
   }, [proyectos, busq]);
   const abrirDetalle = p => {
+    // Misma preparación que abrirEditor: converger + migrar presupuestosObra, para que
+    // ver y editar den el mismo total.
     const pSync = sincronizarIterativo(p);
-    setPActivo(pSync);
+    let pMig = pSync;
+    if (!pSync.presupuestosObra || pSync.presupuestosObra.length === 0) {
+      pMig = Object.assign({}, pSync, {
+        presupuestosObra: [{ id: "p0", nombre: "Presupuesto Obra", capitulos: pSync.capitulos||[] }]
+      });
+    }
+    const firstPs = pMig.presupuestosObra && pMig.presupuestosObra.length > 0
+      ? pMig.presupuestosObra[0] : { id: "p0", capitulos: [] };
+    const pFinal = Object.assign({}, pMig, { capitulos: firstPs.capitulos||[] });
+    setPActivo(pFinal);
     setTabDetalle(function() {
-      const comps = p.componentes || [];
+      const comps = pFinal.componentes || [];
       if (comps.includes("obra")) {
-        const presups = p.presupuestosObra && p.presupuestosObra.length > 0 ? p.presupuestosObra : [{ id:"p0" }];
+        const presups = pFinal.presupuestosObra && pFinal.presupuestosObra.length > 0 ? pFinal.presupuestosObra : [{ id:"p0" }];
         return "presupuesto_obra_" + presups[0].id;
       }
       return "presupuesto_interventoria";
@@ -12749,6 +12861,19 @@ const sincronizarPolizasAU = (proyecto) => {
     });
     return Object.assign({}, conv, { polizasPorComp: polPorComp });
   };
+
+  // ¿El proyecto ya está convergido? Si converger no cambia el total (< $1), ya está
+  // al día y NO hay que re-converger al abrir. Re-converger sobre datos recién
+  // cargados era lo que hacía "saltar" el total tras recargar.
+  const yaConvergido = (p) => {
+    try {
+      const antes = calcProyecto(p, apus, recursos).total;
+      const conv  = convergerAU(p, apus, recursos, catalogoEstampillas || []);
+      const desp  = calcProyecto(conv, apus, recursos).total;
+      return Math.abs(antes - desp) < 1;
+    } catch(e) { return false; }
+  };
+  const sincronizarSiHaceFalta = (p) => yaConvergido(p) ? p : sincronizarIterativo(p);
 
   const abrirEditor = p => {
     if (p.finalizado) { alert("Este proyecto está finalizado. Solo un administrador puede reabrirlo."); return; }
@@ -12801,10 +12926,24 @@ const sincronizarPolizasAU = (proyecto) => {
   };
   const guardar = () => {
     if (!pActivo.nombre.trim()) return;
-    // Iteración completa: converge pólizas → AU → presupuesto antes de guardar
+    // Converger e guardar. sincronizarIterativo es estable (converger algo ya
+    // convergido no lo cambia), así lo guardado = lo mostrado.
     const pSinc = sincronizarIterativo(pActivo);
     setPActivo(pSinc);
     setProyectos(prev => prev.find(p => p.id === pSinc.id) ? prev.map(p => p.id === pSinc.id ? pSinc : p) : [...prev, pSinc]);
+    // setProyectos está PODADO (no guarda secciones pesadas para no pisar al otro
+    // usuario). Por eso el A+U convergido no quedaba guardado y al recargar el total
+    // "volvía atrás". Persistimos aquí explícitamente las secciones del cálculo
+    // circular por su propio canal.
+    try {
+      if (guardarSeccion && !pSinc.finalizado) {
+        guardarSeccion(pSinc.id, "au",  pSinc.au);
+        guardarSeccion(pSinc.id, "pol", pSinc.polizasPorComp);
+        guardarSeccion(pSinc.id, "est", pSinc.estampillas);
+        if (pSinc.presupInterv)  guardarSeccion(pSinc.id, "interv",  pSinc.presupInterv);
+        if (pSinc.presupConsult) guardarSeccion(pSinc.id, "consult", pSinc.presupConsult);
+      }
+    } catch(e) { console.error("Guardar secciones convergidas falló:", e); }
     setVista("lista");
   };
   // ── Helper: get active presupuesto ID from tabEditor ─────────────────────────
@@ -12852,7 +12991,7 @@ const sincronizarPolizasAU = (proyecto) => {
       }
       return {...p, capitulos: newCaps};
     });
-    dbSaveCap(newCap, pActivo.id);
+    dbSaveCap(newCap, pActivo.id, getActivePsId());
   };
   const delCap = id => {
     _markEditing("caps");
@@ -12863,7 +13002,7 @@ const sincronizarPolizasAU = (proyecto) => {
     _markEditing("caps");
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === id ? {...c,[campo]:val} : c)));
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===id);
-    if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id);
+    if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id, getActivePsId());
   };
 
   const addItem = capId => {
@@ -12883,22 +13022,42 @@ const sincronizarPolizasAU = (proyecto) => {
   const moverItem = (fromCapId, itemId, toCapId, beforeItemId) => {
     _markEditing("caps");
     if (fromCapId === toCapId && beforeItemId == null) return;
-    setPActivo(p => mutateActiveCaps(p, caps => {
-      const item = (caps.find(c=>c.id===fromCapId)?.items||[]).find(i=>i.id===itemId);
-      if (!item) return caps;
-      let result = caps.map(c => c.id===fromCapId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c);
-      result = result.map(c => {
-        if (c.id !== toCapId) return c;
-        const items = [...(c.items||[])];
-        if (beforeItemId == null) { items.push(item); }
-        else {
-          const bi = items.findIndex(i=>i.id===beforeItemId);
-          items.splice(bi < 0 ? items.length : bi, 0, item);
-        }
-        return {...c, items};
-      });
-      return result;
-    }));
+    // Se calcula el resultado FUERA del setPActivo para poder persistirlo:
+    // antes el drag & drop solo vivía en memoria (capitulo_id y orden nunca se
+    // guardaban) y al recargar los ítems volvían a su capítulo/orden anterior.
+    const capsNow = getActiveCapitulos(pActivoRef.current || pActivo);
+    const item = (capsNow.find(c=>c.id===fromCapId)?.items||[]).find(i=>i.id===itemId);
+    if (!item) return;
+    let result = capsNow.map(c => c.id===fromCapId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c);
+    result = result.map(c => {
+      if (c.id !== toCapId) return c;
+      const items = [...(c.items||[])];
+      if (beforeItemId == null) { items.push(item); }
+      else {
+        const bi = items.findIndex(i=>i.id===beforeItemId);
+        items.splice(bi < 0 ? items.length : bi, 0, item);
+      }
+      return {...c, items};
+    });
+    // Reindexar `orden` en los capítulos afectados
+    result = result.map(c => (c.id===fromCapId || c.id===toCapId)
+      ? {...c, items:(c.items||[]).map((i,ix)=>({...i, orden:ix}))} : c);
+    setPActivo(p => mutateActiveCaps(p, () => result));
+    // Persistir en lote las filas de ambos capítulos (capitulo_id + orden nuevos)
+    const proyId = String((pActivoRef.current||pActivo).id);
+    [...new Set([fromCapId, toCapId])].forEach(cid => {
+      const cap = result.find(c=>c.id===cid);
+      if (!cap) return;
+      const filas = (cap.items||[]).map(it => ({
+        id: String(it.id), proyecto_id: proyId,
+        capitulo_id: String(cap.id), numero_cap: cap.numero,
+        apu_id: it.apuId ? String(it.apuId) : null,
+        descripcion: it.descripcion||"", unidad: it.unidad||"",
+        cantidad: it.cantidad||0, orden_item: it.orden||0,
+        ...dbUser()
+      }));
+      if (filas.length) safeUpsert("items_presupuesto", filas, "items_mov_"+proyId+"_"+cid);
+    });
   };
   const updIt = (capId, itemId, campo, val) => {
     _markEditing("caps");
@@ -13281,7 +13440,13 @@ const sincronizarPolizasAU = (proyecto) => {
     const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
     const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
     const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
-    const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal);
+    // Misma consultoría que usa la pestaña Ficha: antes aquí se omitía y la base
+    // de las pólizas EDESO no cuadraba con la Ficha.
+    const _cSubE  = calcTotalPresupConsult(pActivo.presupConsult);
+    const _cPolDE = ((pActivo.polizasPorComp||{})["consultoria"])||{};
+    const _cPlazoE= Number(_cPolDE.plazoContractual)||Number((pActivo.presupConsult||{}).plazo)||0;
+    const _cTotE  = _cSubE > 0 ? calcResumenInterv(_cSubE, _intervEst, _cPolDE.polizasActivas||[], _cPlazoE).valorTotal : 0;
+    const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal, _cTotE);
     return React.createElement(TabPolizas, { proyecto: pActivo, componenteId: "edeso", totalProyecto: _fichaR.totalRecursos, totalBase: _fichaR.totalRecursos, catalogoPolizas: catalogoPolizas || [], plazoProyecto: (pActivo.fichaFinanciera||{}).duracion || 0, setPolizas: (key, pol) => setPActivo(p => ({ ...p, polizasPorComp: { ...(p.polizasPorComp || {}), [key]: pol } })), setAU: au => setPActivo(p => ({ ...p, au })) });
   })(), (tabEditor.startsWith("presupuesto_obra_")) && (() => {
     // Dynamic presupuesto tab
@@ -14057,7 +14222,11 @@ const sincronizarPolizasAU = (proyecto) => {
       const _intervEst  = getEstampillasMunicipio(catalogoEstampillas||[], pActivo.municipioId, "interv");
       const _intervPlazo= Number(_intervPolD.plazoContractual)||Number((pActivo.presupInterv||{}).plazo)||0;
       const _intervTotal= calcResumenInterv(_intervSub, _intervEst, _intervPolD.polizasActivas||[], _intervPlazo).valorTotal;
-      const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal);
+      const _cSubE  = calcTotalPresupConsult(pActivo.presupConsult);
+      const _cPolDE = ((pActivo.polizasPorComp||{})["consultoria"])||{};
+      const _cPlazoE= Number(_cPolDE.plazoContractual)||Number((pActivo.presupConsult||{}).plazo)||0;
+      const _cTotE  = _cSubE > 0 ? calcResumenInterv(_cSubE, _intervEst, _cPolDE.polizasActivas||[], _cPlazoE).valorTotal : 0;
+      const _fichaR     = calcFichaFinanciera(pActivo, _obraTotal, _intervTotal, _cTotE);
       return React.createElement(TabPolizas, { proyecto: pActivo, componenteId: "edeso", totalProyecto: _fichaR.totalRecursos, totalBase: _fichaR.totalRecursos, catalogoPolizas: catalogoPolizas || [], plazoProyecto: (pActivo.fichaFinanciera||{}).duracion || 0, setPolizas: () => {}, setAU: () => {}, readOnly: true, perfil, session });
     })(),
     (tabDetalle.startsWith("presupuesto_obra_") || tabDetalle === "presupuesto_interventoria" || tabDetalle === "presupuesto_consultoria") && (() => {
@@ -15679,6 +15848,9 @@ async function safeUpsert(table, data, queueKey) {
       offlineQueue.add({ table, data, key: queueKey, ts: Date.now() });
     } else {
       console.error('upsert error:', table, error);
+      // Antes esto era 100% silencioso: la fila NO se guardaba y el usuario no
+      // se enteraba. Ahora se avisa en pantalla.
+      if(window.__edeso_saveError__) window.__edeso_saveError__(table);
     }
   }
 }
@@ -15790,7 +15962,7 @@ function App() {
       const proyId=rest.slice(0,lastU), sec=rest.slice(lastU+1);
       const idx=proyBase.findIndex(p=>String(p.id)===String(proyId));
       if(idx===-1) return;
-      if(sec==="meta") proyBase[idx]={...proyBase[idx],...(row.value||{})};
+      if(sec==="meta") { const v=row.value||{}; proyBase[idx]={...proyBase[idx],...v, presupuestosObra: v.presupuestosObra!==undefined ? mergeMetaPresupuestos(proyBase[idx].presupuestosObra, v.presupuestosObra) : proyBase[idx].presupuestosObra}; }
       else { const f=SEC_FIELD[sec]; if(f) proyBase[idx]={...proyBase[idx],[f]:(row.value!=null?row.value:proyBase[idx][f])}; }
     });
     // Tercer paso: reconstruir los CAPÍTULOS desde las tablas por fila
@@ -15826,10 +15998,32 @@ function App() {
         Object.keys(porProy).forEach(pid=>{
           const idx = proyBase.findIndex(p=>String(p.id)===String(pid));
           if(idx===-1) return;
-          const caps = Object.values(porProy[pid].caps)
+          const todos = Object.values(porProy[pid].caps)
             .sort((a,b)=>(a.orden||0)-(b.orden||0))
             .map(c=>({...c, items:c.items.sort((a,b)=>(a.orden||0)-(b.orden||0))}));
-          proyBase[idx] = {...proyBase[idx], capitulos: caps};
+          // Separar por hoja: tipo "obra_ps:<psId>" pertenece a esa hoja de presupuesto.
+          // Los "obra" sin etiqueta (filas antiguas) van a la primera hoja.
+          const porHoja = {}, legacyObra = [], legacyOtros = [];
+          todos.forEach(c=>{
+            const t = String(c.tipo||"obra");
+            if(t.indexOf("obra_ps:")===0){ const ps=t.slice(8); (porHoja[ps] = porHoja[ps]||[]).push({...c, tipo:"obra"}); }
+            else if(t==="obra") legacyObra.push(c);
+            else legacyOtros.push(c);
+          });
+          const pBase = proyBase[idx];
+          let sheets = (pBase.presupuestosObra||[]).map(ps=>({...ps, capitulos:[]}));
+          if(!sheets.length && (legacyObra.length || Object.keys(porHoja).length))
+            sheets=[{id:"p0", nombre:"Presupuesto Obra", capitulos:[]}];
+          if(sheets.length) sheets[0] = {...sheets[0], capitulos: legacyObra};
+          Object.keys(porHoja).forEach(psId=>{
+            const i2 = sheets.findIndex(sh=>String(sh.id)===String(psId));
+            if(i2>=0) sheets[i2] = {...sheets[i2], capitulos:[...(sheets[i2].capitulos||[]), ...porHoja[psId]]};
+            else sheets.push({id:psId, nombre:"Presupuesto Obra", capitulos: porHoja[psId]});
+          });
+          const capsPrimera = sheets.length ? (sheets[0].capitulos||[]) : legacyObra;
+          proyBase[idx] = {...pBase,
+            capitulos: [...capsPrimera, ...legacyOtros],
+            presupuestosObra: sheets.length ? sheets : pBase.presupuestosObra};
         });
       }
     } catch(e){ console.error("Carga de capítulos por fila falló, se usa el bloque:", e); }
@@ -15850,7 +16044,20 @@ function App() {
     // y se recibe con mergeCapExterno/mergeItemExterno. Guardarla TAMBIÉN como bloque
     // arrastraba la copia vieja de capítulos y pisaba el trabajo del otro usuario.
     // Por eso el bloque ya no se escribe para esta sección.
-    if (seccion === "caps") return;
+    if (seccion === "caps") {
+      // El bloque de caps NO se persiste (vive fila por fila), pero SÍ dejamos
+      // versión histórica: antes esta rama hacía el historial de presupuesto
+      // inalcanzable (solo se historizaba el A+U).
+      if (session) {
+        _sb.from("version_history").insert({
+          proyecto_id: String(proyectoId), seccion, value: data,
+          saved_at: new Date().toISOString(),
+          user_email: session.user.email,
+          user_nombre: perfil?.nombre || session.user.email,
+        }).then(()=>{}).catch(()=>{});
+      }
+      return;
+    }
     const key = `psec_${proyectoId}_${seccion}`;
     setSaveStatus("Guardando...");
     _sb.from("app_data").upsert({
@@ -15905,6 +16112,7 @@ function App() {
     const ch = _sb.channel("edeso_sync")
       .on("postgres_changes",{event:"*",schema:"public",table:"app_data"},
         payload=>{
+          if(!payload.new) return;   // DELETE trae payload.new undefined y rompía el handler
           const{key,value,updated_by_email,updated_by_name}=payload.new;
           if(updated_by_email===myEmail) return;
           const nombre = updated_by_name||updated_by_email||"alguien";
@@ -15938,7 +16146,7 @@ function App() {
             };
             setProyectosRaw(prev=>prev.map(p=>{
               if(String(p.id)!==String(proyId)) return p;
-              if(sec==="meta") return {...p,...(value||{})};
+              if(sec==="meta") { const v=value||{}; return {...p,...v, presupuestosObra: v.presupuestosObra!==undefined ? mergeMetaPresupuestos(p.presupuestosObra, v.presupuestosObra) : p.presupuestosObra}; }
               if(sec==="caps") return {...p, capitulos: mergeCapsRT(p.capitulos, value)};
               if(sec==="interv"||sec==="consult") {
                 const field=SEC_FIELD[sec];
@@ -15972,7 +16180,9 @@ function App() {
                 if(!pL) return pR;
                 return { ...pL, ...pR,
                   capitulos: pL.capitulos, au: pL.au, polizasPorComp: pL.polizasPorComp,
-                  estampillas: pL.estampillas, presupInterv: pL.presupInterv, presupConsult: pL.presupConsult };
+                  estampillas: pL.estampillas, presupInterv: pL.presupInterv, presupConsult: pL.presupConsult,
+                  // el blob viaja PODADO: nunca pisar las hojas locales (que sí tienen capítulos)
+                  presupuestosObra: mergeMetaPresupuestos(pL.presupuestosObra, pR.presupuestosObra) };
               });
               (prev||[]).forEach(pL=>{ if(!merged.find(m=>String(m.id)===String(pL.id))) merged.push(pL); });
               return merged;
@@ -15999,12 +16209,17 @@ function App() {
     };
     window.addEventListener('online',  handleOnline);
     window.addEventListener('offline', handleOffline);
+    // Aviso visible cuando un guardado por fila falla (RLS, permisos, etc.)
+    window.__edeso_saveError__ = () => {
+      setSaveStatus("⚠️ Error al guardar — revisa tu conexión/permisos");
+      setTimeout(()=>setSaveStatus(""), 6000);
+    };
     // Flush any pending ops on mount (in case page was reloaded while offline)
     if(navigator.onLine && _sb) {
       const q = offlineQueue.get();
       if(q.length > 0) flushOfflineQueue(setSyncMsg);
     }
-    return()=>{ window.removeEventListener('online',handleOnline); window.removeEventListener('offline',handleOffline); };
+    return()=>{ window.removeEventListener('online',handleOnline); window.removeEventListener('offline',handleOffline); window.__edeso_saveError__ = null; };
   },[]);
 
   useEffect(()=>{
@@ -16151,6 +16366,12 @@ function App() {
   const podarSecciones = (arr) => (arr||[]).map(p => {
     const clon = {...p};
     SEC_HEAVY.forEach(f => { delete clon[f]; });
+    // Los capítulos anidados dentro de presupuestosObra también son "sección pesada":
+    // antes viajaban completos en la clave "proyectos" y una copia vieja podía pisar
+    // el trabajo del otro usuario. Se podan; los capítulos viven fila por fila.
+    if (Array.isArray(clon.presupuestosObra)) {
+      clon.presupuestosObra = clon.presupuestosObra.map(ps => { const c2 = {...ps}; delete c2.capitulos; return c2; });
+    }
     return clon;
   });
 
@@ -16553,13 +16774,24 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
   });
 
   // ── 8. FICHA FINANCIERA ──────────────────────────────────────────
-  var tiFF=calcTotalPresupInterv(pActivo.presupInterv);
-  var R=calcFichaFinanciera(pActivo,res.total,tiFF,0,50);
+  // Igual que la pestaña Ficha del sistema: obra CON extras, interventoría
+  // CONVERGIDA (estampillas+pólizas+IVA) y consultoría incluida.
+  var _piP    = pActivo.presupInterv||{};
+  var _piSubP = calcTotalPresupInterv(_piP);
+  var _piPolP = ((pActivo.polizasPorComp||{}).interventoria)||{};
+  var _piEstP = getEstampillasMunicipio(_G.catEst||[], pActivo.municipioId, "interv");
+  var _piPlzP = Number(_piPolP.plazoContractual)||Number(_piP.plazo)||0;
+  var tiFF    = _piSubP>0 ? Math.round(calcResumenInterv(_piSubP,_piEstP,_piPolP.polizasActivas||[],_piPlzP).valorTotal) : 0;
+  var _cSubP  = calcTotalPresupConsult(pActivo.presupConsult);
+  var _cPolP  = ((pActivo.polizasPorComp||{}).consultoria)||{};
+  var _cPlzP  = Number(_cPolP.plazoContractual)||Number((pActivo.presupConsult||{}).plazo)||0;
+  var _cTotP  = _cSubP>0 ? Math.round(calcResumenInterv(_cSubP,_piEstP,_cPolP.polizasActivas||[],_cPlzP).valorTotal) : 0;
+  var R=calcFichaFinanciera(pActivo,res.total+totEx,tiFF,_cTotP,50);
   var pctHon=ff.pctHonoarios||0.08;
   var ffSummary=[
     ['Costo de Obra (C.D.+C.I.)',R.obraTotal,false],
     ['Interventoria',R.intervTotal,false],
-    hasConsult?['Consultoria / Diseno',R.consultTotal||0,false]:null,
+    (hasConsult||((R.consultTotal||0)>0))?['Consultoria / Diseno',R.consultTotal||0,false]:null,
     ['Costos Indirectos del Proyecto',R.subtotalIndirecto,false],
     ['SUBTOTAL RECURSOS A ADMINISTRAR',R.totalRecursos,true],
     ['Honorarios A.D.R. ('+(pctHon*100).toFixed(0)+'%)',R.honorarios,false],
