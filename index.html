@@ -6604,10 +6604,13 @@ function TabPresupuestoInterventoria({ proyecto, setPActivo, readOnly, plantilla
               let obraTotal = 0;
               try {
                 if (apusG && recG) {
-                  const _cd  = calcCD(proyecto, apusG, recG);
-                  const _au  = calcAUTotal(proyecto.au, _cd);
-                  const _ext = getExtrasTotal(proyecto);
-                  obraTotal = _cd + _au + _ext;
+                  // Usar el MISMO valor de obra que muestra el A+U y la tarjeta
+                  // "Costos Totales": el proyecto CONVERGIDO (pólizas, estampillas y
+                  // transacciones de la 1.8 ya resueltas). Antes usaba proyecto.au
+                  // sin converger y la incidencia quedaba con un valor de obra viejo.
+                  const _proj = convergerAU(proyecto, apusG, recG, G.catEst || []);
+                  const _res  = calcProyecto(_proj, apusG, recG);
+                  obraTotal = _res.total + getExtrasTotal(_proj);
                 }
               } catch(e) {}
               const hay = obraTotal > 0;
