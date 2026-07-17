@@ -12512,11 +12512,16 @@ function ModuloProyectos({
     updated_by_name:  perfil?.nombre || session?.user?.email,
   });
 
-  const dbSaveCap = (cap, proyId) => {
+  const dbSaveCap = (cap, proyId, psId) => {
+    // psId = hoja de presupuesto a la que pertenece el capítulo. Se codifica en
+    // `tipo` como "obra_ps:<psId>" para que al recargar la página el capítulo
+    // vuelva a su hoja correcta (si no, tras recargar se ve "$0" en todas las
+    // hojas aunque los datos estén bien guardados).
+    const tipoRow = psId ? ("obra_ps:"+psId) : (cap.tipo||"obra");
     safeUpsert("capitulos_presupuesto", {
       id: String(cap.id), proyecto_id: String(proyId||pActivo?.id),
       numero: cap.numero, nombre: cap.nombre,
-      tipo: cap.tipo||"obra", orden: cap.orden||0,
+      tipo: tipoRow, orden: cap.orden||0,
       ...dbUser()
     }, "cap_"+(proyId||pActivo?.id)+"_"+cap.id);
   };
@@ -12611,7 +12616,9 @@ const mergeItemExterno = React.useCallback((event, row) => {
     setPActivo(p => {
       if(!p || String(p.id)!==String(row.proyecto_id)) return p;
       const newItem = {
-        id:row.id, apuId:row.apu_id,
+        // Igual conversión que en la carga inicial: apu_id llega como texto de
+        // la base, pero los APUs en memoria usan id numérico.
+        id:row.id, apuId: row.apu_id!=null && !isNaN(Number(row.apu_id)) ? Number(row.apu_id) : row.apu_id,
         descripcion:row.descripcion||"",
         unidad:row.unidad||"",
         cantidad:Number(row.cantidad)||0,
@@ -13039,7 +13046,7 @@ const sincronizarPolizasAU = (proyecto) => {
       }
       return {...p, capitulos: newCaps};
     });
-    dbSaveCap(newCap, pActivo.id);
+    dbSaveCap(newCap, pActivo.id, getActivePsId());
   };
   const delCap = id => {
     _markEditing("caps");
@@ -13050,7 +13057,7 @@ const sincronizarPolizasAU = (proyecto) => {
     _markEditing("caps");
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id === id ? {...c,[campo]:val} : c)));
     const cap = getActiveCapitulos(pActivo).find(c=>c.id===id);
-    if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id);
+    if(cap) dbSaveCap({...cap,[campo]:val}, pActivo.id, getActivePsId());
   };
 
   const addItem = capId => {
@@ -15982,9 +15989,11 @@ function App() {
     });
     // Tercer paso: reconstruir los CAPÍTULOS desde las tablas por fila
     // (capitulos_presupuesto / items_presupuesto). Son la fuente autoritativa del
-    // presupuesto: como ya no se guarda el bloque "caps", los capítulos creados por
-    // cualquiera de los dos usuarios viven aquí. Se combinan con el bloque viejo por
-    // si un proyecto todavía no tiene filas (proyectos antiguos).
+    // presupuesto. IMPORTANTE: cuando un proyecto tiene HOJAS (presupuestosObra),
+    // la pantalla ignora por completo el campo legacy "capitulos" y solo mira
+    // dentro de cada hoja — así que hay que repartir cada capítulo en SU hoja
+    // (usando la etiqueta "obra_ps:<hojaId>" del campo tipo), o si no, tras
+    // recargar la página todo se ve en $0 aunque los datos estén bien guardados.
     try {
       const [{data:capsRows}, {data:itemsRows}] = await Promise.all([
         _sb.from("capitulos_presupuesto").select("*"),
@@ -15994,7 +16003,7 @@ function App() {
         // Agrupar por proyecto
         const porProy = {};
         capsRows.forEach(c=>{
-          (porProy[String(c.proyecto_id)] ||= {caps:{}, orden:[]});
+          if(!porProy[String(c.proyecto_id)]) porProy[String(c.proyecto_id)] = {caps:{}};
           porProy[String(c.proyecto_id)].caps[String(c.id)] = {
             id:c.id, numero:c.numero, nombre:c.nombre, tipo:c.tipo||"obra",
             orden:c.orden||0, items:[]
@@ -16006,17 +16015,46 @@ function App() {
           const cap = g.caps[String(it.capitulo_id)];
           if(!cap) return;
           cap.items.push({
-            id:it.id, apuId:it.apu_id, descripcion:it.descripcion||"",
+            // apu_id se guarda como TEXTO en la base, pero los APUs en memoria
+            // usan id NUMÉRICO (Date.now()) en todo el sistema. Sin esta
+            // conversión, "apus.find(a => a.id === item.apuId)" nunca coincide
+            // tras recargar (número !== texto) y cada ítem calcula $0.
+            id:it.id, apuId: it.apu_id!=null && !isNaN(Number(it.apu_id)) ? Number(it.apu_id) : it.apu_id,
+            descripcion:it.descripcion||"",
             unidad:it.unidad||"", cantidad:Number(it.cantidad)||0, orden:it.orden_item||0
           });
         });
         Object.keys(porProy).forEach(pid=>{
           const idx = proyBase.findIndex(p=>String(p.id)===String(pid));
           if(idx===-1) return;
-          const caps = Object.values(porProy[pid].caps)
+          const todos = Object.values(porProy[pid].caps)
             .sort((a,b)=>(a.orden||0)-(b.orden||0))
             .map(c=>({...c, items:c.items.sort((a,b)=>(a.orden||0)-(b.orden||0))}));
-          proyBase[idx] = {...proyBase[idx], capitulos: caps};
+
+          const pBase = proyBase[idx];
+          const hojas = pBase.presupuestosObra||[];
+          if(hojas.length){
+            // Repartir por etiqueta "obra_ps:<hojaId>"; los "obra" sin etiqueta
+            // (filas antiguas) van a la primera hoja, para no perder nada.
+            const porHoja = {}, sinEtiqueta = [], noObra = [];
+            todos.forEach(c=>{
+              const t = String(c.tipo||"obra");
+              if(t.indexOf("obra_ps:")===0){ const ps=t.slice(8); (porHoja[ps]=porHoja[ps]||[]).push({...c,tipo:"obra"}); }
+              else if(t==="obra") sinEtiqueta.push({...c,tipo:"obra"});
+              else noObra.push(c);
+            });
+            const nuevasHojas = hojas.map(h=>{
+              const propios = porHoja[String(h.id)] || [];
+              return {...h, capitulos: propios};
+            });
+            if(sinEtiqueta.length) nuevasHojas[0] = {...nuevasHojas[0], capitulos:[...(nuevasHojas[0].capitulos||[]), ...sinEtiqueta]};
+            proyBase[idx] = {...pBase,
+              capitulos: [...(nuevasHojas[0].capitulos||[]), ...noObra],
+              presupuestosObra: nuevasHojas};
+          } else {
+            // Proyecto sin hojas: todo va al campo legacy, como antes.
+            proyBase[idx] = {...pBase, capitulos: todos};
+          }
         });
       }
     } catch(e){ console.error("Carga de capítulos por fila falló, se usa el bloque:", e); }
@@ -16431,6 +16469,11 @@ function App() {
         const hojas = (proy.presupuestosObra && proy.presupuestosObra.length)
           ? proy.presupuestosObra
           : [{id:"p0", capitulos: proy.capitulos||[]}];
+        // Reemplazo completo: borrar lo viejo de este proyecto antes de insertar
+        // lo actual. Así "Guardar todos" deja la base EXACTAMENTE como la pantalla,
+        // sin dejar filas huérfanas ni duplicadas de guardados anteriores.
+        await _sb.from("items_presupuesto").delete().eq("proyecto_id", pid);
+        await _sb.from("capitulos_presupuesto").delete().eq("proyecto_id", pid);
         const capRows=[], itemRows=[];
         hojas.forEach(h=>{
           (h.capitulos||[]).forEach(c=>{
@@ -16653,6 +16696,12 @@ function App() {
         // 7) Persistir TODO en Supabase (recursos, apus, capítulos/ítems por fila, meta del proyecto)
         alert("Leído correctamente. Guardando en la base — esto puede tardar unos segundos…");
         const pid = String(proyDestino.id);
+        // IMPORTANTE: borrar los capítulos/ítems VIEJOS de este proyecto antes de
+        // insertar los nuevos. Sin esto, reimportar el mismo Excel dos veces deja
+        // los capítulos viejos Y los nuevos juntos en la base (duplicados, valores
+        // sumados dos veces) — que fue justo lo que pasó esta noche.
+        await _sb.from("items_presupuesto").delete().eq("proyecto_id", pid);
+        await _sb.from("capitulos_presupuesto").delete().eq("proyecto_id", pid);
         const capRows=[], itemRows=[];
         nuevasHojasCompletas.forEach(h=>{
           (h.capitulos||[]).forEach(c=>{
