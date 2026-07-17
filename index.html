@@ -1357,7 +1357,7 @@ function ModuloRecursos({
     if (filtro !== "all") r = r.filter(x => x.categoria === filtro);
     if (busq.trim()) {
       const q = busq.toLowerCase();
-      r = r.filter(x => x.nombre.toLowerCase().includes(q) || x.codigo.toLowerCase().includes(q));
+      r = r.filter(x => String(x.nombre||"").toLowerCase().includes(q) || String(x.codigo||"").toLowerCase().includes(q));
     }
     return [...r].sort((a, b) => {
       let av = a[sort.f],
@@ -1484,7 +1484,7 @@ function ModuloRecursos({
           let actualizados = 0, agregados = 0;
           const mapa = [...prev];
           nuevos.forEach(n => {
-            const idx = mapa.findIndex(r => r.codigo.toLowerCase() === n.codigo.toLowerCase());
+            const idx = mapa.findIndex(r => String(r.codigo||"").toLowerCase() === n.codigo.toLowerCase());
             if (idx >= 0) {
               // Actualizar precio/unidad pero CONSERVAR el ID original para no romper APUs
               mapa[idx] = { ...mapa[idx], nombre: n.nombre, categoria: n.categoria, unidad: n.unidad, precio: n.precio };
@@ -1903,13 +1903,16 @@ function ModuloAPUs({
     prev.campo === campo ? {campo, dir: prev.dir === "asc" ? "desc" : "asc"} : {campo, dir: "asc"}
   );
   const filtered = useMemo(() => {
+    // Blindaje: si algún APU tiene nombre o código vacío/nulo (por ejemplo tras
+    // una importación con datos incompletos), .toLowerCase() sobre undefined
+    // rompía toda la pantalla en cada tecla escrita en el buscador.
     let list = busq.trim()
-      ? apus.filter(a => a.nombre.toLowerCase().includes(busq.toLowerCase()) || a.codigo.toLowerCase().includes(busq.toLowerCase()))
+      ? apus.filter(a => String(a.nombre||"").toLowerCase().includes(busq.toLowerCase()) || String(a.codigo||"").toLowerCase().includes(busq.toLowerCase()))
       : [...apus];
     if (sortApus.campo) {
       const c = sortApus.campo;
       list = [...list].sort((a,b) => {
-        const r = a[c].localeCompare(b[c], "es", {sensitivity:"base"});
+        const r = String(a[c]||"").localeCompare(String(b[c]||""), "es", {sensitivity:"base"});
         return sortApus.dir === "asc" ? r : -r;
       });
     }
@@ -1922,7 +1925,7 @@ function ModuloAPUs({
   const duplicarAPU = a => {
     const base = (a.codigo || "APU") + "-COPIA";
     let codigo = base, n = 1;
-    while (apus.some(x => x.codigo.toLowerCase() === codigo.toLowerCase())) { n++; codigo = base + "-" + n; }
+    while (apus.some(x => String(x.codigo||"").toLowerCase() === codigo.toLowerCase())) { n++; codigo = base + "-" + n; }
     const copia = JSON.parse(JSON.stringify(a));
     copia.id = Date.now() + Math.random();
     copia.codigo = codigo;
@@ -2006,8 +2009,8 @@ function ModuloAPUs({
               const apu = nuevosApus.find(a => a.codigo === apuCod);
               if (!apu) { errL.push(`Línea ${i+2}: APU "${apuCod}" no encontrado`); return; }
               // Buscar recurso: primero exacto, luego parcial
-              let rec = recursos.find(r => r.nombre.toLowerCase() === recNom);
-              if (!rec) rec = recursos.find(r => r.nombre.toLowerCase().includes(recNom) || recNom.includes(r.nombre.toLowerCase()));
+              let rec = recursos.find(r => String(r.nombre||"").toLowerCase() === recNom);
+              if (!rec) rec = recursos.find(r => String(r.nombre||"").toLowerCase().includes(recNom) || recNom.includes(String(r.nombre||"").toLowerCase()));
               if (!rec) { errL.push(`⚠ Recurso no encontrado: "${f[iL.rec]}"`); return; }
               const sec = SECCIONES_APU.find(s => s.id === rec.categoria);
               apu.lineas.push({
@@ -2026,7 +2029,7 @@ function ModuloAPUs({
           let actualizados = 0, agregados = 0;
           const mapa = [...prev];
           nuevosApus.forEach(a => {
-            const idx = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            const idx = mapa.findIndex(ex => String(ex.codigo||"").toLowerCase() === a.codigo.toLowerCase());
             if (idx >= 0) {
               // Actualizar nombre/unidad/líneas pero conservar el ID original
               mapa[idx] = { ...mapa[idx], nombre: a.nombre, unidad: a.unidad, lineas: a.lineas };
@@ -2154,7 +2157,7 @@ function ModuloAPUs({
         const nuevosApus = [];
         const mapaConservar = {};
         const mapaExcel = {};
-        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase()] = r.id; });
+        recursos.forEach(r => { mapaConservar[String(r.nombre||"").toLowerCase()] = r.id; });
 
         const getRecursoId = (nombre, categoria, unidad, precio) => {
           const key = nombre.toLowerCase().trim();
@@ -2220,7 +2223,7 @@ function ModuloAPUs({
           let agregados = 0, actualizados = 0;
           const mapa = [...prev];
           nuevosApus.forEach(a => {
-            const idx2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            const idx2 = mapa.findIndex(ex => String(ex.codigo||"").toLowerCase() === a.codigo.toLowerCase());
             if (idx2 >= 0) { mapa[idx2] = { ...mapa[idx2], nombre: a.nombre, unidad: a.unidad, lineas: a.lineas }; actualizados++; }
             else { mapa.push(a); agregados++; }
           });
@@ -2274,7 +2277,7 @@ function ModuloAPUs({
         const nuevosApus = [];
         const mapaConservar = {};
         const mapaExcel = {};
-        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+        recursos.forEach(r => { mapaConservar[String(r.nombre||"").toLowerCase().trim()] = r.id; });
 
         const getOrCreateRecurso = (nombre, categoria, unidad, precio) => {
           const key = nombre.toLowerCase().trim();
@@ -2402,7 +2405,7 @@ function ModuloAPUs({
           let agregados = 0, actualizados = 0;
           const mapa = [...prev];
           nuevosApus.forEach(a => {
-            const idx2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            const idx2 = mapa.findIndex(ex => String(ex.codigo||"").toLowerCase() === a.codigo.toLowerCase());
             if (idx2 >= 0) { mapa[idx2] = { ...mapa[idx2], nombre: a.nombre, unidad: a.unidad, lineas: a.lineas }; actualizados++; }
             else { mapa.push(a); agregados++; }
           });
@@ -2477,7 +2480,7 @@ function ModuloAPUs({
         // mapaExcel: para modo actualizar — crea recursos nuevos con precios del Excel
         const mapaConservar = {};
         const mapaExcel = {};
-        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+        recursos.forEach(r => { mapaConservar[String(r.nombre||"").toLowerCase().trim()] = r.id; });
 
         const getOrCreate = (nombre, categoria, unidad, precio) => {
           const key = nombre.toLowerCase().trim();
@@ -2557,7 +2560,7 @@ function ModuloAPUs({
           let agregados=0, actualizados=0;
           const mapa = [...prev];
           nuevosApus.forEach(a => {
-            const i2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            const i2 = mapa.findIndex(ex => String(ex.codigo||"").toLowerCase() === a.codigo.toLowerCase());
             if (i2 >= 0) { mapa[i2] = {...mapa[i2], nombre:a.nombre, unidad:a.unidad, lineas:a.lineas}; actualizados++; }
             else { mapa.push(a); agregados++; }
           });
@@ -2624,7 +2627,7 @@ function ModuloAPUs({
         const nuevosApus = [];
         const mapaConservar = {};
         const mapaExcel = {};
-        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+        recursos.forEach(r => { mapaConservar[String(r.nombre||"").toLowerCase().trim()] = r.id; });
 
         const getOrCreate = (nombre, categoria, unidad, precio) => {
           const key = nombre.toLowerCase().trim();
@@ -2747,7 +2750,7 @@ function ModuloAPUs({
           let agregados=0, actualizados=0;
           const mapa = [...prev];
           nuevosApus.forEach(a => {
-            const i2 = mapa.findIndex(ex => ex.codigo.toLowerCase()===a.codigo.toLowerCase());
+            const i2 = mapa.findIndex(ex => String(ex.codigo||"").toLowerCase()===a.codigo.toLowerCase());
             if (i2>=0) { mapa[i2]={...mapa[i2],nombre:a.nombre,unidad:a.unidad,lineas:a.lineas}; actualizados++; }
             else { mapa.push(a); agregados++; }
           });
@@ -2834,7 +2837,7 @@ function ModuloAPUs({
         const nuevosApus = [];
         const mapaConservar = {};
         const mapaExcel = {};
-        recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+        recursos.forEach(r => { mapaConservar[String(r.nombre||"").toLowerCase().trim()] = r.id; });
 
         const getOrCreate = (nombre, categoria, unidad, precio) => {
           const key = nombre.toLowerCase().trim();
@@ -2948,7 +2951,7 @@ function ModuloAPUs({
           let agregados = 0;
           const mapa = [...prev];
           nuevosApus.forEach(a => {
-            const i2 = mapa.findIndex(ex => ex.codigo.toLowerCase() === a.codigo.toLowerCase());
+            const i2 = mapa.findIndex(ex => String(ex.codigo||"").toLowerCase() === a.codigo.toLowerCase());
             if (i2 >= 0) mapa[i2] = { ...mapa[i2], nombre:a.nombre, unidad:a.unidad, lineas:a.lineas };
             else { mapa.push(a); agregados++; }
           });
@@ -2978,7 +2981,7 @@ function ModuloAPUs({
     const nuevosApus = [];
     const mapaConservar = {};
     const mapaExcel = {};
-    recursos.forEach(r => { mapaConservar[r.nombre.toLowerCase().trim()] = r.id; });
+    recursos.forEach(r => { mapaConservar[String(r.nombre||"").toLowerCase().trim()] = r.id; });
 
     const getOrCreate = (nombre, categoria, unidad, precio) => {
       const key = nombre.toLowerCase().trim();
@@ -3153,7 +3156,7 @@ function ModuloAPUs({
       let agregados=0;
       const mapa = [...prev];
       nuevosApus.forEach(a => {
-        const i2 = mapa.findIndex(ex=>ex.codigo.toLowerCase()===a.codigo.toLowerCase());
+        const i2 = mapa.findIndex(ex=>String(ex.codigo||"").toLowerCase()===a.codigo.toLowerCase());
         if (i2>=0) mapa[i2]={...mapa[i2],nombre:a.nombre,unidad:a.unidad,lineas:a.lineas};
         else { mapa.push(a); agregados++; }
       });
@@ -3234,7 +3237,7 @@ function ModuloAPUs({
     let r = recursos.filter(rc => rc.categoria === showRecModal.seccion);
     if (busqRec.trim()) {
       const q = busqRec.toLowerCase();
-      r = r.filter(rc => rc.nombre.toLowerCase().includes(q) || rc.codigo.toLowerCase().includes(q));
+      r = r.filter(rc => String(rc.nombre||"").toLowerCase().includes(q) || String(rc.codigo||"").toLowerCase().includes(q));
     }
     return r;
   }, [recursos, showRecModal, busqRec]);
@@ -3686,7 +3689,10 @@ function ModuloAPUs({
     onClick: () => {
       const vistos = new Set();
       const limpios = apus.filter(a => {
-        const k = a.codigo.trim().toLowerCase();
+        // Blindaje: un APU con código vacío/nulo rompía este botón por completo
+        // (.trim() sobre undefined). Ahora un código vacío se trata como texto
+        // vacío, sin tumbar la limpieza de duplicados.
+        const k = String(a.codigo||"").trim().toLowerCase();
         if (vistos.has(k)) return false;
         vistos.add(k);
         return true;
@@ -5212,12 +5218,12 @@ function TabAU({
         React.createElement("div", { style:{fontSize:13,fontWeight:700,color:"var(--ink2)"} }, "\uD83D\uDCC5 Plazo del proyecto"),
         React.createElement("div", { style:{display:"flex",alignItems:"center",gap:8} },
           !readOnly ? React.createElement("input", {
-            className:"ifield", type:"number", min:0, step:1,
+            className:"ifield", type:"number", min:0, step:0.5,
             style:{width:90,fontFamily:"var(--mono)",fontWeight:700,fontSize:14},
             value: au.plazo || "",
             placeholder:"0",
             onChange: function(e) {
-              var v = parseInt(e.target.value)||0;
+              var v = parseFloat(e.target.value)||0;
               var oldPlazo = au.plazo || 0;
               setAu(function(prev) {
                 var secciones = (prev.secciones||[]).map(function(sec) {
@@ -7871,7 +7877,7 @@ function ModuloCatalogoPolizas({ catalogoPolizas, setCatalogoPolizas }) {
   const lista = React.useMemo(() => {
     if (!busq.trim()) return catalogoPolizas;
     const q = busq.toLowerCase();
-    return catalogoPolizas.filter(p => p.nombre.toLowerCase().includes(q));
+    return catalogoPolizas.filter(p => String(p.nombre||"").toLowerCase().includes(q));
   }, [catalogoPolizas, busq]);
   function abrirNuevo() { setEditId(null); setForm({ nombre:"", pctDef:"10", mesesExtraDef:"0", obs:"" }); setModal(true); }
   function abrirEditar(pol) { setEditId(pol.id); setForm({ nombre:pol.nombre, pctDef:String(pol.pctDef), mesesExtraDef:String(pol.mesesExtraDef), obs:pol.obs||"" }); setModal(true); }
@@ -8118,8 +8124,8 @@ function ModuloCatalogoEstampillas({ catalogoEstampillas, setCatalogoEstampillas
 
   const grupos = catalogoEstampillas || [];
   const lista = busq.trim()
-    ? grupos.filter(g => g.nombre.toLowerCase().includes(busq.toLowerCase()) ||
-        (g.items||[]).some(e => e.nombre.toLowerCase().includes(busq.toLowerCase())))
+    ? grupos.filter(g => String(g.nombre||"").toLowerCase().includes(busq.toLowerCase()) ||
+        (g.items||[]).some(e => String(e.nombre||"").toLowerCase().includes(busq.toLowerCase())))
     : grupos;
 
   const abrirNuevoGrp = () => { setEditGrpId(null); setFormGrp({ nombre:"" }); setModalGrp(true); };
@@ -11878,11 +11884,11 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
               React.createElement('div', null,
                 React.createElement('label', { className:'lbl' }, 'Duración (meses)'),
                 React.createElement('div', { style:{display:'flex',gap:8,alignItems:'center'} },
-                  React.createElement('input', { className:'ifield', type:'number', min:1, style:{width:80,fontFamily:'var(--mono)',fontWeight:700},
+                  React.createElement('input', { className:'ifield', type:'number', min:1, step:0.5, style:{width:80,fontFamily:'var(--mono)',fontWeight:700},
                     value: duracion || '',
                     disabled:readOnly,
                     onChange:function(e){
-                      var v = parseInt(e.target.value)||0;
+                      var v = parseFloat(e.target.value)||0;
                       var oldD = duracion;
                       var updItems = function(lista) {
                         return (lista||[]).map(function(item) {
@@ -12857,7 +12863,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
   const filtered = useMemo(() => {
     if (!busq.trim()) return proyectosVisibles;
     const q = busq.toLowerCase();
-    return proyectosVisibles.filter(p => p.nombre.toLowerCase().includes(q) || p.codigo.toLowerCase().includes(q) || (p.contratante || "").toLowerCase().includes(q));
+    return proyectosVisibles.filter(p => String(p.nombre||"").toLowerCase().includes(q) || String(p.codigo||"").toLowerCase().includes(q) || String(p.contratante||"").toLowerCase().includes(q));
   }, [proyectos, busq]);
   const abrirDetalle = p => {
     // Misma preparación que abrirEditor: converger + migrar presupuestosObra, para que
@@ -13207,7 +13213,7 @@ const sincronizarPolizasAU = (proyecto) => {
   const apusFiltrados = useMemo(() => {
     if (!busqApu.trim()) return apus;
     const q = busqApu.toLowerCase();
-    return apus.filter(a => a.nombre.toLowerCase().includes(q) || a.codigo.toLowerCase().includes(q));
+    return apus.filter(a => String(a.nombre||"").toLowerCase().includes(q) || String(a.codigo||"").toLowerCase().includes(q));
   }, [apus, busqApu]);
   const resumen = useMemo(() => pActivo ? calcProyecto(pActivo, apus, recursos) : null, [pActivo, apus, recursos]);
   const cdPorComp   = useMemo(() => pActivo ? calcCDPorComp(pActivo, apus, recursos) : {}, [pActivo, apus, recursos]);
@@ -14697,7 +14703,7 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
     let r = recursos.filter(rc => rc.categoria === showRecModal.seccion);
     if(busqRec.trim()) {
       const q = busqRec.toLowerCase();
-      r = r.filter(rc => rc.nombre.toLowerCase().includes(q) || (rc.codigo||"").toLowerCase().includes(q));
+      r = r.filter(rc => String(rc.nombre||"").toLowerCase().includes(q) || String(rc.codigo||"").toLowerCase().includes(q));
     }
     return r;
   }, [recursos, showRecModal, busqRec]);
