@@ -1060,7 +1060,7 @@ const CSS = `
 // ═══════════════════════════════════════════════════════
 function Sidebar({
   modulo, setModulo, counts,
-  onExportar, onImportar,
+  onExportar, onImportar, onImportarExcel,
   perfil, onLogout, sidebarOpen, setSidebarOpen, usuariosActivos
 }) {
   const esAdmin = perfil?.rol === 'admin';
@@ -1143,6 +1143,12 @@ function Sidebar({
         style:{width:"100%",display:"block",marginBottom:12,padding:"6px 8px",background:"#1a1a2a",border:"1px solid #2d2d4a",borderRadius:5,color:"#7e7ec8",cursor:"pointer",fontSize:12}
       }, "⬆️ Importar backup",
         React.createElement("input", { type:"file", accept:".json", style:{display:"none"}, onChange:onImportar })
+      ),
+      !esVisorOrJefe&&React.createElement("label", {
+        title:"Cargar un Excel de presupuesto exportado (recupera capítulos, ítems y APUs de un proyecto)",
+        style:{width:"100%",display:"block",marginBottom:12,padding:"6px 8px",background:"#2a1a0a",border:"1px solid #4a2d0d",borderRadius:5,color:"#e0a05a",cursor:"pointer",fontSize:12}
+      }, "📊 Importar Excel de proyecto",
+        React.createElement("input", { type:"file", accept:".xlsx", style:{display:"none"}, onChange:onImportarExcel })
       ),
       // "Borrar todos los recursos" y "Borrar todos los APUs" ELIMINADOS.
       // Borraban el catálogo entero sin comprobar si los proyectos los estaban usando:
@@ -9803,13 +9809,13 @@ function PanelObsProyecto({proyecto, perfil, session, onClose}) {
   const panelCargarRef = React.useRef(null);
   panelCargarRef.current = () => {
     _sb.from("observaciones").select("*")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .is("parent_id", null)
       .order("created_at", {ascending:false})
       .then(({data:roots})=>{
         if(!roots?.length){ setObs([]); setBusy(false); return; }
         _sb.from("observaciones").select("*")
-          .eq("proyecto_id", proyecto.id)
+          .eq("proyecto_id", String(proyecto.id))
           .not("parent_id","is",null)
           .order("created_at",{ascending:true})
           .then(({data:replies})=>{
@@ -9846,7 +9852,15 @@ function PanelObsProyecto({proyecto, perfil, session, onClose}) {
       user_email:   session?.user?.email,
       user_nombre:  perfil?.nombre || session?.user?.email,
     };
-    await _sb.from("observaciones").insert(nueva);
+    const guardadoTexto = texto.trim();
+    const {error} = await _sb.from("observaciones").insert(nueva);
+    if(error){
+      console.error("Guardar observación falló:", error);
+      setTexto(guardadoTexto);
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido")+
+            "\n\nEl texto sigue en el cuadro para reintentar.");
+      return;
+    }
     setTexto(""); setReplyTo(null); cargar();
   };
 
@@ -10011,7 +10025,7 @@ function PanelObservaciones({proyectoId, capituloId, itemIndex, perfil, session,
     if(!open) return;
     _sb.from("observaciones")
       .select("*")
-      .eq("proyecto_id", proyectoId)
+      .eq("proyecto_id", String(proyectoId))
       .eq("capitulo_id", capituloId)
       .eq("item_index", itemIndex)
       .order("created_at", {ascending:true})
@@ -10036,7 +10050,14 @@ function PanelObservaciones({proyectoId, capituloId, itemIndex, perfil, session,
       user_email: session?.user?.email,
       user_nombre: perfil?.nombre || session?.user?.email,
     };
-    const {data} = await _sb.from("observaciones").insert(nueva).select().single();
+    const guardado = texto.trim();
+    const {data, error} = await _sb.from("observaciones").insert(nueva).select().single();
+    if(error){
+      console.error("Guardar observación falló:", error);
+      setTexto(guardado);
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido"));
+      return;
+    }
     if(data){const next=[...obs,data];setObs(next);onCountChange&&onCountChange(next.length);}
     setTexto("");
   };
@@ -10203,7 +10224,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
   const obsTabRef = React.useRef(null);
   obsTabRef.current = () => {
     _sb.from("observaciones").select("*")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .order("created_at", {ascending:true})
       .then(({data})=>{ setAllObs(data||[]); setBusy(false); });
   };
@@ -10220,7 +10241,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
   const cargar = ()=>obsTabRef.current();
 
   const obsParaLinea = (capId, idx) =>
-    allObs.filter(o=>o.capitulo_id===capId&&o.item_index===idx&&!o.parent_id);
+    allObs.filter(o=>String(o.capitulo_id)===String(capId)&&String(o.item_index)===String(idx)&&!o.parent_id);
 
   const respuestasDeObs = (obsId) =>
     allObs.filter(o=>o.parent_id===obsId);
@@ -10230,8 +10251,8 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
     const txt = (textos[k]||"").trim();
     if(!txt) return;
     const apu = apus.find(a=>a.id===item?.apuId);
-    await _sb.from("observaciones").insert({
-      proyecto_id:  proyecto.id,
+    const {error} = await _sb.from("observaciones").insert({
+      proyecto_id:  String(proyecto.id),
       capitulo_id:  capId,
       item_index:   idx,
       tab_label:    "Presupuesto Obra",
@@ -10242,6 +10263,12 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
       user_email:   session?.user?.email,
       user_nombre:  perfil?.nombre || session?.user?.email,
     });
+    if(error){
+      console.error("Guardar observación falló:", error);
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido")+
+            "\n\nEl texto sigue en el cuadro para reintentar.");
+      return;
+    }
     setTextos(t=>({...t,[k]:""}));
     setReplyTo(r=>({...r,[k]:null}));
     cargar();
@@ -10380,7 +10407,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
             const vu=apuEf?calcAPUTotal(apuEf,recursos,getPctHerramienta(proyecto)):0;
             const vt=(item.cantidad||0)*vu;
             const k=lineKey(cap.id,idx);
-            const cnt=allObs.filter(o=>o.capitulo_id===cap.id&&o.item_index===idx).length;
+            const cnt=allObs.filter(o=>String(o.capitulo_id)===String(cap.id)&&String(o.item_index)===String(idx)).length;
             return React.createElement("div",{key:item.id,
               style:{borderBottom:"1px solid #F3F4F6",
                 background:openId===k?"#FFFBF0":"#fff"}
@@ -10423,7 +10450,7 @@ function TabObservaciones({proyecto, apus, recursos, perfil, session}) {
 function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, setReplyTo, replyTo, textos, setTextos, enviarRespuesta, fmtF}) {
   const [confirmDel, setConfirmDel] = useState(false);
   const esMio = msg.user_id && session?.user?.id && String(msg.user_id) === String(session.user.id);
-  const reps  = allReps.filter(r=>Number(r.parent_id)===Number(msg.id));
+  const reps  = allReps.filter(r=>String(r.parent_id)===String(msg.id));
   const rKey  = "reply__"+msg.id;
 
   const handleEliminar = () => {
@@ -10506,9 +10533,13 @@ function BurbujaMensaje({msg, depth, esRespuesta, allReps, session, eliminar, se
 function HiloObs({cid, idx, desc, tabLabel, allObs, session, enviar, eliminar, openKey, setOpenKey, textos, setTextos, replyTo, setReplyTo}) {
   const lk    = (c,i) => c+"__"+i;
   const k     = lk(cid,idx);
-  const raices= allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
+  // Comparar SIEMPRE como texto: cap.id llega como número y o.capitulo_id como
+  // string desde la base → con === (número vs texto) nunca coincidían y los
+  // comentarios existían pero no se pintaban en su línea.
+  const _mismaLinea = o => String(o.capitulo_id)===String(cid) && String(o.item_index)===String(idx);
+  const raices= allObs.filter(o=>_mismaLinea(o)&&!o.parent_id);
   const allReps=allObs.filter(o=>o.parent_id!=null&&o.parent_id!==undefined);
-  const total = allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
+  const total = allObs.filter(_mismaLinea).length;
   const isOpen= openKey===k;
 
   const fmtF = iso => {
@@ -10570,18 +10601,43 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
   const obsViewRef = React.useRef(null);
   obsViewRef.current = () => {
     _sb.from("observaciones").select("*")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .order("created_at",{ascending:true})
-      .then(({data})=>{ setAllObs(data||[]); setBusy(false); });
+      .then(({data})=>{
+        setAllObs(prev=>{
+          const pend = (prev||[]).filter(o=>o._pendiente && Number(o.id)<0);
+          return [...(data||[]), ...pend];
+        });
+        setBusy(false);
+      });
   };
 
-  // Set initial tab to first presupuesto
+  // Pestaña inicial: la PRIMERA hoja que tenga comentarios (para que no queden
+  // ocultos en otra hoja al recargar). Si ninguna hoja tiene, abre la primera.
+  const initialTabRef = React.useRef(false);
   useEffect(()=>{
     const firstPs = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
       ? proyecto.presupuestosObra[0]
       : {id:"p0"};
     setTabActiva("presupuesto_obra_"+firstPs.id);
   },[]);
+  // Una vez cargados los comentarios, si la hoja abierta no tiene y otra sí,
+  // saltar a la primera hoja de obra con comentarios (solo la primera vez).
+  useEffect(()=>{
+    if(initialTabRef.current || busy || !allObs.length) return;
+    const hojas = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
+      ? proyecto.presupuestosObra
+      : [{id:"p0", capitulos:proyecto.capitulos||[]}];
+    for(const ps of hojas){
+      const ids = new Set((ps.capitulos||[]).map(c=>String(c.id)));
+      if(allObs.some(o=>ids.has(String(o.capitulo_id)))){
+        setTabActiva("presupuesto_obra_"+ps.id);
+        initialTabRef.current = true;
+        return;
+      }
+    }
+    initialTabRef.current = true;
+  },[busy, allObs]);
 
   useEffect(()=>{
     obsViewRef.current();
@@ -10594,34 +10650,45 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
 
   const cargar = ()=>obsViewRef.current();
 
-  const obsDeLinea  = (cid,idx) => allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx&&!o.parent_id);
+  const obsDeLinea  = (cid,idx) => allObs.filter(o=>String(o.capitulo_id)===String(cid)&&String(o.item_index)===String(idx)&&!o.parent_id);
   const repsDe      = (oid)     => allObs.filter(o=>o.parent_id===oid);
-  const totalLinea  = (cid,idx) => allObs.filter(o=>o.capitulo_id===cid&&o.item_index===idx).length;
+  const totalLinea  = (cid,idx) => allObs.filter(o=>String(o.capitulo_id)===String(cid)&&String(o.item_index)===String(idx)).length;
 
   const enviar = async(cid, idx, desc, tabLabel, parentId=null, textKey=null) => {
     const k = textKey || lk(cid,idx);
     const txt=(textos[k]||"").trim();
     if(!txt) return;
     const nueva = {
-      proyecto_id:proyecto.id, capitulo_id:cid, item_index:idx,
+      proyecto_id:String(proyecto.id), capitulo_id:cid, item_index:idx,
       tab_label:tabLabel, linea_desc:desc,
       parent_id:parentId||null, texto:txt,
       user_id:session?.user?.id, user_email:session?.user?.email,
       user_nombre:perfil?.nombre||session?.user?.email,
     };
     // Optimistic update: add immediately to local state
-    const tempObs = {...nueva, id: Date.now(), created_at: new Date().toISOString()};
+    const tempId = -Date.now();
+    const tempObs = {...nueva, id: tempId, created_at: new Date().toISOString(), _pendiente:true};
     setAllObs(prev=>[...prev, tempObs]);
     setTextos(t=>({...t,[k]:""}));
     setReplyTo(r=>({...r,[k]:false}));
-    // Then save to DB and refresh to get real ID
-    await _sb.from("observaciones").insert(nueva);
-    if(obsViewRef.current) obsViewRef.current();
+    // Guardar y LEER la fila creada (para tener el id real). Si falla, NO se pierde
+    // el comentario: se conserva en pantalla y se avisa qué pasó.
+    const {data, error} = await _sb.from("observaciones").insert(nueva).select().single();
+    if(error){
+      console.error("Guardar observación falló:", error);
+      setAllObs(prev=>prev.filter(o=>o.id!==tempId));
+      setTextos(t=>({...t,[k]:txt}));
+      alert("No se pudo guardar la observación:\n"+(error.message||error.details||"error desconocido")+
+            "\n\nEl texto sigue en el cuadro para reintentar.");
+      return;
+    }
+    setAllObs(prev=>prev.map(o=>o.id===tempId?data:o));
   };
 
   const eliminar = async(obsId) => {
     const id = Number(obsId);
     if(!id) return;
+    if(id<0){ setAllObs(prev=>prev.filter(o=>Number(o.id)!==id)); return; }
     // Optimistic: quitar de UI de inmediato
     setAllObs(prev=>prev.filter(o=>Number(o.id)!==id && Number(o.parent_id)!==id));
     // Borrar respuestas primero (por FK), luego el comentario raíz
@@ -10642,7 +10709,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
   const tieneObra = comps.includes("obra")||comps.length===0;
   const tieneInterv = comps.includes("interventoria");
   const tieneConsult = comps.includes("consultoria");
-  const apusUsados = getApusUsados(proyecto, apus, recursos);
+  const apusUsados = React.useMemo(()=>getApusUsados(proyecto, apus, recursos), [proyecto, apus, recursos]);
   const [apuPsSel, setApuPsSel] = useState(null);
   const presupuestosObra2 = (proyecto.presupuestosObra && proyecto.presupuestosObra.length)
     ? proyecto.presupuestosObra
@@ -10671,7 +10738,12 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     {id:"apus_usados",             label:`APUs Proyectos (${apusUsados.length})`, show:apusUsados.length>0},
   ].filter(t=>t.show);
 
-  const res = calcProyecto(proyecto, apus, recursos);
+  // Cálculos pesados MEMOIZADOS: antes se recalculaba el proyecto entero (que
+  // itera hasta 30 veces para converger el A+U) en CADA render — incluso al
+  // teclear un comentario. En proyectos grandes eso ponía lentísimo al visor,
+  // que arranca directo en esta vista. Ahora se calcula una sola vez.
+  const res  = React.useMemo(()=>calcProyecto(proyecto, apus, recursos), [proyecto, apus, recursos]);
+  const cdMemo = React.useMemo(()=>calcCD(proyecto, apus, recursos), [proyecto, apus, recursos]);
 
   // ── Render por tab ────────────────────────────────────────────────────────
   const renderTabContent = () => {
@@ -10724,8 +10796,8 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
       return React.createElement(TabAU,{
         proyecto: proyecto,
         au:proyecto.au||{}, setAu:()=>{},
-        cd:calcCD(proyecto,apus,recursos),
-        total:calcProyecto(proyecto,apus,recursos).total,
+        cd:cdMemo,
+        total:res.total,
         plantillasAU:plantillasAU||[],
         readOnly:true, perfil, session,
         obsProps:{allObs,session,enviar,eliminar,openKey,setOpenKey,textos,setTextos,replyTo,setReplyTo}
@@ -10753,7 +10825,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     if(tabActiva==="estampillas"){
       const estItems = (proyecto.estampillas||[]);
       return React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
-        React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:calcProyecto(proyecto,apus,recursos).total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}}),
+        React.createElement(TabEstampillas,{proyecto,setPActivo:()=>{},totalProyecto:res.total,catalogoEstampillas:catalogoEstampillas||[],readOnly:true,perfil,session,setAU:()=>{}}),
         estItems.length > 0 && React.createElement("div",{className:"card"},
           React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},"Observaciones por estampilla"),
           estItems.map((est,ei)=>React.createElement("div",{key:ei,style:{borderBottom:"1px solid #F3F4F6"}},
@@ -10810,8 +10882,8 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
     }
     if(tabActiva==="fichaFinanciera"||tabActiva==="ficha_financiera") {
       const seccFF = (proyecto.fichaFinanciera||{}).secciones||[];
-      const _cdObs = calcCD(proyecto,apus,recursos);
-      const _obraObs = calcProyecto(proyecto,apus,recursos).total + getExtrasTotal(proyecto);
+      const _cdObs = cdMemo;
+      const _obraObs = res.total + getExtrasTotal(proyecto);
       const _intervSubObs = calcTotalPresupInterv(proyecto.presupInterv);
       const _intervPolDObs = ((proyecto.polizasPorComp||{})["interventoria"])||{};
       const _intervEstObs = getEstampillasMunicipio(catalogoEstampillas||[], proyecto.municipioId, "interv");
@@ -10930,7 +11002,7 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
         React.createElement(TabExtrasModulo,{
           titulo:label, campo, plantilla,
           proyecto, setPActivo:()=>{},
-          setAu:()=>{}, au, cd:calcCD(proyecto,apus,recursos), readOnly:true
+          setAu:()=>{}, au, cd:cdMemo, readOnly:true
         }),
         React.createElement("div",{className:"card"},
           React.createElement("div",{style:{padding:"10px 16px",fontWeight:600,fontSize:12,color:"var(--ink3)",borderBottom:"1px solid var(--line)"}},`Observaciones sobre ${label}`),
@@ -10992,13 +11064,65 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
         )
       )
     ),
+    // Tabs — con contador de comentarios por pestaña, para que ninguno quede
+    // "escondido" en otra hoja. Se cuenta por los capitulo_id que pertenecen a
+    // cada pestaña (las hojas de obra tienen sus propios capítulos).
+    (()=>{
+      const capToTab = {};
+      (tabs||[]).forEach(t=>{
+        if(t.id.startsWith("presupuesto_obra_")){
+          const psId=t.id.slice("presupuesto_obra_".length);
+          const ps=(presupuestosObra2||[]).find(x=>String(x.id)===String(psId));
+          (ps&&ps.capitulos||[]).forEach(c=>{ capToTab[String(c.id)]=t.id; });
+        }
+      });
+      const tabDeCid = (cidRaw)=>{
+        const cid=String(cidRaw||"");
+        if(capToTab[cid]) return capToTab[cid];
+        if(cid.indexOf("au_")===0||cid==="calculo_au"||cid==="au") return "calculo_au";
+        if(cid.indexOf("pol_")===0){
+          const comp=cid.slice(4);
+          if(comp==="obra") return "polizas_obra";
+          if(comp==="interventoria") return "polizas_interventoria";
+          if(comp==="consultoria") return "polizas_consultoria";
+          if(comp==="edeso") return "polizas_edeso";
+          return "polizas_obra";
+        }
+        if(cid==="estampillas") return "estampillas";
+        if(cid.indexOf("interv_")===0) return "presupuesto_interventoria";
+        if(cid.indexOf("consult_")===0) return "presupuesto_consultoria";
+        if(cid.indexOf("ficha")===0) return "fichaFinanciera";
+        if(cid.indexOf("apu_")===0||cid==="apu") return "apus_usados";
+        if(cid==="sgsst"||cid==="pma"||cid==="pmt"||cid==="gsocial") return cid;
+        if(cid.indexOf("resumen")===0) return "resumen";
+        return null;
+      };
+      const cntTab = {};
+      (allObs||[]).forEach(o=>{
+        const tabId=tabDeCid(o.capitulo_id);
+        if(tabId) cntTab[tabId]=(cntTab[tabId]||0)+1;
+      });
+      window.__obsCntTab = cntTab;
+      return null;
+    })(),
     // Tabs
     React.createElement("div",{className:"tabs no-print"},
-      tabs.map(t=>React.createElement("div",{
-        key:t.id,
-        className:`tab${tabActiva===t.id?" on":""}`,
-        onClick:()=>setTabActiva(t.id)
-      },t.label))
+      tabs.map(t=>{
+        const nc=(window.__obsCntTab||{})[t.id]||0;
+        return React.createElement("div",{
+          key:t.id,
+          className:`tab${tabActiva===t.id?" on":""}`,
+          onClick:()=>setTabActiva(t.id),
+          style:{display:"inline-flex",alignItems:"center",gap:6}
+        },
+          t.label,
+          nc>0 && React.createElement("span",{
+            title:nc+" comentario"+(nc>1?"s":""),
+            style:{background:"#FEF3C7",color:"#92400E",border:"1px solid #FDE68A",
+              borderRadius:10,fontSize:10,fontWeight:700,padding:"1px 7px",lineHeight:1.6}
+          },"💬 "+nc)
+        );
+      })
     ),
     // Content
     busy
@@ -14522,7 +14646,7 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
   useEffect(()=>{
     if(!proyecto?.id||!apusUsados?.length) return;
     _sb.from("observaciones").select("capitulo_id,item_index")
-      .eq("proyecto_id", proyecto.id)
+      .eq("proyecto_id", String(proyecto.id))
       .eq("capitulo_id", "apu")
       .then(({data})=>{
         const cnt={};
@@ -15880,33 +16004,6 @@ function App() {
       }
     } catch(e){ console.error("Carga de capítulos por fila falló, se usa el bloque:", e); }
 
-    // ── RECUPERACIÓN desde el respaldo psec_<id>_caps (fuente MÁS completa) ──
-    // El respaldo _caps conserva los capítulos con TODOS sus ítems y su apuId
-    // (más completo incluso que items_presupuesto). Se cargan tal cual en la
-    // PRIMERA hoja del proyecto, que es donde el sistema los muestra.
-    try {
-      const respaldoCaps = {};
-      (data||[]).forEach(row=>{
-        if(typeof row.key!=="string" || !row.key.startsWith("psec_") || !row.key.endsWith("_caps")) return;
-        const proyId = row.key.slice(5, row.key.length-5);
-        if(Array.isArray(row.value) && row.value.length) respaldoCaps[proyId] = row.value;
-      });
-      proyBase = proyBase.map(p=>{
-        const caps = respaldoCaps[String(p.id)];
-        if(!caps || !caps.length) return p;
-        const hojas = p.presupuestosObra||[];
-        if(hojas.length){
-          // Solo recuperar si las hojas están vacías (no pisar datos buenos)
-          const hojasVacias = hojas.every(h=>!(h.capitulos||[]).length);
-          if(!hojasVacias) return p;
-          const nuevasHojas = hojas.map((h,i)=> i===0 ? {...h, capitulos: caps} : h);
-          return {...p, capitulos: caps, presupuestosObra: nuevasHojas};
-        }
-        if(!(p.capitulos||[]).length) return {...p, capitulos: caps};
-        return p;
-      });
-    } catch(e){ console.error("Recuperación desde respaldo falló:", e); }
-
     setProyectosRaw(proyBase);
     setDataReady(true);
   };
@@ -16287,6 +16384,200 @@ function App() {
     reader.readAsText(file);
   };
 
+  // ── Importar Excel de proyecto: lee un Excel exportado por el sistema y
+  // reconstruye capítulos, ítems, APUs y recursos directamente en Supabase.
+  // Sirve para recuperar un proyecto cuando la app se quedó en $0 pero tienes
+  // un Excel exportado con los valores buenos.
+  const onImportarExcel = e => {
+    const file = e.target.files[0]; if(!file) return; e.target.value="";
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, {type:"array"});
+        const USA = {material:"cantidad", transporte:"cantidad", mano_obra:"rendimiento", maquinaria:"rendimiento"};
+        const CATxL = {"Materiales":"material","Mano de Obra":"mano_obra","Maquinaria / Equipo":"maquinaria","Transporte":"transporte"};
+        const SECxAPU = {"Materiales":"material","Mano de Obra":"mano_obra","Maquinaria / Equipo / Herramientas":"maquinaria","Transporte":"transporte","Otros":"material"};
+        const norm = s => (s||"").toString().trim().toLowerCase().replace(/\\s+/g," ").slice(0,90);
+        let _seq = Date.now();
+        const nid = () => ++_seq;
+        const aoa = name => XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, defval:null});
+
+        // 1) ¿A qué proyecto pertenece? Se lee de la celda A1/B1 "PROYECTO"
+        let nombreProyecto=null, codigoProyecto=null;
+        const sheetNames = wb.SheetNames;
+        const hojasPresupuesto = [];
+        sheetNames.forEach(sn=>{
+          if(sn.startsWith("APUs · ")||["Cálculo A+U","Pólizas Obra","Estampillas","Factor Multiplicador",
+            "Presupuesto Interventoría","Pólizas Interventoría","Pólizas EDESO","Ficha Financiera","Resumen",
+            "Recursos","SG-SST","PMA","PMT","Gestion Social","APUs Proyectos"].includes(sn)) return;
+          const rows = aoa(sn);
+          if(rows.length && rows[0] && rows[0][0]==="PROYECTO"){
+            hojasPresupuesto.push(sn);
+            if(!nombreProyecto) nombreProyecto = rows[0][1];
+            if(!codigoProyecto && rows[1] && rows[1][0]==="CÓDIGO") codigoProyecto = rows[1][1];
+          }
+        });
+        if(!hojasPresupuesto.length){ alert("No encontré hojas de presupuesto en este Excel (se espera la fila 'PROYECTO' en cada hoja)."); return; }
+
+        // Buscar el proyecto en la base actual por nombre o código
+        let proyDestino = proyectos.find(p=> (codigoProyecto && p.codigo===codigoProyecto) || p.nombre===nombreProyecto);
+        if(!proyDestino){
+          const opciones = proyectos.map(p=>p.nombre).join("\\n");
+          alert("No encontré automáticamente el proyecto '"+(nombreProyecto||"?")+"'.\\n\\nProyectos disponibles:\\n"+opciones+"\\n\\nRenombra el proyecto en el sistema para que coincida, o crea el proyecto primero.");
+          return;
+        }
+        if(!window.confirm(`Se va a IMPORTAR el Excel dentro del proyecto:\\n\\n"${proyDestino.nombre}"\\n\\nHojas encontradas: ${hojasPresupuesto.join(", ")}\\n\\nEsto reemplaza los capítulos e ítems de esas hojas. ¿Continuar?`)) return;
+
+        // 2) Parsear RECURSOS (si la hoja existe)
+        const recursosNuevos = []; const cod2r = {};
+        recursos.forEach(r=>{ if(r.codigo) cod2r[String(r.codigo).trim().toUpperCase()+"||"+norm(r.nombre)]=r; });
+        if(wb.SheetNames.includes("Recursos")){
+          const rows = aoa("Recursos");
+          for(let i=2;i<rows.length;i++){
+            const [cod,nombre,und,cat,precio] = rows[i]||[];
+            if(!cod || !nombre) continue;
+            const key = String(cod).trim().toUpperCase()+"||"+norm(nombre);
+            if(cod2r[key]) continue; // ya existe, no duplicar
+            const r = { id: nid(), codigo:String(cod).trim(), nombre:String(nombre).trim(),
+              unidad: und?String(und).trim():"", categoria: CATxL[String(cat).trim()]||"material",
+              precio: typeof precio==="number"?precio:0 };
+            recursosNuevos.push(r); cod2r[key]=r;
+          }
+        }
+
+        // 3) Parsear APUs por hoja (busca "APUs · <hoja>")
+        const apuPorHojaNombre = {}; // hoja -> {normNombre: apuId}
+        const apusNuevos = [];
+        hojasPresupuesto.forEach(hoja=>{
+          const sn = "APUs · "+hoja;
+          if(!wb.SheetNames.includes(sn)) return;
+          const rows = aoa(sn);
+          const mapa = {};
+          let cur=null, cursec=null;
+          for(let i=2;i<rows.length;i++){
+            const [cod,desc,und,cant,pu,sub] = rows[i]||[];
+            // Excel a veces trae "" en vez de null en la celda de código: tratarlas igual.
+            const codVacio = (cod==null || cod==="");
+            if(codVacio && (desc==null||desc==="")){ cur=null; continue; }
+            if(pu==="V. UNITARIO"){
+              let unidad="";
+              if(typeof cant==="string" && cant.includes("Unidad:")) unidad=cant.split("Unidad:")[1].trim();
+              cur = { id: nid(), codigo:String(cod).trim(), nombre: desc?String(desc).trim():"", unidad, lineas:[] };
+              mapa[norm(cur.nombre)] = cur.id;
+              apusNuevos.push(cur); cursec=null; continue;
+            }
+            if(!cur) continue;
+            if(codVacio && typeof desc==="string"){ cursec = SECxAPU[desc.trim()]||null; continue; }
+            if(!codVacio){
+              const c = String(cod).trim();
+              if(c==="-" || (typeof desc==="string" && desc.includes("Herramienta menor"))) continue;
+              // Clave por código+nombre: algunos Excels reutilizan el mismo "código"
+              // numérico para recursos distintos (ids internos, no códigos reales).
+              // Usar solo el código como clave los mezclaba (ej. "761148" repetido
+              // para Motosierra, Volqueta y Compresor de pintura a la vez).
+              const nombreRec = desc?String(desc).trim():"";
+              const keyRec = (c.toUpperCase())+"||"+norm(nombreRec);
+              let r = cod2r[keyRec];
+              if(!r){
+                r = { id: nid(), codigo:c, nombre: nombreRec, unidad: und?String(und).trim():"",
+                  categoria: cursec||"material", precio: typeof pu==="number"?pu:0 };
+                recursosNuevos.push(r); cod2r[keyRec]=r;
+              }
+              const sec = cursec || r.categoria || "material";
+              const val = typeof cant==="number" ? cant : 0;
+              const ln = { id: nid()+Math.random(), _sec: sec, recursoId: r.id };
+              if(USA[sec]==="cantidad"){ ln.cantidad=val; ln.rendimiento=null; } else { ln.rendimiento=val; ln.cantidad=null; }
+              cur.lineas.push(ln);
+            }
+          }
+          apuPorHojaNombre[hoja] = mapa;
+        });
+
+        // 4) Parsear capítulos e ítems de cada hoja de presupuesto
+        const hojasFinal = [];
+        let totalItems=0, sinApu=0;
+        hojasPresupuesto.forEach((hoja,hi)=>{
+          const rows = aoa(hoja);
+          const caps = []; let cur=null;
+          for(let i=6;i<rows.length;i++){
+            const [item,desc,und,cant] = rows[i]||[];
+            const s = desc?String(desc).trim():"";
+            const itemVacio = (item==null || item==="");
+            if(!s && itemVacio) continue;
+            if(s.startsWith("CAP.")){
+              const m = s.match(/CAP\.\s*(\S+)\s*[—-]\s*(.*)/);
+              cur = { id: nid(), numero: m?m[1]:String(caps.length+1), nombre: m?m[2].trim():s,
+                tipo:"obra", orden: caps.length+1, items: [] };
+              caps.push(cur); continue;
+            }
+            if(!itemVacio && cur){
+              const apuId = (apuPorHojaNombre[hoja]||{})[norm(s)] || null;
+              if(!apuId) sinApu++;
+              cur.items.push({ id: nid()+Math.random(), apuId, orden: cur.items.length,
+                unidad: und?String(und).trim():"", cantidad: typeof cant==="number"?cant:0, descripcion: s });
+              totalItems++;
+            }
+          }
+          // buscar si ya existe una hoja con ese nombre en el proyecto destino
+          const existente = (proyDestino.presupuestosObra||[]).find(h=>h.nombre===hoja);
+          hojasFinal.push({ id: existente?existente.id:("ps_imp_"+hi), nombre: hoja,
+            porcentajeHerramienta: (existente&&existente.porcentajeHerramienta)||0.05, capitulos: caps });
+        });
+
+        if(sinApu>0 && !window.confirm(`${sinApu} de ${totalItems} ítems no encontraron su APU correspondiente (quedarán en $0). ¿Continuar de todas formas?`)) return;
+
+        // 5) Guardar recursos y APUs nuevos (en memoria + Supabase)
+        const recursosFinal = [...recursos, ...recursosNuevos];
+        const apusFinal = [...apus, ...apusNuevos];
+        setRecursos(recursosFinal);
+        setApus(apusFinal);
+
+        // 6) Reemplazar/fusionar las hojas del proyecto destino
+        const hojasExistentes = proyDestino.presupuestosObra||[];
+        const nuevasHojasCompletas = hojasExistentes.map(h=>{
+          const importada = hojasFinal.find(hf=>hf.nombre===h.nombre);
+          return importada || h;
+        });
+        hojasFinal.forEach(hf=>{ if(!nuevasHojasCompletas.find(h=>h.nombre===hf.nombre)) nuevasHojasCompletas.push(hf); });
+        const proyActualizado = { ...proyDestino, presupuestosObra: nuevasHojasCompletas,
+          capitulos: nuevasHojasCompletas[0] ? nuevasHojasCompletas[0].capitulos : proyDestino.capitulos };
+        setProyectos(proyectos.map(p=> p.id===proyDestino.id ? proyActualizado : p));
+
+        // 7) Persistir TODO en Supabase (recursos, apus, capítulos/ítems por fila, meta del proyecto)
+        alert("Leído correctamente. Guardando en la base — esto puede tardar unos segundos…");
+        const pid = String(proyDestino.id);
+        const capRows=[], itemRows=[];
+        nuevasHojasCompletas.forEach(h=>{
+          (h.capitulos||[]).forEach(c=>{
+            capRows.push({ id:String(c.id), proyecto_id:pid, numero:c.numero, nombre:c.nombre,
+              tipo: (h.id&&String(h.id).indexOf("p0")!==0) ? ("obra_ps:"+h.id) : (c.tipo||"obra"), orden:c.orden||0 });
+            (c.items||[]).forEach(it=>{
+              itemRows.push({ id:String(it.id), proyecto_id:pid, capitulo_id:String(c.id), numero_cap:c.numero,
+                apu_id: it.apuId?String(it.apuId):null, descripcion: it.descripcion||"", unidad: it.unidad||"",
+                cantidad: it.cantidad||0, orden_item: it.orden||0 });
+            });
+          });
+        });
+        for(let i=0;i<capRows.length;i+=200) await _sb.from("capitulos_presupuesto").upsert(capRows.slice(i,i+200));
+        for(let i=0;i<itemRows.length;i+=200) await _sb.from("items_presupuesto").upsert(itemRows.slice(i,i+200));
+        if(recursosNuevos.length) await _sb.from("app_data").upsert({key:"recursos", value:recursosFinal});
+        if(apusNuevos.length) await _sb.from("app_data").upsert({key:"apus", value:apusFinal});
+        const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides",
+          "apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera"];
+        const meta={}; metaFields.forEach(f=>{ if(proyActualizado[f]!==undefined) meta[f]=proyActualizado[f]; });
+        meta.presupuestosObra = nuevasHojasCompletas.map(ps=>{ const x={...ps}; delete x.capitulos; return x; });
+        meta.id = proyActualizado.id;
+        await _sb.from("app_data").upsert({key:"psec_"+pid+"_meta", value:meta});
+
+        alert(`✓ Importado y guardado.\\n\\nCapítulos: ${capRows.length} · Ítems: ${itemRows.length}\\nRecursos nuevos: ${recursosNuevos.length} · APUs nuevos: ${apusNuevos.length}\\n\\nRecarga la página (Ctrl+Shift+R) para verlo actualizado.`);
+      } catch(err){
+        console.error("Error importando Excel:", err);
+        alert("Error leyendo el Excel: "+(err.message||err));
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   // ── Gates ─────────────────────────────────────────────
   if(!_sb) return React.createElement("div",{style:{padding:40,fontFamily:"var(--sans)",
     color:"#B91C1C",textAlign:"center",paddingTop:80}},
@@ -16310,7 +16601,7 @@ function App() {
     },"☰"),
     React.createElement(Sidebar,{
       modulo,setModulo:m=>{setModulo(m);setSubTitle(null);},
-      counts,onExportar,onImportar,
+      counts,onExportar,onImportar,onImportarExcel,
       perfil,onLogout,sidebarOpen,setSidebarOpen,usuariosActivos
     }),
     React.createElement("div",{className:"main-area",style:{marginLeft:sidebarOpen?232:0,transition:"margin-left .25s"}},
