@@ -1867,6 +1867,11 @@ function ModuloAPUs({
   });
   const setModoTodos = modo => setImportModoRecursos({ mano_obra:modo, material:modo, maquinaria:modo, transporte:modo });
   const [selectedApus, setSelectedApus] = useState(new Set());
+  // Paginación: con miles de APUs, mostrar todos a la vez (y recalcular el valor
+  // de cada uno en cada render) hacía la pantalla lentísima. Ahora solo se
+  // renderiza una página a la vez.
+  const [paginaApus, setPaginaApus] = useState(1);
+  const APUS_POR_PAGINA = 60;
   // Importador inteligente
   const [smartImport, setSmartImport] = useState(null);
   const [formatosGuardados, setFormatosGuardados] = useState(() => {
@@ -4098,7 +4103,7 @@ function ModuloAPUs({
     style: { maxWidth: 320 },
     placeholder: "\uD83D\uDD0D  Buscar APU...",
     value: busq,
-    onChange: e => { setBusq(e.target.value); setSelectedApus(new Set()); }
+    onChange: e => { setBusq(e.target.value); setSelectedApus(new Set()); setPaginaApus(1); }
   }),
   selectedApus.size > 0 && /*#__PURE__*/React.createElement("div", {
     style:{display:"flex",gap:6,alignItems:"center"}
@@ -4133,7 +4138,7 @@ function ModuloAPUs({
     className: "empty-icon"
   }, "\uD83D\uDCD0"), /*#__PURE__*/React.createElement("div", {
     className: "empty-title"
-  }, "Sin APUs")))) : filtered.map(a => {
+  }, "Sin APUs")))) : filtered.slice((paginaApus-1)*APUS_POR_PAGINA, paginaApus*APUS_POR_PAGINA).map(a => {
     const total = calcAPUTotal(a, recursos);
     return /*#__PURE__*/React.createElement("tr", {
       key: a.id,
@@ -4185,9 +4190,29 @@ function ModuloAPUs({
       padding: "10px 16px",
       borderTop: "1px solid #F9F9FB",
       fontSize: 11,
-      color: "var(--ink4)"
+      color: "var(--ink4)",
+      display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8
     }
-  }, apus.length, " APUs en base global")), delItem && /*#__PURE__*/React.createElement(ConfirmModal, {
+  },
+    /*#__PURE__*/React.createElement("span", null,
+      filtered.length > 0
+        ? `Mostrando ${(paginaApus-1)*APUS_POR_PAGINA+1}–${Math.min(paginaApus*APUS_POR_PAGINA, filtered.length)} de ${filtered.length}${busq.trim()?" encontrados":""} · ${apus.length} APUs en base global`
+        : `${apus.length} APUs en base global`
+    ),
+    filtered.length > APUS_POR_PAGINA && /*#__PURE__*/React.createElement("div", { style:{display:"flex",gap:6,alignItems:"center"} },
+      /*#__PURE__*/React.createElement("button", {
+        className:"btn-s", disabled: paginaApus<=1,
+        onClick: () => setPaginaApus(p => Math.max(1, p-1)),
+        style:{fontSize:11, opacity: paginaApus<=1?0.5:1}
+      }, "← Anterior"),
+      /*#__PURE__*/React.createElement("span", null, `Página ${paginaApus} de ${Math.ceil(filtered.length/APUS_POR_PAGINA)}`),
+      /*#__PURE__*/React.createElement("button", {
+        className:"btn-s", disabled: paginaApus>=Math.ceil(filtered.length/APUS_POR_PAGINA),
+        onClick: () => setPaginaApus(p => Math.min(Math.ceil(filtered.length/APUS_POR_PAGINA), p+1)),
+        style:{fontSize:11, opacity: paginaApus>=Math.ceil(filtered.length/APUS_POR_PAGINA)?0.5:1}
+      }, "Siguiente →")
+    )
+  )), delItem && /*#__PURE__*/React.createElement(ConfirmModal, {
     item: delItem.nombre,
     msg: textoUso(usoDeApus([delItem.id], (window.__PREX||{}).proyectos))
          || "No está en uso en ningún proyecto. Se puede borrar con tranquilidad.",
@@ -4522,6 +4547,17 @@ function TabExtrasModulo({ titulo, campo, plantilla, proyecto, setPActivo, setAu
     setPActivo(p => ({ ...p, [key]: [...(p[key]||[]), newSec] }));
   };
 
+  const delSeccion = (secId, nombreSec) => {
+    if (!window.confirm('¿Eliminar la sección "' + (nombreSec||'') + '" y todos sus ítems?\n\nEsta acción no se puede deshacer.')) return;
+    if(window.__markEditing) window.__markEditing("extras_"+campo);
+    setPActivo(p => {
+      const secs = (p[key]||[]).filter(sec => sec.id !== secId);
+      const total = calcTotal(secs);
+      setAu(prev => ({ ...prev, extras: { ...(prev.extras||{}), [campo]: Math.round(total) }}));
+      return { ...p, [key]: secs };
+    });
+  };
+
   const secs = data || [];
   const total = calcTotal(secs);
 
@@ -4558,7 +4594,14 @@ function TabExtrasModulo({ titulo, campo, plantilla, proyecto, setPActivo, setAu
         // Header sección
         React.createElement('div', { style:{ background:'#1F2937', padding:'8px 16px', display:'flex', justifyContent:'space-between', alignItems:'center' } },
           React.createElement('span', { style:{ color:'#fff', fontWeight:700, fontSize:13 } }, sec.nombre),
-          React.createElement('span', { style:{ fontFamily:'var(--mono)', color:'#6EE7B7', fontSize:13 } }, fmt(Math.round(secTotal)))
+          React.createElement('div', { style:{ display:'flex', alignItems:'center', gap:10 } },
+            React.createElement('span', { style:{ fontFamily:'var(--mono)', color:'#6EE7B7', fontSize:13 } }, fmt(Math.round(secTotal))),
+            !readOnly && React.createElement('button', {
+              title: 'Eliminar esta sección completa',
+              style:{ background:'none', border:'none', color:'#FCA5A5', cursor:'pointer', fontSize:13 },
+              onClick: () => delSeccion(sec.id, sec.nombre)
+            }, '🗑️')
+          )
         ),
         // Factor prestacional si aplica
         sec.factorPrestacional && sec.factorPrestacional !== 1 && React.createElement('div', {
@@ -8538,9 +8581,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   function ref(r, c) { return colL(c) + (r+1); }          // F12
   function refA(r, c) { return '$'+colL(c)+'$'+(r+1); }   // $F$12
   function rng(r1, r2, c) { return ref(r1,c) + ':' + ref(r2,c); }
-  function n(ws, r, c, val, fmt) {
+  function n(ws, r, c, val, fmt, st) {
     var cell = XLSX.utils.encode_cell({r:r,c:c});
     ws[cell] = {v:NUM(val), t:'n', z:fmt||'$#,##0'};
+    if (st) ws[cell].s = st;
   }
   function nDec(ws, r, c, val) {
     var cell = XLSX.utils.encode_cell({r:r,c:c});
@@ -9042,8 +9086,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
           else if(esOtrosPct) sc(wsAU,r,5,fmtN2(it.porcentaje)+'% s/'+(it.baseCalculo==='total'?'Total':'C.D.'),{fill:stR.fill,border:brd,alignment:R_AL});
           else nc(wsAU,r,5,it.valorUnitario||0,ST.mon(stR));
 
-          // Meses
-          if(tieneMeses) n(wsAU,r,6,Number(it.meses)||0,'#,##0.##');
+          // Meses — formato 'General' (el formato '#,##0.##' dejaba un punto/coma
+          // suelto al final cuando el número no tenía decimales, ej. "17,").
+          // Se le agrega borde y centrado, igual que las columnas vecinas.
+          if(tieneMeses) n(wsAU,r,6,Number(it.meses)||0,'General',{fill:stR.fill,border:brd,alignment:C_AL});
           else sc(wsAU,r,6,'—',{fill:stR.fill,border:brd,alignment:C_AL});
 
           // Total — fórmula viva cuando la cuenta es un producto
@@ -9348,7 +9394,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         ndc(wsI,r,2,it.cantidad||0,{fill:stR.fill,border:brd,alignment:R_AL});
         nc(wsI,r,3,it.valorMesBase||it.valorUnitario||0,ST.mon(stR));
         ndc(wsI,r,4,cap.tipo==="personal"?(Number(it.dedicacion)||1):1,{fill:stR.fill,border:brd,alignment:R_AL});
-        n(wsI,r,5,cap.tipo==="personal"?(Number(it.meses)||0):(Number(it.meses)||1),'#,##0.##');
+        n(wsI,r,5,cap.tipo==="personal"?(Number(it.meses)||0):(Number(it.meses)||1),'General',{fill:stR.fill,border:brd,alignment:C_AL});
         // Factor → enlazado a la hoja "Factor Multiplicador"
         if(cap.tipo==="personal" && refFM) fc(wsI,r,6,refFM,fm,{fill:stR.fill,border:brd,alignment:C_AL},'0.0000');
         else ndc(wsI,r,6,cap.tipo==="personal"?fm:1,{fill:stR.fill,border:brd,alignment:C_AL});
@@ -9558,6 +9604,77 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   [1,2,3,4].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:FG("1F2937"),border:brd}); });
   r++; r++;
 
+  // ── Componentes de Costos Indirectos ────────────────────────────────────
+  sc(wsFF,r,0,'Componentes de Costos Indirectos',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+  sc(wsFF,r,1,'Cant.',ST.hdr()); sc(wsFF,r,2,'Meses',ST.hdr());
+  sc(wsFF,r,3,'V. Unitario',ST.hdr()); sc(wsFF,r,4,'Total',ST.hdr()); r++;
+
+  var refsGrupo = [];   // totales de grupo que suman los Costos Indirectos
+  var compDefs = [
+    {key:'componentesPersonal',  label:'Personal',   sinUnitario:true },
+    {key:'componentesSocial',    label:'Social'    },
+    {key:'componentesLogistico', label:'Logístico' }
+  ];
+  compDefs.forEach(function(ct) {
+    var items = (ff[ct.key]||[]).filter(function(it){ return it.activo!==false; });
+    if(!items.length) return;
+    var filaG = r, totG = 0;
+    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
+    sc(wsFF,r,0,ct.label,ST.cap());
+    r++;
+    items.forEach(function(it, ii) {
+      var v = (Number(it.cantidad)||0)*(Number(it.meses)||1)*(Number(it.valorUnit)||0);
+      totG += v;
+      var stR = ii%2===0?ST.rowA():ST.rowB();
+      sc(wsFF,r,0,'  '+safe(it.descripcion),stR);
+      if(ct.sinUnitario) {
+        // Personal: igual que en el sistema, no se muestran cantidad ni valor unitario
+        sc(wsFF,r,1,'',{fill:stR.fill,border:brd});
+        n(wsFF,r,2,Number(it.meses)||1,'General',{fill:stR.fill,border:brd,alignment:C_AL});
+        sc(wsFF,r,3,'',{fill:stR.fill,border:brd});
+        nc(wsFF,r,4,v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+      } else {
+        ndc(wsFF,r,1,Number(it.cantidad)||0,{fill:stR.fill,border:brd,alignment:C_AL});
+        n(wsFF,r,2,Number(it.meses)||1,'General',{fill:stR.fill,border:brd,alignment:C_AL});
+        nc(wsFF,r,3,it.valorUnit||0,ST.mon(stR));
+        fc(wsFF,r,4,ref(r,1)+'*'+ref(r,2)+'*'+ref(r,3),v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+      }
+      r++;
+    });
+    fc(wsFF,filaG,4,'SUM('+rng(filaG+1,r-1,4)+')',totG,ST.tot());
+    refsGrupo.push(ref(filaG,4));
+  });
+
+  // Pólizas y Garantías EDESO — ahora va aquí dentro, enlazada a su hoja
+  if((R.polizasEdeso||0) > 0 || refPolEdeso) {
+    var filaEd = r;
+    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
+    sc(wsFF,r,0,'Pólizas y Garantías EDESO',ST.cap());
+    if(refPolEdeso) fc(wsFF,r,4,refPolEdeso,R.polizasEdeso||0,ST.tot());
+    else nc(wsFF,r,4,R.polizasEdeso||0,ST.tot());
+    refsGrupo.push(ref(filaEd,4));
+    r++;
+  }
+
+  // Diseño / Consultoría — informativo: NO entra en los costos indirectos
+  var itemsDis = (ff.componentesDiseno||[]).filter(function(it){ return it.activo!==false; });
+  if(itemsDis.length) {
+    var filaD = r, totD = 0;
+    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
+    sc(wsFF,r,0,'Diseño / Consultoría (informativo)',ST.lbl());
+    r++;
+    itemsDis.forEach(function(it, ii) {
+      var v = Number(it.valor)||((Number(it.cantidad)||0)*(Number(it.meses)||1)*(Number(it.valorUnit)||0));
+      totD += v;
+      var stR = ii%2===0?ST.rowA():ST.rowB();
+      sc(wsFF,r,0,'  '+safe(it.descripcion),stR);
+      [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:stR.fill,border:brd}); });
+      nc(wsFF,r,4,v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+      r++;
+    });
+    fc(wsFF,filaD,4,'SUM('+rng(filaD+1,r-1,4)+')',totD,ST.lbl());
+  }
+
   sc(wsFF,r,0,'Concepto',ST.hdr());
   [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.hdr()); });
   sc(wsFF,r,4,'Valor',ST.hdr()); r++;
@@ -9616,77 +9733,6 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   sc(wsFF,r,0,'VALOR TOTAL DE RECURSOS A INVERTIR',ST.tot2()); [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.tot2()); });
   fc(wsFF,r,4,'ROUND('+ref(fSub,4)+'+'+ref(fHon,4)+'+'+ref(fIva,4)+',0)', R.totalContrato, ST.tot2());
   r++; r++;
-
-  // ── Componentes de Costos Indirectos ────────────────────────────────────
-  sc(wsFF,r,0,'Componentes de Costos Indirectos',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
-  sc(wsFF,r,1,'Cant.',ST.hdr()); sc(wsFF,r,2,'Meses',ST.hdr());
-  sc(wsFF,r,3,'V. Unitario',ST.hdr()); sc(wsFF,r,4,'Total',ST.hdr()); r++;
-
-  var refsGrupo = [];   // totales de grupo que suman los Costos Indirectos
-  var compDefs = [
-    {key:'componentesPersonal',  label:'Personal',   sinUnitario:true },
-    {key:'componentesSocial',    label:'Social'    },
-    {key:'componentesLogistico', label:'Logístico' }
-  ];
-  compDefs.forEach(function(ct) {
-    var items = (ff[ct.key]||[]).filter(function(it){ return it.activo!==false; });
-    if(!items.length) return;
-    var filaG = r, totG = 0;
-    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
-    sc(wsFF,r,0,ct.label,ST.cap());
-    r++;
-    items.forEach(function(it, ii) {
-      var v = (Number(it.cantidad)||0)*(Number(it.meses)||1)*(Number(it.valorUnit)||0);
-      totG += v;
-      var stR = ii%2===0?ST.rowA():ST.rowB();
-      sc(wsFF,r,0,'  '+safe(it.descripcion),stR);
-      if(ct.sinUnitario) {
-        // Personal: igual que en el sistema, no se muestran cantidad ni valor unitario
-        sc(wsFF,r,1,'',{fill:stR.fill,border:brd});
-        n(wsFF,r,2,Number(it.meses)||1,'#,##0.##');
-        sc(wsFF,r,3,'',{fill:stR.fill,border:brd});
-        nc(wsFF,r,4,v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
-      } else {
-        ndc(wsFF,r,1,Number(it.cantidad)||0,{fill:stR.fill,border:brd,alignment:C_AL});
-        n(wsFF,r,2,Number(it.meses)||1,'#,##0.##');
-        nc(wsFF,r,3,it.valorUnit||0,ST.mon(stR));
-        fc(wsFF,r,4,ref(r,1)+'*'+ref(r,2)+'*'+ref(r,3),v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
-      }
-      r++;
-    });
-    fc(wsFF,filaG,4,'SUM('+rng(filaG+1,r-1,4)+')',totG,ST.tot());
-    refsGrupo.push(ref(filaG,4));
-  });
-
-  // Pólizas y Garantías EDESO — ahora va aquí dentro, enlazada a su hoja
-  if((R.polizasEdeso||0) > 0 || refPolEdeso) {
-    var filaEd = r;
-    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.cap()); });
-    sc(wsFF,r,0,'Pólizas y Garantías EDESO',ST.cap());
-    if(refPolEdeso) fc(wsFF,r,4,refPolEdeso,R.polizasEdeso||0,ST.tot());
-    else nc(wsFF,r,4,R.polizasEdeso||0,ST.tot());
-    refsGrupo.push(ref(filaEd,4));
-    r++;
-  }
-
-  // Diseño / Consultoría — informativo: NO entra en los costos indirectos
-  var itemsDis = (ff.componentesDiseno||[]).filter(function(it){ return it.activo!==false; });
-  if(itemsDis.length) {
-    var filaD = r, totD = 0;
-    [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',ST.lbl()); });
-    sc(wsFF,r,0,'Diseño / Consultoría (informativo)',ST.lbl());
-    r++;
-    itemsDis.forEach(function(it, ii) {
-      var v = Number(it.valor)||((Number(it.cantidad)||0)*(Number(it.meses)||1)*(Number(it.valorUnit)||0));
-      totD += v;
-      var stR = ii%2===0?ST.rowA():ST.rowB();
-      sc(wsFF,r,0,'  '+safe(it.descripcion),stR);
-      [1,2,3].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:stR.fill,border:brd}); });
-      nc(wsFF,r,4,v,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
-      r++;
-    });
-    fc(wsFF,filaD,4,'SUM('+rng(filaD+1,r-1,4)+')',totD,ST.lbl());
-  }
 
   // Ya conocemos los grupos: Costos indirectos = suma de ellos (redondeada, igual que el sistema)
   if(refsGrupo.length) fc(wsFF,fInd,4,'ROUND('+refsGrupo.join('+')+',0)', R.subtotalIndirecto, ST.mon());
