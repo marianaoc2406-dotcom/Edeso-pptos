@@ -327,19 +327,29 @@ const PROYECTOS_INIT = [];
 // ═══════════════════════════════════════════════════════
 // HELPERS CÁLCULO
 // ═══════════════════════════════════════════════════════
+// Precio efectivo de una línea de APU: si la línea trae un precio ajustado a mano
+// (precioManual) se usa ese; si no, el precio de la biblioteca de recursos.
+// Como el precio vive EN LA LÍNEA, cada APU puede tener su propio precio para el
+// mismo recurso (agua a 200 en un APU y a 300 en otro), y al guardarse dentro de
+// apuOverrides/apusLocales el ajuste queda limitado a ese proyecto.
+function precioLinea(l, rec) {
+  const pm = l && l.precioManual;
+  if (typeof pm === "number" && !isNaN(pm)) return pm;
+  return (rec && rec.precio) || 0;
+}
 function calcLinea(l, recursos, lineasApu) {
   const rec = recursos.find(r => r.id === l.recursoId);
   if (!rec) return 0;
   const sec = SECCIONES_APU.find(s => s.id === rec.categoria);
   if (!sec) return 0;
-  return (sec.usa === "cantidad" ? l.cantidad || 0 : l.rendimiento || 0) * rec.precio;
+  return (sec.usa === "cantidad" ? l.cantidad || 0 : l.rendimiento || 0) * precioLinea(l, rec);
 }
 function calcTotalMO(lineas, recursos) {
   const osec = SECCIONES_APU.find(s => s.id === "mano_obra");
   return (lineas || []).reduce((s, l) => {
     const rec = recursos.find(r => r.id === l.recursoId);
     if (!rec || rec.categoria !== "mano_obra") return s;
-    return s + (osec.usa === "cantidad" ? l.cantidad || 0 : l.rendimiento || 0) * rec.precio;
+    return s + (osec.usa === "cantidad" ? l.cantidad || 0 : l.rendimiento || 0) * precioLinea(l, rec);
   }, 0);
 }
 function getPctHerramienta(proyecto, ps) {
@@ -8806,8 +8816,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
           sc(wsAPU,r,1,safe(rec.nombre),ST.rowA());
           sc(wsAPU,r,2,safe(rec.unidad||''),{fill:FG('FFFFFF'),border:brd,alignment:C_AL});
           ndc(wsAPU,r,3,val);
-          // P. Unitario → enlazado a la hoja Recursos
-          if(refPrecio[rec.id]) fc(wsAPU,r,4,refPrecio[rec.id],rec.precio||0,ST.mon());
+          // P. Unitario → enlazado a la hoja Recursos (salvo precio ajustado a mano,
+          // que es propio de este APU y por eso va como valor fijo)
+          var _pmL = (typeof l.precioManual === "number" && !isNaN(l.precioManual));
+          if(_pmL) nc(wsAPU,r,4,l.precioManual,ST.mon());
+          else if(refPrecio[rec.id]) fc(wsAPU,r,4,refPrecio[rec.id],rec.precio||0,ST.mon());
           else nc(wsAPU,r,4,rec.precio||0,ST.mon());
           fc(wsAPU,r,5,ref(r,3)+'*'+ref(r,4),subL,ST.mon());
           r++;
@@ -11026,14 +11039,15 @@ function TabObsView({proyecto, apus, recursos, perfil, session, catalogoEstampil
               ls.map((l,li)=>{
                 const rec=recursos.find(x=>x.id===l.recursoId); if(!rec) return null;
                 const sub=calcLinea(l,recursos,lineas);
-                const val=rec.precio>0?sub/rec.precio:(l.cantidad||l.rendimiento||0);
+                const _pu=precioLinea(l,rec);
+                const val=_pu>0?sub/_pu:(l.cantidad||l.rendimiento||0);
                 return React.createElement("div",{key:l.id||li,style:{borderBottom:"1px solid #F3F4F6"}},
                   React.createElement("div",{style:{padding:"8px 20px",display:"grid",gridTemplateColumns:"auto 1fr 60px 90px 100px 110px",gap:8,alignItems:"center"}},
                     React.createElement("code",{style:{fontSize:10,color:"#9CA3AF",fontFamily:"var(--mono)"}},rec.codigo||"—"),
                     React.createElement("span",{style:{fontSize:12}},rec.nombre),
                     React.createElement("span",{style:{fontSize:11,color:"#9CA3AF",textAlign:"center"}},rec.unidad||""),
                     React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmtN(val,4)),
-                    React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt3(rec.precio||0)),
+                    React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",color:"#6B7280"}},fmt3(_pu)),
                     React.createElement("span",{style:{fontFamily:"var(--mono)",fontSize:12,textAlign:"right",fontWeight:700}},fmt3(sub))
                   ),
                   React.createElement(HiloObs,{
@@ -12482,7 +12496,7 @@ function PresupuestoObraTab({ proyecto, presupuesto, setPActivo, setCapitulos, a
 
 
 function ModuloProyectos({
-  recursos,
+  recursos: recursosGlobal,
   setRecursos,
   apus: apusGlobal,
   setApus,
@@ -12528,6 +12542,15 @@ function ModuloProyectos({
     const loc = (pActivo && pActivo.apusLocales) || [];
     return loc.length ? apusGlobal.concat(loc) : apusGlobal;
   }, [apusGlobal, pActivo]);
+  // Lista efectiva de RECURSOS dentro del proyecto = globales + recursos locales
+  // ("solo este proyecto"). Igual que con los APUs, así todos los cálculos y el
+  // editor resuelven los recursos creados sin ensuciar la biblioteca global.
+  // (El precio ajustado a mano NO va aquí: vive en la línea del APU, para que un
+  // mismo recurso pueda tener precios distintos en APUs distintos.)
+  const recursos = useMemo(() => {
+    const loc = (pActivo && pActivo.recursosLocales) || [];
+    return loc.length ? recursosGlobal.concat(loc) : recursosGlobal;
+  }, [recursosGlobal, pActivo]);
   // Editor de APU accesible desde el ítem del capítulo (crear / editar / editar-local)
   const [apuEditor, setApuEditor] = useState(null);
   const [tabDetalle, setTabDetalle] = useState("");
@@ -12555,6 +12578,10 @@ function ModuloProyectos({
   const [showApuModal, setShowApuModal] = useState(null);
   const [dragItem, setDragItem] = useState(null); // {capId, itemId}
   const [dragOver, setDragOver] = useState(null); // {capId, itemId} or {capId, end:true}
+  const [capsColapsados, setCapsColapsados] = useState({}); // {capId: true} → capítulo colapsado
+  const [moviendoItem, setMoviendoItem] = useState(null); // {capId, itemId} en modo "mover a…"
+  const [moviendoCap, setMoviendoCap] = useState(null);    // capId en modo "mover a…"
+  const [movVal, setMovVal] = useState("");                // valor destino escrito (ej "3.2")
 
   // ── Sincronización por fila (caps e items) ───────────────────────────────
   const dbUser = () => ({
@@ -12781,7 +12808,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
       caps:"capitulos", au:"au", pol:"polizasPorComp",
       est:"estampillas", interv:"presupInterv", consult:"presupConsult"
     };
-    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
 
     // BLINDAJE MULTIUSUARIO: solo se persiste la sección que corresponde a la pestaña
     // abierta. Si un handler ensucia OTRA sección de rebote (p.ej. cambiar el plazo
@@ -13126,25 +13153,83 @@ const sincronizarPolizasAU = (proyecto) => {
     setPActivo(p => mutateActiveCaps(p, caps => caps.map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c)));
     dbDelItem(itemId, pActivo.id);
   };
+  // Renumera el campo orden = posición, para que el orden sobreviva al recargar.
+  const _renumItems = (items) => (items||[]).map((it,i)=>({...it, orden:i}));
   const moverItem = (fromCapId, itemId, toCapId, beforeItemId) => {
     _markEditing("caps");
     if (fromCapId === toCapId && beforeItemId == null) return;
-    setPActivo(p => mutateActiveCaps(p, caps => {
-      const item = (caps.find(c=>c.id===fromCapId)?.items||[]).find(i=>i.id===itemId);
-      if (!item) return caps;
-      let result = caps.map(c => c.id===fromCapId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c);
-      result = result.map(c => {
-        if (c.id !== toCapId) return c;
-        const items = [...(c.items||[])];
-        if (beforeItemId == null) { items.push(item); }
-        else {
-          const bi = items.findIndex(i=>i.id===beforeItemId);
-          items.splice(bi < 0 ? items.length : bi, 0, item);
-        }
-        return {...c, items};
-      });
-      return result;
-    }));
+    const caps = getActiveCapitulos(pActivo);
+    const item = (caps.find(c=>c.id===fromCapId)?.items||[]).find(i=>i.id===itemId);
+    if (!item) return;
+    let result = caps.map(c => c.id===fromCapId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c);
+    result = result.map(c => {
+      if (c.id !== toCapId) return c;
+      const items = [...(c.items||[])];
+      if (beforeItemId == null) { items.push(item); }
+      else {
+        const bi = items.findIndex(i=>i.id===beforeItemId);
+        items.splice(bi < 0 ? items.length : bi, 0, item);
+      }
+      return {...c, items};
+    });
+    // Renumerar y PERSISTIR los ítems de los capítulos afectados (antes el arrastre
+    // no guardaba el orden y al recargar se revertía).
+    result = result.map(c => (c.id===fromCapId||c.id===toCapId) ? {...c, items:_renumItems(c.items)} : c);
+    setPActivo(p => mutateActiveCaps(p, () => result));
+    [fromCapId, toCapId].filter((v,i,a)=>a.indexOf(v)===i).forEach(cid => {
+      const c = result.find(x=>x.id===cid);
+      if(c) (c.items||[]).forEach(it => dbSaveItem(it, cid, c.numero, pActivo.id));
+    });
+  };
+  // Mover un ítem a un destino escrito como "cap.pos" (ej "3.2" = capítulo nº3, posición 2).
+  // Si solo se escribe el capítulo (ej "3"), se agrega al final de ese capítulo. Cruza capítulos.
+  const moverItemA = (capId, itemId, destStr) => {
+    const partes = String(destStr||"").trim().split(/[.\-\s/]+/).filter(Boolean);
+    if(!partes.length) return;
+    const capNum = partes[0];
+    const pos = partes.length>1 ? Math.max(1, parseInt(partes[1])||1) : null;
+    _markEditing("caps");
+    const all = getActiveCapitulos(pActivo);
+    const destCap = all.find(c => String(c.numero).trim() === capNum);
+    if(!destCap){ alert("No existe un capítulo con el número "+capNum); return; }
+    const srcCap = all.find(c=>c.id===capId);
+    const item = (srcCap && srcCap.items||[]).find(i=>i.id===itemId);
+    if(!item) return;
+    let result = all.map(c => c.id===capId ? {...c, items:(c.items||[]).filter(i=>i.id!==itemId)} : c);
+    result = result.map(c => {
+      if(c.id!==destCap.id) return c;
+      const items = [...(c.items||[])].filter(i=>i.id!==itemId);
+      const insertAt = pos==null ? items.length : Math.min(pos-1, items.length);
+      items.splice(insertAt, 0, item);
+      return {...c, items};
+    });
+    result = result.map(c => (c.id===capId||c.id===destCap.id) ? {...c, items:_renumItems(c.items)} : c);
+    setPActivo(p => mutateActiveCaps(p, () => result));
+    [capId, destCap.id].filter((v,i,a)=>a.indexOf(v)===i).forEach(cid => {
+      const c = result.find(x=>x.id===cid);
+      if(c) (c.items||[]).forEach(it => dbSaveItem(it, cid, c.numero, pActivo.id));
+    });
+  };
+  // Mover un capítulo a la posición N (entre los capítulos visibles de obra).
+  const moverCapA = (capId, destStr) => {
+    const n = parseInt(String(destStr||"").trim());
+    if(!n || n<1) return;
+    _markEditing("caps");
+    const all = getActiveCapitulos(pActivo);
+    const visibles = all.filter(c=>(c.tipo||"obra")==="obra");
+    const from = visibles.findIndex(c=>c.id===capId);
+    if(from<0) return;
+    const target = Math.min(n-1, visibles.length-1);
+    if(target===from) return;
+    const moved = visibles[from];
+    const newVis = visibles.filter(c=>c.id!==capId);
+    newVis.splice(target, 0, moved);
+    let vi = 0;
+    const arr = all.map(c => (c.tipo||"obra")==="obra" ? newVis[vi++] : c);
+    const nuevos = arr.map((c,i)=>({...c, orden:i}));
+    setPActivo(p => mutateActiveCaps(p, () => nuevos));
+    const psId = getActivePsId();
+    nuevos.forEach(c => dbSaveCap(c, pActivo.id, psId));
   };
   const updIt = (capId, itemId, campo, val) => {
     _markEditing("caps");
@@ -13225,6 +13310,11 @@ const sincronizarPolizasAU = (proyecto) => {
   const saveApuEditor = (result) => {
     const ed = apuEditor;
     if (!ed) { return; }
+    // Los precios ajustados a mano son del proyecto, NO de la biblioteca. Si el APU
+    // se guarda en global, se limpian del APU global y se conservan como override
+    // del proyecto, para no cambiarle el precio a los demás proyectos.
+    const _stripPM = (ls) => (ls||[]).map(l => { const {precioManual, ...rest} = l; return rest; });
+    const _tienePM = (ls) => (ls||[]).some(l => typeof l.precioManual === "number" && !isNaN(l.precioManual));
     if (ed.mode === "override") {
       const nombreOriginal = (apusGlobal.find(a=>a.id===ed.apuId)||{}).nombre || "";
       setPActivo(p => ({
@@ -13235,9 +13325,14 @@ const sincronizarPolizasAU = (proyecto) => {
     } else if (ed.mode === "local") {
       if (result.scope === "global") {
         // Promover a global: sale de apusLocales y entra a la biblioteca global
-        const promoted = { id: ed.apuId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: result.lineas };
+        const promoted = { id: ed.apuId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: _stripPM(result.lineas) };
         setApus(prev => prev.some(a=>a.id===ed.apuId) ? prev.map(a=>a.id===ed.apuId?promoted:a) : [...prev, promoted]);
-        setPActivo(p => ({ ...p, apusLocales: (p.apusLocales||[]).filter(a=>a.id!==ed.apuId) }));
+        setPActivo(p => ({
+          ...p,
+          apusLocales: (p.apusLocales||[]).filter(a=>a.id!==ed.apuId),
+          // Si tenía precios ajustados, se conservan solo para este proyecto
+          apuOverrides: _tienePM(result.lineas) ? { ...(p.apuOverrides||{}), [ed.apuId]: result.lineas } : (p.apuOverrides||{})
+        }));
         _linkItemToApu(ed.capId, ed.itemId, promoted);
       } else {
         // Sigue local
@@ -13246,13 +13341,18 @@ const sincronizarPolizasAU = (proyecto) => {
       }
     } else if (ed.mode === "create") {
       const newId = Date.now() + Math.floor(Math.random()*100000);
-      const apuObj = { id: newId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: result.lineas };
       if (result.scope === "global") {
+        const apuObj = { id: newId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: _stripPM(result.lineas) };
         setApus(prev => [...prev, apuObj]);
+        if (_tienePM(result.lineas)) {
+          setPActivo(p => ({ ...p, apuOverrides: { ...(p.apuOverrides||{}), [newId]: result.lineas } }));
+        }
+        _linkItemToApu(ed.capId, ed.itemId, apuObj);
       } else {
+        const apuObj = { id: newId, codigo: result.codigo, nombre: result.nombre, unidad: result.unidad, lineas: result.lineas };
         setPActivo(p => ({ ...p, apusLocales: [ ...(p.apusLocales||[]), apuObj ] }));
+        _linkItemToApu(ed.capId, ed.itemId, apuObj);
       }
-      _linkItemToApu(ed.capId, ed.itemId, apuObj);
     }
     setApuEditor(null);
   };
@@ -13668,10 +13768,22 @@ const sincronizarPolizasAU = (proyecto) => {
     style: {
       fontWeight: 600
     }
-  }, "Cap\xEDtulos e \xCDtems"), /*#__PURE__*/React.createElement("button", {
+  }, "Cap\xEDtulos e \xCDtems"), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, alignItems: "center" }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost",
+    style: { fontSize: 11, color: "var(--ink3)" },
+    title: "Colapsar todos los cap\xEDtulos",
+    onClick: () => { const m = {}; obrasCapitulos.forEach(c => { m[c.id] = true; }); setCapsColapsados(m); }
+  }, "\u25B8 Colapsar todo"), /*#__PURE__*/React.createElement("button", {
+    className: "btn-ghost",
+    style: { fontSize: 11, color: "var(--ink3)" },
+    title: "Expandir todos los cap\xEDtulos",
+    onClick: () => setCapsColapsados({})
+  }, "\u25BE Expandir todo"), /*#__PURE__*/React.createElement("button", {
     className: "btn-dashed",
     onClick: addCap
-  }, "+ Agregar cap\xEDtulo")), obrasCapitulos.filter(c => (c.tipo || "obra") === "obra").length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, "+ Agregar cap\xEDtulo"))), obrasCapitulos.filter(c => (c.tipo || "obra") === "obra").length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "empty"
   }, /*#__PURE__*/React.createElement("div", {
     className: "empty-icon"
@@ -13707,7 +13819,14 @@ const sincronizarPolizasAU = (proyecto) => {
       style: {
         padding: "8px 16px"
       }
-    }, /*#__PURE__*/React.createElement("input", {
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 6 }
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "btn-ghost",
+      title: capsColapsados[cap.id] ? "Expandir cap\xEDtulo" : "Colapsar cap\xEDtulo",
+      style: { color: "#fff", fontSize: 11, padding: 0, minWidth: 12, cursor: "pointer" },
+      onClick: () => setCapsColapsados(m => ({ ...m, [cap.id]: !m[cap.id] }))
+    }, capsColapsados[cap.id] ? "\u25B8" : "\u25BE"), /*#__PURE__*/React.createElement("input", {
       style: {
         width: 36,
         textAlign: "center",
@@ -13722,7 +13841,7 @@ const sincronizarPolizasAU = (proyecto) => {
       },
       value: cap.numero,
       onChange: e => updCap(cap.id, "numero", e.target.value)
-    })), /*#__PURE__*/React.createElement("td", {
+    }))), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "8px 16px"
       },
@@ -13790,13 +13909,35 @@ const sincronizarPolizasAU = (proyecto) => {
         padding: "8px 16px",
         textAlign: "center"
       }
-    }, /*#__PURE__*/React.createElement("button", {
-      className: "btn-ghost",
-      style: {
-        color: "#F5C6C2"
-      },
-      onClick: () => delCap(cap.id)
-    }, "\xD7"))), cap.items.map((item, idx) => {
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", gap: 4, alignItems: "center", justifyContent: "center" }
+    }, moviendoCap === cap.id
+      ? /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("input", {
+            autoFocus: true, value: movVal, placeholder: "N\xB0",
+            title: "Escribe la posici\xF3n destino (ej: 2) y Enter",
+            style: { width: 40, textAlign: "center", fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid #3A3A3C", background: "var(--sb3)", color: "#fff" },
+            onChange: e => setMovVal(e.target.value),
+            onKeyDown: e => { if(e.key==="Enter"){ moverCapA(cap.id, movVal); setMoviendoCap(null); setMovVal(""); } if(e.key==="Escape"){ setMoviendoCap(null); setMovVal(""); } }
+          }),
+          /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Mover", style: { color: "#7CFC98", padding: "0 3px" }, onClick: () => { moverCapA(cap.id, movVal); setMoviendoCap(null); setMovVal(""); } }, "\u2713"),
+          /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Cancelar", style: { color: "var(--ink4)", padding: "0 3px" }, onClick: () => { setMoviendoCap(null); setMovVal(""); } }, "\xD7")
+        )
+      : /*#__PURE__*/React.createElement("button", {
+          className: "btn-ghost", title: "Mover cap\xEDtulo a otra posici\xF3n",
+          style: { color: "#fff", padding: "0 4px", fontSize: 13 },
+          onClick: () => { setMoviendoCap(cap.id); setMoviendoItem(null); setMovVal(""); }
+        }, "\u21C5"),
+      /*#__PURE__*/React.createElement("button", {
+        className: "btn-ghost",
+        style: { color: "#F5C6C2" },
+        onClick: () => delCap(cap.id)
+      }, "\xD7")))), capsColapsados[cap.id] && /*#__PURE__*/React.createElement("tr", {
+      key: cap.id + "_col"
+    }, /*#__PURE__*/React.createElement("td", {
+      colSpan: 8,
+      style: { padding: "4px 16px 4px 42px", fontSize: 11, color: "var(--ink4)", fontStyle: "italic", background: "var(--line2)" }
+    }, (cap.items || []).length + " \xEDtem" + ((cap.items || []).length === 1 ? "" : "s") + " \xB7 colapsado")), !capsColapsados[cap.id] && cap.items.map((item, idx) => {
       var _item$cantidad;
       const apu = apus.find(a => a.id === item.apuId);
       const apuEf = apu ? getApuEfectivo(apu, pActivo) : null;
@@ -13816,11 +13957,32 @@ const sincronizarPolizasAU = (proyecto) => {
           opacity: dragItem && dragItem.itemId === item.id ? 0.4 : 1,
         }
       }, /*#__PURE__*/React.createElement("td", {
-        draggable: true,
-        onDragStart: e => { e.dataTransfer.effectAllowed="move"; setDragItem({capId:cap.id, itemId:item.id}); },
-        onDragEnd: () => { setDragItem(null); setDragOver(null); },
-        style:{paddingLeft:6,color:"var(--ink4)",fontSize:13,cursor:"grab",userSelect:"none"}
-      }, "⠿"),
+        style: { paddingLeft: 6, whiteSpace: "nowrap" }
+      }, moviendoItem && moviendoItem.itemId === item.id
+        ? /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 3 } },
+            /*#__PURE__*/React.createElement("input", {
+              autoFocus: true, value: movVal, placeholder: "3.2",
+              title: "Escribe el destino como cap\xEDtulo.posici\xF3n (ej: 3.2) y Enter",
+              style: { width: 46, textAlign: "center", fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--line)" },
+              onChange: e => setMovVal(e.target.value),
+              onKeyDown: e => { if(e.key==="Enter"){ moverItemA(cap.id, item.id, movVal); setMoviendoItem(null); setMovVal(""); } if(e.key==="Escape"){ setMoviendoItem(null); setMovVal(""); } }
+            }),
+            /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Mover", style: { color: "var(--green,#16A34A)", padding: 0, fontSize: 13 }, onClick: () => { moverItemA(cap.id, item.id, movVal); setMoviendoItem(null); setMovVal(""); } }, "\u2713"),
+            /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Cancelar", style: { color: "var(--ink4)", padding: 0, fontSize: 13 }, onClick: () => { setMoviendoItem(null); setMovVal(""); } }, "\xD7")
+          )
+        : /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 4 } },
+            /*#__PURE__*/React.createElement("span", {
+              draggable: true,
+              onDragStart: e => { e.dataTransfer.effectAllowed="move"; setDragItem({capId:cap.id, itemId:item.id}); },
+              onDragEnd: () => { setDragItem(null); setDragOver(null); },
+              style: { color: "var(--ink4)", fontSize: 13, cursor: "grab", userSelect: "none" }
+            }, "⠿"),
+            /*#__PURE__*/React.createElement("button", {
+              className: "btn-ghost", title: "Mover \xEDtem a otra posici\xF3n (ej: 3.2)",
+              style: { padding: 0, fontSize: 12, color: "var(--ink3)", lineHeight: 1 },
+              onClick: () => { setMoviendoItem({capId:cap.id, itemId:item.id}); setMoviendoCap(null); setMovVal(""); }
+            }, "\u21C5")
+          )),
       /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
         style: {
           fontFamily: "var(--mono)",
@@ -13902,11 +14064,11 @@ const sincronizarPolizasAU = (proyecto) => {
         className: "btn-ghost",
         onClick: () => delIt(cap.id, item.id)
       }, "\xD7")));
-    }), /*#__PURE__*/React.createElement("tr", {
+    }), !capsColapsados[cap.id] && /*#__PURE__*/React.createElement("tr", {
       onDragOver: e => { e.preventDefault(); setDragOver({capId:cap.id, end:true}); },
       onDrop: e => { e.preventDefault(); if(dragItem) moverItem(dragItem.capId, dragItem.itemId, cap.id, null); setDragItem(null); setDragOver(null); },
       style: { height: dragOver && dragOver.capId===cap.id && dragOver.end ? 6 : 2, background: dragOver && dragOver.capId===cap.id && dragOver.end ? "var(--red)" : "transparent", transition:"height 0.1s" }
-    }), /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    }), !capsColapsados[cap.id] && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
       colSpan: 9,
       style: {
         padding: "5px 16px",
@@ -14078,7 +14240,8 @@ const sincronizarPolizasAU = (proyecto) => {
     setRecursos: setRecursos,
     pctHerr: getPctHerramienta(pActivo),
     onSave: saveApuEditor,
-    onClose: () => setApuEditor(null)
+    onClose: () => setApuEditor(null),
+    onCrearRecursoLocal: (nuevo) => setPActivo(p => ({ ...p, recursosLocales: [ ...(p.recursosLocales||[]), nuevo ] }))
   }));
 
 
@@ -15118,7 +15281,7 @@ function DetalleAPUsUsados({proyecto, apus, recursos, perfil, session, esLectura
 // ═══════════════════════════════════════════════════════
 // EDITOR DE APU (crear / editar desde el presupuesto)
 // ═══════════════════════════════════════════════════════
-function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave, onClose }) {
+function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave, onClose, onCrearRecursoLocal }) {
   const [codigo, setCodigo] = useState(initial.codigo || "");
   const [nombre, setNombre] = useState(initial.nombre || "");
   const [unidad, setUnidad] = useState(initial.unidad || "un");
@@ -15157,7 +15320,7 @@ function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave,
     return r;
   }, [recursos, picker, busq]);
 
-  const guardarNuevoRec = () => {
+  const guardarNuevoRec = (scope) => {
     const e = {};
     const cod = (nuevoRec.codigo||"").trim();
     const nom = (nuevoRec.nombre||"").trim();
@@ -15171,7 +15334,11 @@ function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave,
       codigo: cod, nombre: nom, categoria: nuevoRec.categoria,
       unidad: nuevoRec.unidad || "un", precio: Number(nuevoRec.precio)
     };
-    setRecursos(prev => [...prev, nuevo]); // → Recursos generales (global), auto-guarda
+    if (scope === "local" && onCrearRecursoLocal) {
+      onCrearRecursoLocal({ ...nuevo, _local: true }); // → solo este proyecto (recursosLocales)
+    } else {
+      setRecursos(prev => [...prev, nuevo]); // → Recursos generales (global), auto-guarda
+    }
     addLinea(nuevo);
   };
 
@@ -15214,12 +15381,17 @@ function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave,
   );
 
   // ── Secciones editables ──
+  const pctTxt = String(Math.round((pctHerr||0)*10000)/100);
   const secciones = SECCIONES_APU.map(sec => {
     const lineasSec = (lineas||[]).filter(l => {
       const r = recursos.find(x => x.id === l.recursoId);
       return r && r.categoria === sec.id;
     });
     const sc = SEC_COLORS[sec.id] || {bg:"#F3F4F6", fg:"#374151", border:"#E5E7EB"};
+    const subSec = lineasSec.reduce((s,l)=>{ const r=recursos.find(x=>x.id===l.recursoId); const val=sec.usa==="cantidad"?(l.cantidad||0):(l.rendimiento||0); return s + val*precioLinea(l,r); }, 0);
+    const esMaq = sec.id === "maquinaria";
+    const hmMO = calcTotalMO(lineas, recursos);
+    const hmVal = esMaq ? (hmMO > 0 ? hmMO * (pctHerr||0) : 0) : 0;
     return React.createElement("div", { key:sec.id, style:{marginBottom:16} },
       React.createElement("div", { style:{background:sc.bg,padding:"8px 16px",borderRadius:"8px 8px 0 0",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid "+sc.border} },
         React.createElement("span", { style:{fontWeight:700,fontSize:12,color:sc.fg,textTransform:"uppercase",letterSpacing:".08em"} }, sec.label),
@@ -15240,6 +15412,8 @@ function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave,
             : lineasSec.map(l => {
                 const r = recursos.find(x => x.id === l.recursoId);
                 const val = sec.usa==="cantidad" ? (l.cantidad||0) : (l.rendimiento||0);
+                const tienePM = typeof l.precioManual === "number" && !isNaN(l.precioManual);
+                const precioEf = precioLinea(l, r);
                 return React.createElement("tr", { key:l.id },
                   React.createElement("td", null, React.createElement("div",{style:{fontWeight:500,fontSize:13}}, r?.nombre||"—")),
                   React.createElement("td", {style:{textAlign:"center",fontSize:11,color:"var(--ink3)"}}, r?.unidad||"—"),
@@ -15249,19 +15423,58 @@ function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave,
                       onChange:e=>{ const v=parseFloat(e.target.value)||0; setLineas(prev=>prev.map(x=>x.id===l.id?{...x,[sec.usa==="cantidad"?"cantidad":"rendimiento"]:v}:x)); }
                     })
                   ),
-                  React.createElement("td", {style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"}}, fmt(r?.precio||0)),
-                  React.createElement("td", {style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,fontWeight:600}}, fmt(val*(r?.precio||0))),
+                  React.createElement("td", {style:{textAlign:"right"}},
+                    React.createElement("span", {style:{display:"inline-flex",alignItems:"center",gap:3,justifyContent:"flex-end"}},
+                      React.createElement("input", {
+                        className:"inum", type:"number", min:0, step:1,
+                        title: tienePM
+                          ? "Precio ajustado solo en este APU. \u21BA para volver al precio de la biblioteca."
+                          : "Editar el precio solo para este APU",
+                        style:{ width:96, textAlign:"right",
+                          borderColor: tienePM ? "var(--red)" : undefined,
+                          color: tienePM ? "var(--red)" : undefined,
+                          fontWeight: tienePM ? 600 : undefined },
+                        value: precioEf,
+                        onChange:e=>{
+                          const raw = e.target.value;
+                          setLineas(prev=>prev.map(x=>{
+                            if(x.id!==l.id) return x;
+                            if(raw==="" || isNaN(Number(raw))) { const {precioManual, ...rest} = x; return rest; }
+                            return {...x, precioManual: Number(raw)};
+                          }));
+                        }
+                      }),
+                      tienePM && React.createElement("button", {
+                        className:"btn-ghost", title:"Volver al precio de la biblioteca",
+                        style:{padding:0,color:"var(--ink3)",fontSize:13,lineHeight:1},
+                        onClick:()=>setLineas(prev=>prev.map(x=>{ if(x.id!==l.id) return x; const {precioManual, ...rest} = x; return rest; }))
+                      }, "\u21BA")
+                    )
+                  ),
+                  React.createElement("td", {style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,fontWeight:600}}, fmt(val*precioEf)),
                   React.createElement("td", null, React.createElement("button", { className:"btn-ghost", style:{color:"var(--red)"}, onClick:()=>setLineas(prev=>prev.filter(x=>x.id!==l.id)) }, "×"))
                 );
-              })
+              }),
+          esMaq && hmVal > 0 && React.createElement("tr", { style:{background:"var(--line2)"} },
+            React.createElement("td", { style:{fontSize:12,fontStyle:"italic",color:"var(--ink3)"} }, "Herramienta menor ("+pctTxt+"%)"),
+            React.createElement("td", { style:{textAlign:"center",fontSize:11,color:"var(--ink3)"} }, "% M.O."),
+            React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, pctTxt+"%"),
+            React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,color:"var(--ink3)"} }, fmt(hmMO)),
+            React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontSize:12,fontWeight:600} }, fmt(hmVal)),
+            React.createElement("td", null)),
+          (lineasSec.length > 0 || (esMaq && hmVal > 0)) && React.createElement("tr", { style:{background:sc.bg} },
+            React.createElement("td", { colSpan:4, style:{textAlign:"right",fontWeight:700,fontSize:11,color:sc.fg,padding:"6px 16px",textTransform:"uppercase",letterSpacing:".04em"} }, "Subtotal "+sec.label),
+            React.createElement("td", { style:{textAlign:"right",fontFamily:"var(--mono)",fontWeight:700,fontSize:12,color:sc.fg} }, fmt(subSec + hmVal)),
+            React.createElement("td", null))
         )
       )
     );
   });
 
-  // ── Footer de acciones ──
+  // ── Footer de acciones (Total APU a la izquierda; la herramienta menor ahora
+  //     se ve como fila dentro de la sección Maquinaria/Equipo/Herramientas) ──
   const footer = React.createElement("div", { style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16,paddingTop:16,borderTop:"1px solid var(--line)",gap:8,flexWrap:"wrap"} },
-    React.createElement("div", { style:{fontSize:12,color:"var(--ink3)"} }, "Total APU: ", React.createElement("strong",{style:{fontFamily:"var(--mono)",color:"var(--red)"}}, fmt3(total))),
+    React.createElement("div", { style:{fontSize:12,color:"var(--ink3)"} }, "Total APU: ", React.createElement("strong",{style:{fontFamily:"var(--mono)",color:"var(--red)",fontSize:14}}, fmt3(total))),
     React.createElement("div", { style:{display:"flex",gap:8,flexWrap:"wrap"} },
       React.createElement("button", { className:"btn-s", onClick:onClose }, "Cancelar"),
       preguntaAlcance
@@ -15308,10 +15521,14 @@ function ApuEditorModal({ mode, initial, recursos, setRecursos, pctHerr, onSave,
                 errRec.precio && React.createElement("div",{style:{fontSize:10,color:"var(--red)",marginTop:2}},errRec.precio)
               )
             ),
-            React.createElement("div", { style:{fontSize:11,color:"var(--ink4)",marginBottom:12} }, "Se guardará en Recursos generales (biblioteca global) y se agregará a este APU."),
-            React.createElement("div", { style:{display:"flex",justifyContent:"flex-end",gap:8} },
+            React.createElement("div", { style:{fontSize:11,color:"var(--ink4)",marginBottom:12} },
+              onCrearRecursoLocal
+                ? "Elige dónde guardar este recurso. \"Solo este proyecto\" no lo agrega a la biblioteca global (útil para recursos que no reutilizas, como el transporte al 5% de mano de obra)."
+                : "Se guardará en Recursos generales (biblioteca global) y se agregará a este APU."),
+            React.createElement("div", { style:{display:"flex",justifyContent:"flex-end",gap:8,flexWrap:"wrap"} },
               React.createElement("button",{className:"btn-s",onClick:()=>{setNuevoRec(null);setErrRec({});}},"Volver"),
-              React.createElement("button",{className:"btn-p",onClick:guardarNuevoRec},"Crear y agregar")
+              onCrearRecursoLocal && React.createElement("button",{className:"btn-s",style:{borderColor:"var(--red)",color:"var(--red)"},onClick:()=>guardarNuevoRec("local")},"Solo este proyecto"),
+              React.createElement("button",{className:"btn-p",onClick:()=>guardarNuevoRec("global")},onCrearRecursoLocal?"Guardar en global":"Crear y agregar")
             )
           )
         // ── Lista de recursos existentes ──
@@ -16543,7 +16760,7 @@ function App() {
         capsTot+=capRows.length; itemsTot+=itemRows.length;
 
         const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides",
-          "apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera"];
+          "apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera"];
         const meta={}; metaFields.forEach(f=>{ if(proy[f]!==undefined) meta[f]=proy[f]; });
         meta.presupuestosObra = hojas.map(ps=>{ const x={...ps}; delete x.capitulos; return x; });
         meta.id = proy.id;
@@ -16771,7 +16988,7 @@ function App() {
         if(recursosNuevos.length) await _sb.from("app_data").upsert({key:"recursos", value:recursosFinal});
         if(apusNuevos.length) await _sb.from("app_data").upsert({key:"apus", value:apusFinal});
         const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides",
-          "apuNombreOverrides","apusLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera"];
+          "apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera"];
         const meta={}; metaFields.forEach(f=>{ if(proyActualizado[f]!==undefined) meta[f]=proyActualizado[f]; });
         meta.presupuestosObra = nuevasHojasCompletas.map(ps=>{ const x={...ps}; delete x.capitulos; return x; });
         meta.id = proyActualizado.id;
