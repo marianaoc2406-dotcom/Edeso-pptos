@@ -12582,6 +12582,7 @@ function ModuloProyectos({
   const [moviendoItem, setMoviendoItem] = useState(null); // {capId, itemId} en modo "mover a…"
   const [moviendoCap, setMoviendoCap] = useState(null);    // capId en modo "mover a…"
   const [movVal, setMovVal] = useState("");                // valor destino escrito (ej "3.2")
+  const [moviendoCapHoja, setMoviendoCapHoja] = useState(null); // capId en modo "mover a OTRA hoja"
 
   // ── Sincronización por fila (caps e items) ───────────────────────────────
   const dbUser = () => ({
@@ -13230,6 +13231,36 @@ const sincronizarPolizasAU = (proyecto) => {
     setPActivo(p => mutateActiveCaps(p, () => nuevos));
     const psId = getActivePsId();
     nuevos.forEach(c => dbSaveCap(c, pActivo.id, psId));
+  };
+
+  // Mover un capítulo COMPLETO (con sus ítems) desde la hoja activa a OTRA hoja.
+  // El capítulo se renombra "… (traído de <hoja origen>)" y se re-guarda con la
+  // etiqueta de la hoja destino, así al recargar aparece en la hoja correcta.
+  const moverCapAHoja = (capId, destPsId) => {
+    const psOrigenId = getActivePsId();
+    if(!psOrigenId || !destPsId || String(destPsId)===String(psOrigenId)) { setMoviendoCapHoja(null); return; }
+    const presups = (pActivo.presupuestosObra)||[];
+    const hojaOrigen = presups.find(x=>String(x.id)===String(psOrigenId));
+    const hojaDest   = presups.find(x=>String(x.id)===String(destPsId));
+    if(!hojaOrigen || !hojaDest) { setMoviendoCapHoja(null); return; }
+    const cap = (hojaOrigen.capitulos||[]).find(c=>c.id===capId);
+    if(!cap) { setMoviendoCapHoja(null); return; }
+    _markEditing("caps");
+    const nombreOrigen = hojaOrigen.nombre || "otra hoja";
+    const base = cap.nombre || "";
+    const nuevoNombre = /\(traído de /i.test(base) ? base : (base + " (traído de " + nombreOrigen + ")");
+    const capMovido = {...cap, nombre: nuevoNombre, orden: (hojaDest.capitulos||[]).length};
+    setPActivo(p => {
+      const lista = (p.presupuestosObra||[]).map(ps => {
+        if(String(ps.id)===String(psOrigenId)) return {...ps, capitulos:(ps.capitulos||[]).filter(c=>c.id!==capId)};
+        if(String(ps.id)===String(destPsId))   return {...ps, capitulos:[...(ps.capitulos||[]), capMovido]};
+        return ps;
+      });
+      const activa = lista.find(ps=>String(ps.id)===String(psOrigenId));
+      return {...p, presupuestosObra:lista, capitulos: activa ? (activa.capitulos||[]) : (p.capitulos||[])};
+    });
+    dbSaveCap(capMovido, pActivo.id, destPsId);
+    setMoviendoCapHoja(null);
   };
   const updIt = (capId, itemId, campo, val) => {
     _markEditing("caps");
@@ -13928,6 +13959,25 @@ const sincronizarPolizasAU = (proyecto) => {
           style: { color: "#fff", padding: "0 4px", fontSize: 13 },
           onClick: () => { setMoviendoCap(cap.id); setMoviendoItem(null); setMovVal(""); }
         }, "\u21C5"),
+      ((pActivo.presupuestosObra||[]).length > 1) && (moviendoCapHoja === cap.id
+        ? /*#__PURE__*/React.createElement("select", {
+            autoFocus: true, title: "Elige la hoja destino",
+            style: { fontSize: 11, padding: "2px 4px", borderRadius: 4, border: "1px solid #3A3A3C", background: "var(--sb3)", color: "#fff", maxWidth: 130 },
+            defaultValue: "",
+            onChange: e => { if(e.target.value) moverCapAHoja(cap.id, e.target.value); },
+            onBlur: () => setMoviendoCapHoja(null)
+          },
+            [/*#__PURE__*/React.createElement("option", { key: "_ph", value: "", disabled: true }, "Mover a hoja\u2026")].concat(
+              (pActivo.presupuestosObra||[]).filter(ps=>String(ps.id)!==String(getActivePsId())).map(ps =>
+                /*#__PURE__*/React.createElement("option", { key: ps.id, value: String(ps.id) }, ps.nombre || "Hoja")
+              )
+            )
+          )
+        : /*#__PURE__*/React.createElement("button", {
+            className: "btn-ghost", title: "Mover cap\xEDtulo a OTRA hoja",
+            style: { color: "#8FD3FF", padding: "0 4px", fontSize: 13 },
+            onClick: () => { setMoviendoCapHoja(cap.id); setMoviendoCap(null); setMoviendoItem(null); setMovVal(""); }
+          }, "\u21C4")),
       /*#__PURE__*/React.createElement("button", {
         className: "btn-ghost",
         style: { color: "#F5C6C2" },
@@ -16731,58 +16781,123 @@ function App() {
     if(!_sb || guardandoTodo) return;
     if(!window.confirm(`Se van a guardar TODOS los proyectos (${proyectos.length}) en la base de datos, tal como están en pantalla ahora mismo.\n\n¿Continuar?`)) return;
     setGuardandoTodo(true);
+    const sleep = ms => new Promise(r=>setTimeout(r,ms));
+    // Blindaje anti-cuelgue: si una operación no responde en el tiempo dado, la
+    // damos por fallida y seguimos. Así "Guardar todos" NUNCA se queda pegado.
+    const withTimeout = (p, ms, label) => Promise.race([
+      Promise.resolve(p),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("tardó demasiado (timeout) en "+label)), ms))
+    ]);
+    // Si una operación devuelve error, cortamos ESE proyecto (no seguimos como si nada).
+    const chk = (error, ctx) => { if(error) throw new Error(ctx+" → "+(error.message||JSON.stringify(error))); };
+    let capsTot=0, itemsTot=0, okCount=0;
+    const fallidos=[];
     try{
-      let capsTot=0, itemsTot=0;
       for(const proy of proyectos){
         const pid = String(proy.id);
-        const hojas = (proy.presupuestosObra && proy.presupuestosObra.length)
-          ? proy.presupuestosObra
-          : [{id:"p0", capitulos: proy.capitulos||[]}];
-        // Reemplazo completo: borrar lo viejo de este proyecto antes de insertar
-        // lo actual. Así "Guardar todos" deja la base EXACTAMENTE como la pantalla,
-        // sin dejar filas huérfanas ni duplicadas de guardados anteriores.
-        await _sb.from("items_presupuesto").delete().eq("proyecto_id", pid);
-        await _sb.from("capitulos_presupuesto").delete().eq("proyecto_id", pid);
-        const capRows=[], itemRows=[];
-        hojas.forEach(h=>{
-          (h.capitulos||[]).forEach(c=>{
-            capRows.push({ id:String(c.id), proyecto_id:pid, numero:c.numero, nombre:c.nombre,
-              tipo: (h.id && String(h.id)!=="p0") ? ("obra_ps:"+h.id) : (c.tipo||"obra"), orden:c.orden||0 });
-            (c.items||[]).forEach(it=>{
-              itemRows.push({ id:String(it.id), proyecto_id:pid, capitulo_id:String(c.id), numero_cap:c.numero,
-                apu_id: it.apuId?String(it.apuId):null, descripcion: it.descripcion||"", unidad: it.unidad||"",
-                cantidad: it.cantidad||0, orden_item: it.orden||0 });
+        const nombreProy = proy.nombre || proy.codigo || pid;
+        try{
+          const hojas = (proy.presupuestosObra && proy.presupuestosObra.length)
+            ? proy.presupuestosObra
+            : [{id:"p0", capitulos: proy.capitulos||[]}];
+          // Construir las filas nuevas a partir de lo que hay en pantalla.
+          const capRows=[], itemRows=[];
+          hojas.forEach(h=>{
+            (h.capitulos||[]).forEach(c=>{
+              capRows.push({ id:String(c.id), proyecto_id:pid, numero:c.numero, nombre:c.nombre,
+                tipo: (h.id && String(h.id)!=="p0") ? ("obra_ps:"+h.id) : (c.tipo||"obra"), orden:c.orden||0 });
+              (c.items||[]).forEach(it=>{
+                itemRows.push({ id:String(it.id), proyecto_id:pid, capitulo_id:String(c.id), numero_cap:c.numero,
+                  apu_id: it.apuId?String(it.apuId):null, descripcion: it.descripcion||"", unidad: it.unidad||"",
+                  cantidad: it.cantidad||0, orden_item: it.orden||0 });
+              });
             });
           });
-        });
-        for(let i=0;i<capRows.length;i+=200) await _sb.from("capitulos_presupuesto").upsert(capRows.slice(i,i+200));
-        for(let i=0;i<itemRows.length;i+=200) await _sb.from("items_presupuesto").upsert(itemRows.slice(i,i+200));
-        capsTot+=capRows.length; itemsTot+=itemRows.length;
 
-        const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides",
-          "apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera"];
-        const meta={}; metaFields.forEach(f=>{ if(proy[f]!==undefined) meta[f]=proy[f]; });
-        meta.presupuestosObra = hojas.map(ps=>{ const x={...ps}; delete x.capitulos; return x; });
-        meta.id = proy.id;
-        await _sb.from("app_data").upsert({key:"psec_"+pid+"_meta", value:meta});
-        if(proy.au!==undefined) await _sb.from("app_data").upsert({key:"psec_"+pid+"_au", value:proy.au});
-        if(proy.polizasPorComp!==undefined) await _sb.from("app_data").upsert({key:"psec_"+pid+"_pol", value:proy.polizasPorComp});
+          // ── PASO 1: leer qué IDs existen HOY en la base para este proyecto.
+          const {data:capViejos, error:eCV} = await withTimeout(_sb.from("capitulos_presupuesto").select("id").eq("proyecto_id", pid), 20000, "leer capítulos de "+nombreProy);
+          chk(eCV, "leyendo capítulos existentes");
+          const {data:itemViejos, error:eIV} = await withTimeout(_sb.from("items_presupuesto").select("id").eq("proyecto_id", pid), 20000, "leer ítems de "+nombreProy);
+          chk(eIV, "leyendo ítems existentes");
+
+          // ── PASO 2: SUBIR primero lo nuevo. NUNCA se borra antes de subir.
+          for(let i=0;i<capRows.length;i+=200){
+            const {error} = await withTimeout(_sb.from("capitulos_presupuesto").upsert(capRows.slice(i,i+200)), 25000, "subir capítulos de "+nombreProy);
+            chk(error, "subiendo capítulos");
+          }
+          for(let i=0;i<itemRows.length;i+=200){
+            const {error} = await withTimeout(_sb.from("items_presupuesto").upsert(itemRows.slice(i,i+200)), 25000, "subir ítems de "+nombreProy);
+            chk(error, "subiendo ítems");
+          }
+
+          // ── PASO 3: ya subido y sin errores, recién ahora borramos SOLO lo que sobra.
+          const capNuevosIds  = new Set(capRows.map(r=>r.id));
+          const itemNuevosIds = new Set(itemRows.map(r=>r.id));
+          const capHuerfanos  = (capViejos ||[]).map(r=>String(r.id)).filter(id=>!capNuevosIds.has(id));
+          const itemHuerfanos = (itemViejos||[]).map(r=>String(r.id)).filter(id=>!itemNuevosIds.has(id));
+          for(let i=0;i<itemHuerfanos.length;i+=100){
+            const {error} = await withTimeout(_sb.from("items_presupuesto").delete().in("id", itemHuerfanos.slice(i,i+100)), 20000, "limpiar ítems viejos de "+nombreProy);
+            chk(error, "limpiando ítems que ya no existen");
+          }
+          for(let i=0;i<capHuerfanos.length;i+=100){
+            const {error} = await withTimeout(_sb.from("capitulos_presupuesto").delete().in("id", capHuerfanos.slice(i,i+100)), 20000, "limpiar capítulos viejos de "+nombreProy);
+            chk(error, "limpiando capítulos que ya no existen");
+          }
+
+          // ── PASO 4: metadatos del proyecto.
+          const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides",
+            "apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","municipioId","fichaFinanciera","snapshot",
+            "extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+          const meta={}; metaFields.forEach(f=>{ if(proy[f]!==undefined) meta[f]=proy[f]; });
+          meta.presupuestosObra = hojas.map(ps=>{ const x={...ps}; delete x.capitulos; return x; });
+          meta.id = proy.id;
+          chk((await withTimeout(_sb.from("app_data").upsert({key:"psec_"+pid+"_meta", value:meta}), 20000, "guardar datos de "+nombreProy)).error, "guardando datos del proyecto");
+          if(proy.au!==undefined) chk((await withTimeout(_sb.from("app_data").upsert({key:"psec_"+pid+"_au", value:proy.au}), 20000, "guardar AU de "+nombreProy)).error, "guardando AU");
+          if(proy.polizasPorComp!==undefined) chk((await withTimeout(_sb.from("app_data").upsert({key:"psec_"+pid+"_pol", value:proy.polizasPorComp}), 20000, "guardar pólizas de "+nombreProy)).error, "guardando pólizas");
+          if(proy.presupInterv!==undefined) chk((await withTimeout(_sb.from("app_data").upsert({key:"psec_"+pid+"_interv", value:proy.presupInterv}), 20000, "guardar interventoría de "+nombreProy)).error, "guardando interventoría");
+          if(proy.estampillas!==undefined) chk((await withTimeout(_sb.from("app_data").upsert({key:"psec_"+pid+"_est", value:proy.estampillas}), 20000, "guardar estampillas de "+nombreProy)).error, "guardando estampillas");
+          if(proy.presupConsult!==undefined) chk((await withTimeout(_sb.from("app_data").upsert({key:"psec_"+pid+"_consult", value:proy.presupConsult}), 20000, "guardar consultoría de "+nombreProy)).error, "guardando consultoría");
+
+          capsTot+=capRows.length; itemsTot+=itemRows.length; okCount++;
+        }catch(ePro){
+          console.error("Falló el proyecto '"+nombreProy+"':", ePro);
+          fallidos.push(nombreProy+" — "+(ePro.message||ePro));
+        }
+        await sleep(150); // respiro entre proyectos para no saturar la base
       }
-      // Catálogos globales
-      await _sb.from("app_data").upsert({key:"apus", value:apus});
-      await _sb.from("app_data").upsert({key:"recursos", value:recursos});
-      await _sb.from("app_data").upsert({key:"proyectos", value:proyectos.map(p=>{
-        const x={...p};
-        if(Array.isArray(p.presupuestosObra)) x.presupuestosObra = p.presupuestosObra.map(ps=>{ const y={...ps}; delete y.capitulos; return y; });
-        delete x.capitulos;
-        return x;
-      })});
-      alert(`✓ Guardado completo.\n\nProyectos: ${proyectos.length} · Capítulos: ${capsTot} · Ítems: ${itemsTot}\n\nRecarga la página (Ctrl+Shift+R) para confirmar que quedó todo bien.`);
+
+      // ── Catálogos globales: son upserts (nunca borran), se guardan siempre.
+      try{
+        const g1 = await withTimeout(_sb.from("app_data").upsert({key:"apus", value:apus}), 25000, "catálogo de APUs");
+        if(g1.error) fallidos.push("catálogo de APUs — "+(g1.error.message||"error"));
+      }catch(e){ fallidos.push("catálogo de APUs — "+(e.message||e)); }
+      try{
+        const g2 = await withTimeout(_sb.from("app_data").upsert({key:"recursos", value:recursos}), 25000, "catálogo de recursos");
+        if(g2.error) fallidos.push("catálogo de recursos — "+(g2.error.message||"error"));
+      }catch(e){ fallidos.push("catálogo de recursos — "+(e.message||e)); }
+      try{
+        const proyPayload = proyectos.map(p=>{
+          const x={...p};
+          if(Array.isArray(p.presupuestosObra)) x.presupuestosObra = p.presupuestosObra.map(ps=>{ const y={...ps}; delete y.capitulos; return y; });
+          delete x.capitulos;
+          return x;
+        });
+        const g3 = await withTimeout(_sb.from("app_data").upsert({key:"proyectos", value:proyPayload}), 25000, "lista de proyectos");
+        if(g3.error) fallidos.push("lista de proyectos — "+(g3.error.message||"error"));
+      }catch(e){ fallidos.push("lista de proyectos — "+(e.message||e)); }
+
+      // ── Resumen HONESTO: solo dice "completo" si de verdad no hubo ni un error.
+      if(fallidos.length===0){
+        alert(`✓ Guardado completo y verificado.\n\nProyectos: ${okCount}/${proyectos.length} · Capítulos: ${capsTot} · Ítems: ${itemsTot}\n\nNada se borró antes de confirmar la subida. Puedes recargar (Ctrl+Shift+R) para comprobar.`);
+      } else {
+        alert(`⚠️ Guardado INCOMPLETO.\n\nGuardados bien: ${okCount}/${proyectos.length}\n\nFallaron ${fallidos.length}:\n• ${fallidos.join("\n• ")}\n\nIMPORTANTE: lo que falló NO se borró ni se dañó; quedó como estaba en la base. Revisa tu internet o Supabase y vuelve a darle a "Guardar todos". Es seguro reintentar.`);
+      }
     }catch(e){
-      console.error("Error guardando todos los proyectos:", e);
-      alert("Hubo un error guardando: "+(e.message||e)+"\n\nRevisa la consola para más detalle.");
+      console.error("Error general guardando todos los proyectos:", e);
+      alert("Hubo un error general: "+(e.message||e)+"\n\nRevisa la consola (F12). Tus datos no se borraron sin antes confirmar la subida.");
     } finally { setGuardandoTodo(false); }
   };
+
   const onImportar=e=>{
     const file=e.target.files[0];if(!file)return;e.target.value="";
     const reader=new FileReader();
@@ -17091,12 +17206,14 @@ function App() {
 // Panel simple para ver y restaurar copias de seguridad guardadas en Supabase.
 function PanelBackups({_sb, onClose, onRestaurar}){
   const [lista, setLista] = useState(null); // null = cargando
+  const [errMsg, setErrMsg] = useState(null);
   useEffect(()=>{
-    _sb.from("app_backups").select("id,created_at,data").order("created_at",{ascending:false}).limit(30)
+    _sb.from("app_backups").select("id,created_at").order("created_at",{ascending:false}).limit(30)
       .then(({data,error})=>{
-        if(error){ setLista([]); return; }
+        if(error){ setErrMsg(error.message||JSON.stringify(error)); setLista([]); return; }
         setLista(data||[]);
-      });
+      })
+      .catch(e=>{ setErrMsg(e.message||String(e)); setLista([]); });
   },[]);
   return React.createElement("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:500,
     display:"flex",alignItems:"center",justifyContent:"center"}},
@@ -17108,23 +17225,29 @@ function PanelBackups({_sb, onClose, onRestaurar}){
       ),
       React.createElement("p",{style:{fontSize:13,color:"#6B7280",marginBottom:12}},
         "Se guarda una copia automática cada varias horas, y puedes crear una manual cuando quieras. Elige una para restaurarla en pantalla."),
-      lista===null && React.createElement("div",{style:{padding:20,textAlign:"center",color:"#9CA3AF"}},"Cargando…"),
-      lista && lista.length===0 && React.createElement("div",{style:{padding:20,textAlign:"center",color:"#9CA3AF"}},
+      errMsg && React.createElement("div",{style:{padding:14,borderRadius:8,background:"#FEF2F2",border:"1px solid #FECACA",color:"#B91C1C",fontSize:13,marginBottom:12,whiteSpace:"pre-wrap"}},
+        "⚠️ No se pudieron leer las copias de seguridad.\n\nError real: "+errMsg+"\n\nEsto casi siempre es un permiso o una tabla que falta en Supabase (la tabla \"app_backups\" o sus políticas RLS), NO un problema con tus datos de contratos. Copia este texto tal cual y lo revisamos juntos."),
+      lista===null && !errMsg && React.createElement("div",{style:{padding:20,textAlign:"center",color:"#9CA3AF"}},"Cargando…"),
+      lista && lista.length===0 && !errMsg && React.createElement("div",{style:{padding:20,textAlign:"center",color:"#9CA3AF"}},
         "Todavía no hay copias guardadas. Usa \"🛡️ Backup ahora\" para crear la primera."),
       lista && lista.length>0 && React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},
         lista.map(row=>{
-          const snap = row.data||{};
           const fecha = new Date(row.created_at).toLocaleString("es-CO");
-          const nProy = (snap.proyectos||[]).length;
-          const nApus = (snap.apus||[]).length;
           return React.createElement("div",{key:row.id,style:{border:"1px solid #E5E7EB",borderRadius:8,padding:10,
             display:"flex",justifyContent:"space-between",alignItems:"center"}},
             React.createElement("div",null,
               React.createElement("div",{style:{fontWeight:600,fontSize:13}},fecha),
-              React.createElement("div",{style:{fontSize:12,color:"#6B7280"}},`${nProy} proyectos · ${nApus} APUs`)
+              React.createElement("div",{style:{fontSize:12,color:"#6B7280"}},"Copia de seguridad")
             ),
             React.createElement("button",{
-              onClick:()=>onRestaurar({...snap, _created_at: row.created_at}),
+              onClick: async ()=>{
+                // Traer la copia COMPLETA solo de la que se va a restaurar (evita el timeout de traer 30 enormes).
+                try{
+                  const {data:full, error} = await _sb.from("app_backups").select("data").eq("id", row.id).single();
+                  if(error){ alert("No se pudo cargar esta copia:\n"+(error.message||error)); return; }
+                  onRestaurar({...((full&&full.data)||{}), _created_at: row.created_at});
+                }catch(e){ alert("No se pudo cargar esta copia:\n"+(e.message||e)); }
+              },
               style:{padding:"6px 12px",background:"#1F2937",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12}
             },"Restaurar")
           );
