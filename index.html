@@ -307,9 +307,12 @@ function migrarAU(au) {
   if (!au || !au.secciones) return auVacio();
   const sec = au.secciones[0];
   if (!sec || !sec.subsecciones) return auVacio();
-  // Asegurar que todas las subsecciones de SUBSECCIONES_AU existen
+  // Solo re-garantizamos las subsecciones CRÍTICAS/protegidas (pólizas/estampillas s1_8,
+  // Imprevistos s1_9, Utilidad s1_10). Las demás (1.1–1.7) el usuario las puede borrar
+  // libremente y NO se vuelven a agregar al recargar.
+  const CRIT_AU = ["s1_8", "s1_9", "s1_10"];
   const subsExistentes = sec.subsecciones.map(s => s.id);
-  const faltantes = SUBSECCIONES_AU.filter(s => !subsExistentes.includes(s.id));
+  const faltantes = SUBSECCIONES_AU.filter(s => CRIT_AU.indexOf(s.id) !== -1 && !subsExistentes.includes(s.id));
   if (faltantes.length === 0) return au;
   return {
     ...au,
@@ -418,6 +421,51 @@ function calcAUItem(item, tipo, cd, total) {
   }
   return 0;
 }
+// Factor prestacional de un ítem de personal del A+U.
+// Si el ítem trae su propio factorP, se usa ese (lo editas tú); si no, se usa el
+// valor histórico según la subsección (1.1 ×1.45, 1.3 ×1.70, el resto ×1). Así los
+// presupuestos viejos (sin factorP) quedan EXACTAMENTE igual que antes.
+function factorPItem(item, subId) {
+  if (item && item.factorP != null && item.factorP !== "" && !isNaN(item.factorP)) return Number(item.factorP);
+  return subId === "s1_1" ? 1.45 : subId === "s1_3" ? 1.70 : 1;
+}
+// Recorre el árbol del A+U y devuelve las subsecciones-HOJA (las que tienen ítems),
+// entrando recursivamente en los grupos con .hijos. Preserva id/tipo para que la
+// lógica especial (s1_1/s1_3 factor, s1_8 pólizas, s1_9/s1_10) siga aplicando.
+// Compatibilidad total: si no hay .hijos (estructura plana de hoy) devuelve las
+// mismas subsecciones de siempre, así los proyectos existentes NO cambian nada.
+function flattenLeavesAU(sec) {
+  const out = [];
+  const walk = n => {
+    if (!n) return;
+    if (Array.isArray(n.hijos)) n.hijos.forEach(walk); // grupo (aunque esté vacío)
+    else out.push(n);                                   // hoja (con ítems)
+  };
+  ((sec && sec.subsecciones) || []).forEach(walk);
+  return out;
+}
+// Recorre el árbol y devuelve una lista PLANA con profundidad, para pintarlo con sangría.
+// Cada entrada: { node, depth, isGroup }. Un grupo (con .hijos) se lista y luego sus hijos.
+function flatWithDepthAU(nodes, depth) {
+  const out = [];
+  (nodes || []).forEach(n => {
+    if (Array.isArray(n.hijos)) {
+      out.push({ node: n, depth: depth, isGroup: true });
+      out.push.apply(out, flatWithDepthAU(n.hijos, depth + 1));
+    } else {
+      out.push({ node: n, depth: depth, isGroup: false });
+    }
+  });
+  return out;
+}
+// Busca un nodo por id en cualquier nivel del árbol.
+function findNodoAU(nodes, id) {
+  for (const n of (nodes || [])) {
+    if (n.id === id) return n;
+    if (Array.isArray(n.hijos)) { const f = findNodoAU(n.hijos, id); if (f) return f; }
+  }
+  return null;
+}
 function calcAUSubseccion(sub, cd, total) {
   return (sub.items || []).reduce((s, i) => s + calcAUItem(i, sub.tipo, cd, total), 0);
 }
@@ -426,33 +474,33 @@ function calcAUTotal(au, cd) {
   // para incluir prestaciones sociales — igual que calcProyecto
   if (!au || !au.secciones) return 0;
   let personal11 = 0, personal13 = 0, resto = 0, pctI = 0, pctU = 0;
-  au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
+  au.secciones.forEach(sec => flattenLeavesAU(sec).forEach(sub => {
     if (sub.id === 's1_9') {
       pctI = (sub.items[0] && sub.items[0].porcentaje) || 0;
     } else if (sub.id === 's1_10') {
       pctU = (sub.items[0] && sub.items[0].porcentaje) || 0;
     } else if (sub.id === 's1_1') {
-      (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+      (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, 's1_1'); });
     } else if (sub.id === 's1_3') {
-      (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
+      (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, 's1_3'); });
     } else {
-      (sub.items || []).forEach(item => { resto += calcAUItem(item, sub.tipo, cd, 0); });
+      (sub.items || []).forEach(item => { resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id); });
     }
   }));
-  return personal11 * 1.45 + personal13 * 1.70 + resto + cd * pctU / 100;
+  return personal11 + personal13 + resto + cd * pctU / 100;
 }
 // AU total excluyendo el ítem pólizas (para iteración)
 function calcAUSinPoliza(au, cd) {
   if (!au || !au.secciones) return 0;
   let sub1 = 0;
-  au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => (sub.items || []).forEach(item => {
+  au.secciones.forEach(sec => flattenLeavesAU(sec).forEach(sub => (sub.items || []).forEach(item => {
     var _item$descripcion, _item$descripcion2;
     const esPoliza = ((_item$descripcion = item.descripcion) === null || _item$descripcion === void 0 ? void 0 : _item$descripcion.toLowerCase().includes("póliza")) || ((_item$descripcion2 = item.descripcion) === null || _item$descripcion2 === void 0 ? void 0 : _item$descripcion2.toLowerCase().includes("poliza"));
     if (!esPoliza && (sub.tipo !== "otros" || !item.porcentaje || item.baseCalculo !== "total")) sub1 += calcAUItem(item, sub.tipo, cd, 0);
   })));
   const totalAprox = cd + sub1;
   let total = 0;
-  (au.secciones || []).forEach(sec => (sec.subsecciones || []).forEach(sub => (sub.items || []).forEach(item => {
+  (au.secciones || []).forEach(sec => flattenLeavesAU(sec).forEach(sub => (sub.items || []).forEach(item => {
     var _item$descripcion3, _item$descripcion4;
     const esPoliza = ((_item$descripcion3 = item.descripcion) === null || _item$descripcion3 === void 0 ? void 0 : _item$descripcion3.toLowerCase().includes("póliza")) || ((_item$descripcion4 = item.descripcion) === null || _item$descripcion4 === void 0 ? void 0 : _item$descripcion4.toLowerCase().includes("poliza"));
     if (!esPoliza) total += calcAUItem(item, sub.tipo, cd, totalAprox);
@@ -541,11 +589,13 @@ function calcProyecto(p, apus, recursos) {
   // Total       = CD + CI
   let personal11 = 0,
     personal13 = 0,
+    prest11 = 0,
+    prest13 = 0,
     resto = 0,
     pctI = 0,
     pctU = 0;
   if (au && au.secciones) {
-    au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
+    au.secciones.forEach(sec => flattenLeavesAU(sec).forEach(sub => {
       if (sub.id === "s1_9") {
         var _sub$items$;
         pctI = ((_sub$items$ = sub.items[0]) === null || _sub$items$ === void 0 ? void 0 : _sub$items$.porcentaje) || 0;
@@ -554,21 +604,23 @@ function calcProyecto(p, apus, recursos) {
         pctU = ((_sub$items$2 = sub.items[0]) === null || _sub$items$2 === void 0 ? void 0 : _sub$items$2.porcentaje) || 0;
       } else if (sub.id === "s1_1") {
         sub.items.forEach(item => {
-          personal11 += calcAUItem(item, sub.tipo, cd, 0);
+          const _b = calcAUItem(item, sub.tipo, cd, 0);
+          personal11 += _b; prest11 += _b * factorPItem(item, "s1_1");
         });
       } else if (sub.id === "s1_3") {
         sub.items.forEach(item => {
-          personal13 += calcAUItem(item, sub.tipo, cd, 0);
+          const _b = calcAUItem(item, sub.tipo, cd, 0);
+          personal13 += _b; prest13 += _b * factorPItem(item, "s1_3");
         });
       } else {
         sub.items.forEach(item => {
-          resto += calcAUItem(item, sub.tipo, cd, 0);
+          resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id);
         });
       }
     }));
   }
-  const prestaciones11 = personal11 * 1.45;
-  const prestaciones13 = personal13 * 1.70;
+  const prestaciones11 = prest11;
+  const prestaciones13 = prest13;
   const gastosAdmin = prestaciones11 + prestaciones13 + resto;
   const valU = cd * pctU / 100;
   const valorAIU = gastosAdmin + valU;
@@ -602,28 +654,28 @@ function calcTotalSinPolizas(p, apus, recursos) {
   // "resto" sin su factor prestacional ×1.70.
   let personal11 = 0, personal13 = 0, resto = 0, pctI = 0, pctU = 0;
   if (au && au.secciones) {
-    au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
+    au.secciones.forEach(sec => flattenLeavesAU(sec).forEach(sub => {
       if (sub.id === "s1_9") {
         pctI = (sub.items[0]?.porcentaje) || 0;
       } else if (sub.id === "s1_10") {
         pctU = (sub.items[0]?.porcentaje) || 0;
       } else if (sub.id === "s1_1") {
-        (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+        (sub.items || []).forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, "s1_1"); });
       } else if (sub.id === "s1_3") {
-        (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
+        (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, "s1_3"); });
       } else {
         // Para s1_8 excluir items de polizas
         (sub.items || []).forEach(item => {
           const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
                            (item.descripcion || "").toLowerCase().includes("poliza");
           if (!(sub.id === "s1_8" && esPoliza)) {
-            resto += calcAUItem(item, sub.tipo, cd, 0);
+            resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id);
           }
         });
       }
     }));
   }
-  const gastosAdmin = personal11 * 1.45 + personal13 * 1.70 + resto;
+  const gastosAdmin = personal11 + personal13 + resto;
   const valorAIU = gastosAdmin + cd * pctU / 100;
   return cd + valorAIU;
 }
@@ -640,25 +692,25 @@ function calcTotalConvergido(proyecto, apus, recursos) {
   // Calcular CI base (sin polizas) para arrancar
   let personal11 = 0, personal13 = 0, resto = 0, pctU = 0;
   if (au && au.secciones) {
-    au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
+    au.secciones.forEach(sec => flattenLeavesAU(sec).forEach(sub => {
       if (sub.id === "s1_10") {
         pctU = (sub.items[0]?.porcentaje) || 0;
       } else if (sub.id === "s1_1") {
-        sub.items.forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0); });
+        sub.items.forEach(item => { personal11 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, "s1_1"); });
       } else if (sub.id === "s1_3") {
-        sub.items.forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0); });
+        sub.items.forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, "s1_3"); });
       } else if (sub.id !== "s1_9") {
         sub.items.forEach(item => {
           const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
                            (item.descripcion || "").toLowerCase().includes("poliza");
           if (!(sub.id === "s1_8" && esPoliza)) {
-            resto += calcAUItem(item, sub.tipo, cd, 0);
+            resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id);
           }
         });
       }
     }));
   }
-  const ciBase = personal11 * 1.45 + personal13 * 1.70 + resto + cd * pctU / 100;
+  const ciBase = personal11 + personal13 + resto + cd * pctU / 100;
 
   // Función que calcula total de polizas dado un valor base
   const calcPolTotal = (base) => polizasActivas.reduce((s, p) => {
@@ -5094,7 +5146,7 @@ function TabAU({
   };
   const seleccionarPlantilla = (plantilla, subsecId) => {
     // Solo copiamos descripción y unidad de la plantilla \u2014 los números los ingresa el usuario
-    const sub = au.secciones[0].subsecciones.find(s => s.id === subsecId);
+    const sub = findNodoAU(au.secciones[0].subsecciones, subsecId);
     let base;
     if (sub.tipo === "personal") base = {
       descripcion: plantilla.descripcion,
@@ -5127,7 +5179,7 @@ function TabAU({
     setModalSelector(null);
   };
   const crearDesdeZero = subsecId => {
-    const sub = au.secciones[0].subsecciones.find(s => s.id === subsecId);
+    const sub = findNodoAU(au.secciones[0].subsecciones, subsecId);
     const base = sub.tipo === "personal" ? {
       descripcion: "",
       unidad: "un",
@@ -5158,6 +5210,31 @@ function TabAU({
     });
     setModalSelector(null);
   };
+  // === ÁRBOL A+U (Etapa 2): capítulos → subcapítulos → hojas de ítems ===
+  // "propio" (editable/borrable) = id que empieza por "sub_". Los fijos (s1_x) NO se tocan.
+  const esSubsecCustom = sub => /^sub_/.test(String(sub && sub.id));
+  // Protegidas (NO se pueden renombrar/borrar): 1.8 (pólizas/estampillas/transacciones),
+  // Imprevistos y Utilidad (el cálculo depende de ellas). TODO lo demás sí se puede tocar.
+  const PROT_AU = ["s1_8", "s1_9", "s1_10"];
+  const esSubsecEditable = sub => !!sub && PROT_AU.indexOf(sub.id) === -1;
+  const esGrupoAU = n => Array.isArray(n && n.hijos);
+  const _mkEdit = () => { if (window.__markEditing) window.__markEditing("au"); };
+  const _nid = () => "sub_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
+  const _nuevoGrupo = titulo => ({ id: _nid(), titulo: titulo || "Nuevo capítulo", hijos: [] });
+  const _nuevaHoja = () => ({ id: _nid(), titulo: "Nuevo subcapítulo", tipo: "personal", items: [] });
+  // Actualiza / borra / agrega-hijo en el árbol, a cualquier profundidad.
+  const _updTree = (nodes, id, fn) => (nodes || []).map(n => n.id === id ? fn(n) : (Array.isArray(n.hijos) ? { ...n, hijos: _updTree(n.hijos, id, fn) } : n));
+  const _rmTree = (nodes, id) => (nodes || []).filter(n => n.id !== id).map(n => Array.isArray(n.hijos) ? { ...n, hijos: _rmTree(n.hijos, id) } : n);
+  const _addChild = (nodes, parentId, child) => (nodes || []).map(n => n.id === parentId ? { ...n, hijos: [...(n.hijos || []), child] } : (Array.isArray(n.hijos) ? { ...n, hijos: _addChild(n.hijos, parentId, child) } : n));
+  const _setSubs = fn => setAu(prev => ({ ...prev, secciones: prev.secciones.map((sec, i) => i !== 0 ? sec : { ...sec, subsecciones: fn(sec.subsecciones || []) }) }));
+  const _insBeforeSep = (arr, nodo) => { const a = [...arr]; const i = a.findIndex(s => s.esSeparado); if (i === -1) a.push(nodo); else a.splice(i, 0, nodo); return a; };
+  const addCapitulo = () => { if (readOnly) return; _mkEdit(); _setSubs(subs => _insBeforeSep(subs, _nuevoGrupo("Nuevo capítulo"))); };
+  const addSubsec = () => { if (readOnly) return; _mkEdit(); _setSubs(subs => _insBeforeSep(subs, _nuevaHoja())); };
+  const addGrupoHijo = parentId => { if (readOnly) return; _mkEdit(); _setSubs(subs => _addChild(subs, parentId, _nuevoGrupo("Nuevo subcapítulo"))); };
+  const addHojaHijo = parentId => { if (readOnly) return; _mkEdit(); _setSubs(subs => _addChild(subs, parentId, _nuevaHoja())); };
+  const renameSubsec = (id, titulo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, titulo }))); };
+  const setSubsecTipo = (id, tipo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, tipo }))); };
+  const delSubsec = id => { if (readOnly) return; if (!window.confirm("¿Eliminar esto y todo su contenido?")) return; _mkEdit(); _setSubs(subs => _rmTree(subs, id)); };
   const editItem = (subsecId, item) => {
     if (readOnly) return;
     setFormItem({
@@ -5261,10 +5338,30 @@ function TabAU({
   const pctAU = cd > 0 ? totalAU / cd * 100 : 0;
   // Calcular personal11 (×1.45) y personal13 (×1.70) para filas de prestaciones
   let personal11 = 0, personal13 = 0;
-  if (au && au.secciones) au.secciones.forEach(sec => (sec.subsecciones || []).forEach(sub => {
-    if (sub.id === "s1_1") (sub.items || []).forEach(i => { personal11 += calcAUItem(i, sub.tipo, cd, 0); });
-    if (sub.id === "s1_3") (sub.items || []).forEach(i => { personal13 += calcAUItem(i, sub.tipo, cd, 0); });
+  if (au && au.secciones) au.secciones.forEach(sec => flattenLeavesAU(sec).forEach(sub => {
+    if (sub.id === "s1_1") (sub.items || []).forEach(i => { personal11 += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, "s1_1"); });
+    if (sub.id === "s1_3") (sub.items || []).forEach(i => { personal13 += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, "s1_3"); });
   }));
+  // Pinta la fila-cabecera de un GRUPO (capítulo / subcapítulo con hijos), con sangría
+  // por nivel, su subtotal agregado y botones para agregar hijos / renombrar / borrar.
+  const renderGrupoAU = (nodo, depth) => {
+    const pad = 16 + depth * 20;
+    const hojas = flattenLeavesAU({ subsecciones: [nodo] });
+    const tot = hojas.reduce((s, lf) => lf.esSeparado ? s : s + (lf.items || []).reduce((ss, it) => ss + calcAUItem(it, lf.tipo, cd, cd + totalAU) * factorPItem(it, lf.id), 0), 0);
+    const dark = depth === 0;
+    const bg = dark ? "#1E2430" : depth === 1 ? "#EEF1F6" : "#F5F6F8";
+    const fg = dark ? "#fff" : "var(--ink)";
+    const bd = dark ? "rgba(255,255,255,.3)" : "var(--line)";
+    return /*#__PURE__*/React.createElement("tr", { key: nodo.id, style: { background: bg } },
+      /*#__PURE__*/React.createElement("td", { style: { padding: "8px 16px", paddingLeft: pad, color: fg, fontWeight: 700, fontFamily: "var(--mono)" } }, nodo.numero || ""),
+      /*#__PURE__*/React.createElement("td", { colSpan: 7, style: { padding: "6px 8px", color: fg } },
+        /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+          !readOnly ? /*#__PURE__*/React.createElement("input", { className: "ifield", style: { fontSize: 12, fontWeight: 700, padding: "2px 6px", minWidth: 220, background: dark ? "rgba(255,255,255,.12)" : "#fff", color: fg, border: "1px solid " + bd }, value: nodo.titulo || "", onChange: e => renameSubsec(nodo.id, e.target.value) }) : /*#__PURE__*/React.createElement("b", null, nodo.titulo),
+          !readOnly && /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Agregar un subcapítulo (grupo) dentro", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 7px" }, onClick: () => addGrupoHijo(nodo.id) }, "+ subcap\xEDtulo"),
+          !readOnly && /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Agregar una hoja de ítems dentro", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 7px" }, onClick: () => addHojaHijo(nodo.id) }, "+ hoja de \xEDtems"))),
+      /*#__PURE__*/React.createElement("td", { style: { padding: "8px 16px", textAlign: "right", fontFamily: "var(--mono)", fontWeight: 700, color: fg } }, fmt(tot)),
+      /*#__PURE__*/React.createElement("td", null, !readOnly && esSubsecEditable(nodo) ? /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Eliminar", style: { color: dark ? "#F5C6C2" : "#DC2626" }, onClick: () => delSubsec(nodo.id) }, "\xD7") : null));
+  };
   return /*#__PURE__*/React.createElement("div", null,
     React.createElement("div", { className:"card", style:{marginBottom:12,padding:"12px 20px"} },
       React.createElement("div", { style:{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"} },
@@ -5377,6 +5474,10 @@ function TabAU({
     style: {
       textAlign: "right"
     }
+  }, "Factor P."), /*#__PURE__*/React.createElement("th", {
+    style: {
+      textAlign: "right"
+    }
   }, "Valor Base/Unit."), /*#__PURE__*/React.createElement("th", {
     style: {
       textAlign: "right"
@@ -5394,10 +5495,9 @@ function TabAU({
     // factor prestacional ya aplicado (1.1 ×1.45, 1.3 ×1.70) y SIN Imprevistos ni
     // Utilidad (que van aparte, en el pie). Antes sumaba en crudo y metía la Utilidad
     // adentro, dando un número que no correspondía a nada.
-    const totalSec = (sec.subsecciones || []).reduce((s, sub) => {
+    const totalSec = flattenLeavesAU(sec).reduce((s, sub) => {
       if (sub.esSeparado) return s;                       // 1.9 Imprevistos / 1.10 Utilidad
-      const fac = sub.id === "s1_1" ? 1.45 : sub.id === "s1_3" ? 1.70 : 1;
-      return s + calcAUSubseccion(sub, cd, cd + totalAU) * fac;
+      return s + (sub.items || []).reduce((ss, item) => ss + calcAUItem(item, sub.tipo, cd, cd + totalAU) * factorPItem(item, sub.id), 0);
     }, 0);
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: sec.id
@@ -5411,16 +5511,19 @@ function TabAU({
       style: {
         padding: "9px 16px"
       },
-      colSpan: 6
+      colSpan: 7
     }, sec.titulo), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "9px 16px",
         textAlign: "right",
         fontFamily: "var(--mono)"
       }
-    }, fmt(totalSec)), /*#__PURE__*/React.createElement("td", null)), (sec.subsecciones || []).map(sub => {
+    }, fmt(totalSec)), /*#__PURE__*/React.createElement("td", null)), flatWithDepthAU(sec.subsecciones || [], 0).map(_ent => {
+      const sub = _ent.node, _depth = _ent.depth, _pad = 24 + _depth * 20;
       if (sub.esSeparado) return null; // I y U se renderizan fuera de la sección
-      const subTotal = calcAUSubseccion(sub, cd, cd + totalAU);
+      if (sub.id === "s1_8") return null; // Pólizas/Estampillas/Transacciones → bloque fijo antes de la A
+      if (_ent.isGroup) return renderGrupoAU(sub, _depth);
+      const subTotal = (sub.items || []).reduce((s, it) => s + calcAUItem(it, sub.tipo, cd, cd + totalAU) * factorPItem(it, sub.id), 0);
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: sub.id
       }, /*#__PURE__*/React.createElement("tr", {
@@ -5428,22 +5531,36 @@ function TabAU({
       }, /*#__PURE__*/React.createElement("td", {
         style: {
           padding: "7px 16px",
-          paddingLeft: 24
+          paddingLeft: _pad
         }
       }, sub.numero), /*#__PURE__*/React.createElement("td", {
         style: {
           padding: "7px 16px"
         },
-        colSpan: 6
-      }, sub.titulo), /*#__PURE__*/React.createElement("td", {
+        colSpan: 7
+      }, esSubsecEditable(sub) && !readOnly ? /*#__PURE__*/React.createElement("span", {
+        style: { display: "inline-flex", alignItems: "center", gap: 8 }
+      }, /*#__PURE__*/React.createElement("input", {
+        className: "ifield",
+        style: { fontSize: 12, fontWeight: 600, padding: "2px 6px", minWidth: 240 },
+        value: sub.titulo || "",
+        onChange: e => renameSubsec(sub.id, e.target.value)
+      }), esSubsecCustom(sub) && /*#__PURE__*/React.createElement("select", {
+        style: { fontSize: 11, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--line)" },
+        value: sub.tipo || "personal",
+        onChange: e => setSubsecTipo(sub.id, e.target.value)
+      }, /*#__PURE__*/React.createElement("option", { value: "personal" }, "Personal (con Factor P.)"), /*#__PURE__*/React.createElement("option", { value: "otros" }, "Otros (valor fijo / %)"))) : sub.titulo), /*#__PURE__*/React.createElement("td", {
         style: {
           padding: "7px 16px",
           textAlign: "right",
           fontFamily: "var(--mono)",
           color: "var(--red)"
         }
-      }, fmt(subTotal)), /*#__PURE__*/React.createElement("td", null)), (sub.items || []).map(item => {
-        const vItem = calcAUItem(item, sub.tipo, cd, cd + totalAU);
+      }, fmt(subTotal)), /*#__PURE__*/React.createElement("td", null, esSubsecEditable(sub) && !readOnly ? /*#__PURE__*/React.createElement("button", {
+        className: "btn-ghost", title: "Eliminar", style: { color: "#F5C6C2" },
+        onClick: () => delSubsec(sub.id)
+      }, "\xD7") : null)), (sub.items || []).map(item => {
+        const vItem = calcAUItem(item, sub.tipo, cd, cd + totalAU) * factorPItem(item, sub.id);
         return [/*#__PURE__*/React.createElement("tr", {
           key: item.id
         }, /*#__PURE__*/React.createElement("td", {
@@ -5476,7 +5593,11 @@ function TabAU({
             fontFamily: "var(--mono)",
             fontSize: 12
           }
-        }, item.cantidad != null ? fmtN(item.cantidad, 2) : item.porcentaje != null ? fmtN(item.porcentaje, 2) + "%" : "\u2014"), /*#__PURE__*/React.createElement("td", {
+        }, item.cantidad != null ? fmtN(item.cantidad, 2) : item.porcentaje != null ? fmtN(item.porcentaje, 2) + "%" : "\u2014"),
+        /*#__PURE__*/React.createElement("td", {
+          style: { textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink4)" }
+        }, sub.tipo === "personal" ? ("\u00D7" + fmtN(factorPItem(item, sub.id), 2)) : "\u2014"),
+        /*#__PURE__*/React.createElement("td", {
           style: {
             textAlign: "right",
             fontFamily: "var(--mono)",
@@ -5523,23 +5644,10 @@ function TabAU({
           className: "btn-ghost",
           onClick: () => removeItem(sub.id, item.id)
         }, "\xD7")))))
-        , obsProps && /*#__PURE__*/React.createElement("tr", {key:item.id+"_obs"}, /*#__PURE__*/React.createElement("td", {colSpan:9,style:{padding:0}}, /*#__PURE__*/React.createElement(HiloObs, {cid:"au_"+sub.id, idx:(sub.items||[]).indexOf(item), desc:"A+U \u203A "+(sub.titulo||sub.id)+" \u203A "+(item.descripcion||""), tabLabel:"C\xE1lculo A+U", allObs:obsProps.allObs, session:obsProps.session, enviar:obsProps.enviar, eliminar:obsProps.eliminar, openKey:obsProps.openKey, setOpenKey:obsProps.setOpenKey, textos:obsProps.textos, setTextos:obsProps.setTextos, replyTo:obsProps.replyTo, setReplyTo:obsProps.setReplyTo})))]
-      }), sub.id === "s1_1" && personal11 > 0 && /*#__PURE__*/React.createElement("tr", {
-        style: { background: "#F0FDF4", borderTop: "1px solid #BBF7D0" }
-      }, /*#__PURE__*/React.createElement("td", {
-        colSpan: 7, style: { padding:"8px 16px", paddingLeft:36, fontSize:12, fontWeight:700, color:"#15803D" }
-      }, "Personal Profesional y T\xE9cnico + Prestaciones (\xD71.45)"), /*#__PURE__*/React.createElement("td", {
-        style: { padding:"8px 16px", textAlign:"right", fontFamily:"var(--mono)", fontWeight:800, color:"#15803D", fontSize:13 }
-      }, fmt(personal11 * 1.45)), /*#__PURE__*/React.createElement("td", null)),
-      sub.id === "s1_3" && personal13 > 0 && /*#__PURE__*/React.createElement("tr", {
-        style: { background: "#EFF6FF", borderTop: "1px solid #BFDBFE" }
-      }, /*#__PURE__*/React.createElement("td", {
-        colSpan: 7, style: { padding:"8px 16px", paddingLeft:36, fontSize:12, fontWeight:700, color:"#1D4ED8" }
-      }, "Personal Administrativo y Operativo + Prestaciones (\xD71.70)"), /*#__PURE__*/React.createElement("td", {
-        style: { padding:"8px 16px", textAlign:"right", fontFamily:"var(--mono)", fontWeight:800, color:"#1D4ED8", fontSize:13 }
-      }, fmt(personal13 * 1.70)), /*#__PURE__*/React.createElement("td", null)),
+        , obsProps && /*#__PURE__*/React.createElement("tr", {key:item.id+"_obs"}, /*#__PURE__*/React.createElement("td", {colSpan:10,style:{padding:0}}, /*#__PURE__*/React.createElement(HiloObs, {cid:"au_"+sub.id, idx:(sub.items||[]).indexOf(item), desc:"A+U \u203A "+(sub.titulo||sub.id)+" \u203A "+(item.descripcion||""), tabLabel:"C\xE1lculo A+U", allObs:obsProps.allObs, session:obsProps.session, enviar:obsProps.enviar, eliminar:obsProps.eliminar, openKey:obsProps.openKey, setOpenKey:obsProps.setOpenKey, textos:obsProps.textos, setTextos:obsProps.setTextos, replyTo:obsProps.replyTo, setReplyTo:obsProps.setReplyTo})))]
+      }),
       /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-        colSpan: 9,
+        colSpan: 10,
         style: {
           padding: "5px 16px",
           paddingLeft: 36,
@@ -5549,27 +5657,35 @@ function TabAU({
         className: "btn-dashed",
         onClick: () => addItem(sub.id)
       }, "+ Agregar a ", sub.titulo))));
-    }));
+    }), !readOnly && /*#__PURE__*/React.createElement("tr", {
+      key: sec.id + "_addsub"
+    }, /*#__PURE__*/React.createElement("td", {
+      colSpan: 10, style: { padding: "6px 16px", paddingLeft: 16, background: "var(--line2)" }
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "btn-dashed", style: { fontWeight: 600, marginRight: 8 }, onClick: () => addCapitulo()
+    }, "+ Agregar cap\xEDtulo"), /*#__PURE__*/React.createElement("button", {
+      className: "btn-dashed", style: { fontWeight: 600 }, onClick: () => addSubsec()
+    }, "+ Agregar subcap\xEDtulo (hoja de \xEDtems)"))));
   }), ((_subI$items$, _subU$items$) => {
     let personal11 = 0,
       personal13 = 0,
       resto = 0;
-    (au.secciones || []).forEach(sec => (sec.subsecciones || []).forEach(sub => {
+    (au.secciones || []).forEach(sec => flattenLeavesAU(sec).forEach(sub => {
       if (sub.esSeparado) return;
       if (sub.id === "s1_1") (sub.items || []).forEach(i => {
-        personal11 += calcAUItem(i, sub.tipo, cd, 0);
+        personal11 += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, "s1_1");
       });else if (sub.id === "s1_3") (sub.items || []).forEach(i => {
-        personal13 += calcAUItem(i, sub.tipo, cd, 0);
+        personal13 += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, "s1_3");
       });else (sub.items || []).forEach(i => {
-        resto += calcAUItem(i, sub.tipo, cd, 0);
+        resto += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, sub.id);
       });
     }));
-    const prestaciones11 = personal11 * 1.45;
-    const prestaciones13 = personal13 * 1.70;
+    const prestaciones11 = personal11;
+    const prestaciones13 = personal13;
     const auGastos = prestaciones11 + prestaciones13 + resto;
     const pctA = cd > 0 ? auGastos / cd * 100 : 0;
-    const subI = au.secciones[0].subsecciones.find(s => s.id === "s1_9");
-    const subU = au.secciones[0].subsecciones.find(s => s.id === "s1_10");
+    const subI = findNodoAU(au.secciones[0].subsecciones, "s1_9");
+    const subU = findNodoAU(au.secciones[0].subsecciones, "s1_10");
     const pctIval = (subI === null || subI === void 0 ? void 0 : (_subI$items$ = subI.items[0]) === null || _subI$items$ === void 0 ? void 0 : _subI$items$.porcentaje) || 0;
     const pctUval = (subU === null || subU === void 0 ? void 0 : (_subU$items$ = subU.items[0]) === null || _subU$items$ === void 0 ? void 0 : _subU$items$.porcentaje) || 0;
     const valI = cd * pctIval / 100;
@@ -5602,7 +5718,24 @@ function TabAU({
         };
       });
     };
-    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("tr", {
+    return /*#__PURE__*/React.createElement(React.Fragment, null, (function () {
+      var s18 = findNodoAU(au.secciones[0].subsecciones, "s1_8");
+      var its18 = (s18 && s18.items) || [];
+      if (!its18.length) return null;
+      var val18 = function (it) { return calcAUItem(it, s18.tipo, cd, cd + totalAU) * factorPItem(it, s18.id); };
+      var tot18 = its18.reduce(function (s, it) { return s + val18(it); }, 0);
+      return /*#__PURE__*/React.createElement(React.Fragment, { key: "blk18" },
+        /*#__PURE__*/React.createElement("tr", { style: { background: "#EEF1F6", borderTop: "2px solid var(--line)" } },
+          /*#__PURE__*/React.createElement("td", { colSpan: 8, style: { padding: "9px 16px", fontWeight: 700, fontSize: 12, color: "var(--ink2)" } }, "P\xF3lizas, Estampillas y Transacciones"),
+          /*#__PURE__*/React.createElement("td", { style: { padding: "9px 16px", textAlign: "right", fontFamily: "var(--mono)", fontWeight: 700 } }, fmt(tot18)),
+          /*#__PURE__*/React.createElement("td", null)),
+        its18.map(function (it, ii) {
+          return /*#__PURE__*/React.createElement("tr", { key: it.id, style: { background: ii % 2 === 0 ? "#F8FAFC" : "#FFFFFF" } },
+            /*#__PURE__*/React.createElement("td", { colSpan: 8, style: { padding: "6px 16px", paddingLeft: 36, fontSize: 12, color: "var(--ink3)" } }, it.descripcion || ""),
+            /*#__PURE__*/React.createElement("td", { style: { padding: "6px 16px", textAlign: "right", fontFamily: "var(--mono)", fontSize: 12 } }, fmt(val18(it))),
+            /*#__PURE__*/React.createElement("td", null));
+        }));
+    })(), /*#__PURE__*/React.createElement("tr", {
       style: {
         background: "#F8FAFC",
         borderTop: "2px solid var(--line)"
@@ -5616,7 +5749,7 @@ function TabAU({
       },
       colSpan: 2
     }, "A \u2014 Administraci\xF3n"), /*#__PURE__*/React.createElement("td", {
-      colSpan: 5,
+      colSpan: 6,
       style: {
         padding: "10px 16px",
         fontSize: 12,
@@ -5643,7 +5776,7 @@ function TabAU({
       },
       colSpan: 2
     }, "U \u2014 Utilidad"), /*#__PURE__*/React.createElement("td", {
-      colSpan: 4,
+      colSpan: 5,
       style: {
         padding: "10px 16px",
         fontSize: 12,
@@ -5689,7 +5822,7 @@ function TabAU({
     }, fmt(valU)), /*#__PURE__*/React.createElement("td", null)), /*#__PURE__*/React.createElement("tr", {
       className: "au-total"
     }, /*#__PURE__*/React.createElement("td", {
-      colSpan: 7,
+      colSpan: 8,
       style: {
         padding: "12px 16px",
         textAlign: "right",
@@ -5712,7 +5845,7 @@ function TabAU({
     onDesdeZero: () => crearDesdeZero(modalSelector),
     onCancel: () => setModalSelector(null)
   }), modalItem && (() => {
-    const subEdit = au.secciones[0].subsecciones.find(s => s.id === modalItem.subsecId);
+    const subEdit = findNodoAU(au.secciones[0].subsecciones, modalItem.subsecId);
     const esPersonal = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "personal",
       esOtros = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "otros",
       esDesp = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "desplazamiento";
@@ -5806,6 +5939,19 @@ function TabAU({
       onChange: e => setFormItem(f => ({
         ...f,
         meses: parseFloat(e.target.value) || 0
+      }))
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+      className: "lbl"
+    }, "Factor P."), /*#__PURE__*/React.createElement("input", {
+      className: "ifield",
+      type: "number",
+      step: "0.01",
+      min: "0",
+      value: formItem.factorP != null ? formItem.factorP : "",
+      placeholder: "vac\xEDo = 1.45 / 1.70",
+      onChange: e => setFormItem(f => ({
+        ...f,
+        factorP: e.target.value === "" ? null : (parseFloat(e.target.value) || 0)
       }))
     }))), esDesp && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
       className: "lbl"
@@ -8621,26 +8767,26 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   function FG(rgb){ return {fgColor:{rgb:rgb}}; }
   function FT(rgb,bold,sz){ return {color:{rgb:rgb},bold:!!bold,sz:sz||10}; }
   var ST = {
-    hdr:  function(){ return {font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:C_AL}; },
-    cap:  function(){ return {font:FT("FFFFFF",true,10),fill:FG("374151"),border:brd}; },
-    tot:  function(){ return {font:FT("FFFFFF",true,11),fill:FG("B91C1C"),border:brdM,alignment:R_AL}; },
-    tot2: function(){ return {font:FT("FFFFFF",true,11),fill:FG("7F1D1D"),border:brd,alignment:R_AL}; },
+    hdr:  function(){ return {font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd,alignment:C_AL}; },
+    cap:  function(){ return {font:FT("000000",true,10),fill:FG("D9D9D9"),border:brd}; },
+    tot:  function(){ return {font:FT("000000",true,11),fill:FG("D9D9D9"),border:brdM,alignment:R_AL}; },
+    tot2: function(){ return {font:FT("000000",true,11),fill:FG("BFBFBF"),border:brd,alignment:R_AL}; },
     rowA: function(){ return {fill:FG("FFFFFF"),border:brd}; },
-    rowB: function(){ return {fill:FG("F9FAFB"),border:brd}; },
-    lbl:  function(){ return {font:FT("111827",true),fill:FG("F3F4F6"),border:brd}; },
+    rowB: function(){ return {fill:FG("F7F7F7"),border:brd}; },
+    lbl:  function(){ return {font:FT("000000",true),fill:FG("F2F2F2"),border:brd}; },
     mon:  function(st){ return {fill:(st&&st.fill)||FG("FFFFFF"),border:brd,alignment:R_AL}; },
-    info: function(){ return {font:FT("1E40AF",false),fill:FG("EFF6FF"),border:brd}; },
+    info: function(){ return {font:FT("000000",false),fill:FG("F2F2F2"),border:brd}; },
   };
   function sc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:safe(val),t:"s",s:st||ST.rowA()}; }
   function nc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:NUM(val),t:"n",z:"$#,##0",s:st||ST.mon()}; }
   function ndc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:NUM(val),t:"n",z:"#,##0.0000",s:st||ST.rowA()}; }
-  function pc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:safe(val),t:"s",s:st||{fill:FG("F3F4F6"),border:brd,alignment:C_AL}}; }
+  function pc(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:safe(val),t:"s",s:st||{fill:FG("F2F2F2"),border:brd,alignment:C_AL}}; }
   // Celda con FÓRMULA viva de Excel (=D5*E5, =SUM(F5:F9)...). Guarda además el
   // valor calculado por el sistema como valor en caché: si abres el archivo sin
   // recalcular ves el mismo número, y si Excel recalcula da exactamente igual.
   function fc(ws,r,c,formula,val,st,z){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={t:"n",f:formula,v:NUM(val),z:z||"$#,##0",s:st||ST.mon()}; }
   // Fórmula con formato de porcentaje (el valor es la fracción: 0.1234 => 12.34%)
-  function fpc(ws,r,c,formula,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={t:"n",f:formula,v:NUM(val),z:"0.00%",s:st||{fill:FG("F3F4F6"),border:brd,alignment:C_AL}}; }
+  function fpc(ws,r,c,formula,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={t:"n",f:formula,v:NUM(val),z:"0.00%",s:st||{fill:FG("F2F2F2"),border:brd,alignment:C_AL}}; }
   // Número que se ve como porcentaje pero vale 5 (no 0.05) — para % de pólizas
   function npct(ws,r,c,val,st){ var k=XLSX.utils.encode_cell({r:r,c:c}); ws[k]={v:NUM(val),t:"n",z:'0.00"%"',s:st||{fill:FG("FFFFFF"),border:brd,alignment:C_AL}}; }
   // Numérico con borde y formato libre (plazo, meses, días…)
@@ -8652,13 +8798,13 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var ws = {}, r = 0;
     // Fila 1: la BASE ASEGURADA, en una sola celda. Todas las pólizas de la hoja
     // apuntan a ella, así que cambiándola se recalcula toda la hoja.
-    sc(ws,r,0,'Base asegurada',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
-    sc(ws,r,1,'',{fill:FG("1F2937"),border:brd});
+    sc(ws,r,0,'Base asegurada',{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd});
+    sc(ws,r,1,'',{fill:FG("E2E2E2"),border:brd});
     var filaBase = r;
-    if(refBase) fc(ws,r,2,refBase,valorBase,{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
-    else nc(ws,r,2,valorBase,{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
-    sc(ws,r,3,notaBase||'',{font:FT("D1D5DB",false,10),fill:FG("1F2937"),border:brd});
-    [4,5,6,7,8,9].forEach(function(ci){ sc(ws,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+    if(refBase) fc(ws,r,2,refBase,valorBase,{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd,alignment:R_AL});
+    else nc(ws,r,2,valorBase,{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd,alignment:R_AL});
+    sc(ws,r,3,notaBase||'',{font:FT("CCCCCC",false,10),fill:FG("E2E2E2"),border:brd});
+    [4,5,6,7,8,9].forEach(function(ci){ sc(ws,r,ci,'',{fill:FG("E2E2E2"),border:brd}); });
     var VB = refA(filaBase,2);   // $C$1 — todas las fórmulas de la hoja la usan
     r++; r++;
     ['Póliza','% Valor','V.Asegurar','% Prima','VA×%Prima','Plazo (m)','+ Meses','Días','Prima s/IVA','Prima c/IVA']
@@ -8737,8 +8883,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     if(!lista.length) return;
     var wsR2 = {}, r = 0;
     HOJA_REC = nombreUnico('Recursos');
-    sc(wsR2,r,0,'RECURSOS · precios base del proyecto',{font:FT("FFFFFF",true,12),fill:FG("1F2937"),border:brd});
-    [1,2,3,4].forEach(function(ci){ sc(wsR2,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+    sc(wsR2,r,0,'RECURSOS · precios base del proyecto',{font:FT("000000",true,12),fill:FG("E2E2E2"),border:brd});
+    [1,2,3,4].forEach(function(ci){ sc(wsR2,r,ci,'',{fill:FG("E2E2E2"),border:brd}); });
     r++;
     ['Código','Recurso','Und','Categoría','Precio'].forEach(function(h,ci){ sc(wsR2,r,ci,h,ST.hdr()); });
     r++;
@@ -8766,78 +8912,83 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var nmA = presups.length>1 ? nombreUnico('APUs · '+(psA.nombre||'Obra')) : nombreUnico('APUs Proyectos');
     refVU[psA.id] = {};
 
-    sc(wsAPU,r,0,'APUs · '+safe(psA.nombre||'Presupuesto Obra'),{font:FT("FFFFFF",true,12),fill:FG("1F2937"),border:brd});
-    [1,2,3,4].forEach(function(ci){ sc(wsAPU,r,ci,'',{fill:FG("1F2937"),border:brd}); });
-    sc(wsAPU,r,5,'Herramienta menor: '+(pctHerr*100).toFixed(1)+'% M.O.',{font:FT("FFFFFF",true,10),fill:FG("1F2937"),border:brd,alignment:R_AL});
+    sc(wsAPU,r,0,'APUs · '+safe(psA.nombre||'Presupuesto Obra'),{font:FT("000000",true,12),fill:FG("E2E2E2"),border:brd});
+    [1,2,3,4].forEach(function(ci){ sc(wsAPU,r,ci,'',{fill:FG("E2E2E2"),border:brd}); });
+    sc(wsAPU,r,5,'Herramienta menor: '+(pctHerr*100).toFixed(1)+'% M.O.',{font:FT("000000",true,10),fill:FG("E2E2E2"),border:brd,alignment:R_AL});
     r++;
-    ['Código','Recurso','Und','Cantidad/Rendimiento','P. Unitario','Subtotal'].forEach(function(h,ci){ sc(wsAPU,r,ci,h,ST.hdr()); });
+    ['Ítem / Código','Recurso','Und','Cantidad/Rendimiento','P. Unitario','Subtotal'].forEach(function(h,ci){ sc(wsAPU,r,ci,h,ST.hdr()); });
     r++;
 
-    apusUsados.forEach(function(apu) {
-      var ao = apus.find(function(a){ return a.id===apu.id; })||{};
-      var lineas = (proyecto.apuOverrides&&proyecto.apuOverrides[apu.id])||(ao.lineas||[]);
-      var totalMO = calcTotalMO(lineas, recursos);
-      var vu = calcAPUTotal(ao.id?Object.assign({},ao,{lineas:lineas}):{lineas:lineas}, recursos, pctHerr);
+    // APUs en el ORDEN de los capítulos/ítems del presupuesto (no del catálogo).
+    // Si un APU se usa en varios ítems, se REPITE, cada uno con su numeración (ej. 4.5).
+    (psA.capitulos||[]).forEach(function(cap) {
+      (cap.items||[]).forEach(function(item, ii) {
+        var apu = apus.find(function(a){ return a.id===item.apuId; });
+        if(!apu) return;
+        var numItem = safe(cap.numero) + "." + (ii+1);
+        var ao = apus.find(function(a){ return a.id===apu.id; })||{};
+        var lineas = (proyecto.apuOverrides&&proyecto.apuOverrides[apu.id])||(ao.lineas||[]);
+        var totalMO = calcTotalMO(lineas, recursos);
+        var vu = calcAPUTotal(ao.id?Object.assign({},ao,{lineas:lineas}):{lineas:lineas}, recursos, pctHerr);
 
-      var filaVU = r, refsSec = [];
-      sc(wsAPU,r,0,safe(apu.codigo),ST.cap());
-      sc(wsAPU,r,1,safe(apu.nombre),ST.cap());
-      sc(wsAPU,r,2,'',ST.cap());
-      sc(wsAPU,r,3,'Unidad: '+safe(apu.unidad),ST.cap());
-      sc(wsAPU,r,4,'V. UNITARIO',ST.cap());
-      refVU[psA.id][apu.id] = link(nmA, ref(filaVU,5));   // ← aquí vive el V. Unitario
-      r++;
-
-      SECCIONES_APU.forEach(function(sec) {
-        var ls = lineas.filter(function(l) {
-          var rec = recursos.find(function(rr){ return rr.id===l.recursoId; });
-          return rec && rec.categoria===sec.id;
-        });
-        var conHerr = (sec.id==='maquinaria' && totalMO>0);
-        if(!ls.length && !conHerr) return;
-        var sub = ls.reduce(function(ss,l){ return ss+calcLinea(l,recursos,lineas); },0);
-        var moExtra = conHerr ? totalMO*pctHerr : 0;
-        var nFilas = ls.filter(function(l){ return !!recursos.find(function(rr){ return rr.id===l.recursoId; }); }).length + (conHerr?1:0);
-        var filaSec = r;
-
-        [0,2,3,4].forEach(function(ci){ sc(wsAPU,r,ci,'',ST.lbl()); });
-        sc(wsAPU,r,1,'  '+sec.label,ST.lbl());
-        if(nFilas>0) fc(wsAPU,filaSec,5,'SUM('+rng(filaSec+1,filaSec+nFilas,5)+')',sub+moExtra,ST.mon());
-        else nc(wsAPU,filaSec,5,0,ST.mon());
-        refsSec.push(ref(filaSec,5));
+        var filaVU = r, refsSec = [];
+        sc(wsAPU,r,0,numItem,ST.cap());
+        sc(wsAPU,r,1,safe(apu.codigo)+' \u2014 '+safe(apu.nombre),ST.cap());
+        sc(wsAPU,r,2,'',ST.cap());
+        sc(wsAPU,r,3,'Unidad: '+safe(apu.unidad),ST.cap());
+        sc(wsAPU,r,4,'V. UNITARIO',ST.cap());
+        if(!refVU[psA.id][apu.id]) refVU[psA.id][apu.id] = link(nmA, ref(filaVU,5));
         r++;
 
-        ls.forEach(function(l) {
-          var rec = recursos.find(function(rr){ return rr.id===l.recursoId; });
-          if(!rec) return;
-          var val = sec.usa==='cantidad' ? (l.cantidad||0) : (l.rendimiento||0);
-          var subL = calcLinea(l,recursos,lineas);
-          sc(wsAPU,r,0,safe(rec.codigo),ST.rowA());
-          sc(wsAPU,r,1,safe(rec.nombre),ST.rowA());
-          sc(wsAPU,r,2,safe(rec.unidad||''),{fill:FG('FFFFFF'),border:brd,alignment:C_AL});
-          ndc(wsAPU,r,3,val);
-          // P. Unitario → enlazado a la hoja Recursos (salvo precio ajustado a mano,
-          // que es propio de este APU y por eso va como valor fijo)
-          var _pmL = (typeof l.precioManual === "number" && !isNaN(l.precioManual));
-          if(_pmL) nc(wsAPU,r,4,l.precioManual,ST.mon());
-          else if(refPrecio[rec.id]) fc(wsAPU,r,4,refPrecio[rec.id],rec.precio||0,ST.mon());
-          else nc(wsAPU,r,4,rec.precio||0,ST.mon());
-          fc(wsAPU,r,5,ref(r,3)+'*'+ref(r,4),subL,ST.mon());
+        SECCIONES_APU.forEach(function(sec) {
+          var ls = lineas.filter(function(l) {
+            var rec = recursos.find(function(rr){ return rr.id===l.recursoId; });
+            return rec && rec.categoria===sec.id;
+          });
+          var conHerr = (sec.id==='maquinaria' && totalMO>0);
+          if(!ls.length && !conHerr) return;
+          var sub = ls.reduce(function(ss,l){ return ss+calcLinea(l,recursos,lineas); },0);
+          var moExtra = conHerr ? totalMO*pctHerr : 0;
+          var nFilas = ls.filter(function(l){ return !!recursos.find(function(rr){ return rr.id===l.recursoId; }); }).length + (conHerr?1:0);
+          var filaSec = r;
+
+          [0,2,3,4].forEach(function(ci){ sc(wsAPU,r,ci,'',ST.lbl()); });
+          sc(wsAPU,r,1,'  '+sec.label,ST.lbl());
+          if(nFilas>0) fc(wsAPU,filaSec,5,'SUM('+rng(filaSec+1,filaSec+nFilas,5)+')',sub+moExtra,ST.mon());
+          else nc(wsAPU,filaSec,5,0,ST.mon());
+          refsSec.push(ref(filaSec,5));
           r++;
+
+          ls.forEach(function(l) {
+            var rec = recursos.find(function(rr){ return rr.id===l.recursoId; });
+            if(!rec) return;
+            var val = sec.usa==='cantidad' ? (l.cantidad||0) : (l.rendimiento||0);
+            var subL = calcLinea(l,recursos,lineas);
+            sc(wsAPU,r,0,safe(rec.codigo),ST.rowA());
+            sc(wsAPU,r,1,safe(rec.nombre),ST.rowA());
+            sc(wsAPU,r,2,safe(rec.unidad||''),{fill:FG('FFFFFF'),border:brd,alignment:C_AL});
+            ndc(wsAPU,r,3,val);
+            var _pmL = (typeof l.precioManual === "number" && !isNaN(l.precioManual));
+            if(_pmL) nc(wsAPU,r,4,l.precioManual,ST.mon());
+            else if(refPrecio[rec.id]) fc(wsAPU,r,4,refPrecio[rec.id],rec.precio||0,ST.mon());
+            else nc(wsAPU,r,4,rec.precio||0,ST.mon());
+            fc(wsAPU,r,5,ref(r,3)+'*'+ref(r,4),subL,ST.mon());
+            r++;
+          });
+          if(conHerr) {
+            sc(wsAPU,r,0,'-',ST.info());
+            sc(wsAPU,r,1,'Herramienta menor ('+(pctHerr*100).toFixed(1)+'% M.O.)',ST.info());
+            sc(wsAPU,r,2,'%M.O.',{fill:FG('F2F2F2'),border:brd,alignment:C_AL});
+            ndc(wsAPU,r,3,pctHerr,{fill:FG('F2F2F2'),border:brd,alignment:R_AL});
+            nc(wsAPU,r,4,totalMO,ST.mon());
+            fc(wsAPU,r,5,ref(r,3)+'*'+ref(r,4),moExtra,{font:FT('000000',true),fill:FG('F2F2F2'),border:brd,alignment:R_AL});
+            r++;
+          }
         });
-        if(conHerr) {
-          sc(wsAPU,r,0,'-',ST.info());
-          sc(wsAPU,r,1,'Herramienta menor ('+(pctHerr*100).toFixed(1)+'% M.O.)',ST.info());
-          sc(wsAPU,r,2,'%M.O.',{fill:FG('EFF6FF'),border:brd,alignment:C_AL});
-          ndc(wsAPU,r,3,pctHerr,{fill:FG('EFF6FF'),border:brd,alignment:R_AL});
-          nc(wsAPU,r,4,totalMO,ST.mon());
-          fc(wsAPU,r,5,ref(r,3)+'*'+ref(r,4),moExtra,{font:FT('1E40AF',true),fill:FG('EFF6FF'),border:brd,alignment:R_AL});
-          r++;
-        }
+        if(refsSec.length) fc(wsAPU,filaVU,5,refsSec.join('+'),vu,{font:FT('000000',true,10),fill:FG('D9D9D9'),border:brd,alignment:R_AL});
+        else nc(wsAPU,filaVU,5,vu,{font:FT('000000',true,10),fill:FG('D9D9D9'),border:brd,alignment:R_AL});
+        r++;
       });
-      if(refsSec.length) fc(wsAPU,filaVU,5,refsSec.join('+'),vu,{font:FT('FFFFFF',true,10),fill:FG('374151'),border:brd,alignment:R_AL});
-      else nc(wsAPU,filaVU,5,vu,{font:FT('FFFFFF',true,10),fill:FG('374151'),border:brd,alignment:R_AL});
-      r++;
     });
 
     setRange(wsAPU,[{wch:12},{wch:45},{wch:10},{wch:18},{wch:16},{wch:16}]);
@@ -8888,14 +9039,15 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         var vu = apuEfectivo ? calcAPUTotal(apuEfectivo,recursos,getPctHerramienta(proyecto,ps)) : 0;
         var vt = calcItem(item,apus,recursos,proyecto,ps);
         var st2=ii%2===0?ST.rowA():ST.rowB();
-        sc(ws,r,0,safe(cap.numero)+'.'+(ii+1),{font:{color:{rgb:'B91C1C'},bold:true},fill:st2.fill,border:brd});
+        sc(ws,r,0,safe(cap.numero)+'.'+(ii+1),{font:{color:{rgb:'374151'},bold:true},fill:st2.fill,border:brd});
         sc(ws,r,1,(apuEfectivo?safe(apuEfectivo.nombre):'')||safe(item.descripcion),st2);
         sc(ws,r,2,(apu?safe(apu.unidad):'')||safe(item.unidad),{fill:st2.fill,border:brd,alignment:C_AL});
         ndc(ws,r,3,item.cantidad||0,{fill:st2.fill,border:brd,alignment:R_AL});
-        // V. Unitario → enlazado a la celda V.UNITARIO del APU en su hoja de APUs
-        var lnkVU = apu && refVU[ps.id] && refVU[ps.id][apu.id];
-        if(lnkVU) fc(ws,r,4,lnkVU,vu,ST.mon(st2));
-        else nc(ws,r,4,vu,ST.mon(st2));
+        // V. Unitario → valor EXACTO del sistema (calcAPUTotal), escrito como número.
+        // Antes se enlazaba a la hoja de APUs, pero esa hoja redondea y el Costo Directo
+        // se descuadraba en millones. Con el valor exacto, el CD del Excel coincide AL PESO
+        // con el sistema (cantidad × V.Unitario exacto = mismo total que calcItem).
+        nc(ws,r,4,vu,ST.mon(st2));
         fc(ws,r,5,ref(r,3)+'*'+ref(r,4),vt,{font:{bold:true},fill:st2.fill,border:brd,alignment:R_AL});
         celdasPct.push({r:r, v:(cdPs>0?vt/cdPs:0), st:{fill:st2.fill,border:brd,alignment:C_AL}});
         r++;
@@ -8948,11 +9100,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var wsEx = {}, r = 0;
 
     // Título
-    sc(wsEx,r,0,ed.titulo,{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,1,"",{fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,2,"",{fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,3,"",{fill:FG("1F2937"),border:brd});
-    sc(wsEx,r,4,"",{fill:FG("1F2937"),border:brd}); r++; r++;
+    sc(wsEx,r,0,ed.titulo,{font:FT("000000",true,13),fill:FG("E2E2E2"),border:brd});
+    sc(wsEx,r,1,"",{fill:FG("E2E2E2"),border:brd});
+    sc(wsEx,r,2,"",{fill:FG("E2E2E2"),border:brd});
+    sc(wsEx,r,3,"",{fill:FG("E2E2E2"),border:brd});
+    sc(wsEx,r,4,"",{fill:FG("E2E2E2"),border:brd}); r++; r++;
 
     // Headers
     ["Sección / Ítem","Und","Cantidad","V. Unitario","Factor","Total"].forEach(function(h,ci){
@@ -9021,8 +9173,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var baseTot  = cd + totalAU_;
 
     // Título + C.D.
-    sc(wsAU,r,0,'CÁLCULO A+U',{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
-    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+    sc(wsAU,r,0,'CÁLCULO A+U',{font:FT("000000",true,13),fill:FG("E2E2E2"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("E2E2E2"),border:brd}); });
     r++;
     sc(wsAU,r,0,'Costo Directo (C.D.)',ST.lbl());
     [1,2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.lbl()); });
@@ -9052,95 +9204,88 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       sc(wsAU,r,1,safe(sec.titulo),ST.cap());
       r++;
 
-      (sec.subsecciones||[]).forEach(function(sub) {
+      // Recorre el ÁRBOL del A+U con profundidad: grupos (capítulos/subcapítulos) como
+      // filas-cabecera con subtotal agregado, y hojas con sus ítems. El Factor P. va POR
+      // LÍNEA (incluido en el Total de cada ítem); el subtotal de la hoja ya suma con factor.
+      flatWithDepthAU(sec.subsecciones||[], 0).forEach(function(ent) {
+        var sub = ent.node, depth = ent.depth;
         if(sub.esSeparado) return;   // Imprevistos y Utilidad van en el pie, igual que en pantalla
-        var itsAU = sub.items||[];
-        var sv = calcAUSubseccion(sub, cd, baseTot);
-        var filaSub = r;
+        var sangria = Array(depth+2).join('  ');
 
-        // Fila de SUBSECCIÓN
+        if(ent.isGroup){
+          // GRUPO (capítulo / subcapítulo): fila-cabecera con subtotal agregado
+          var totG = 0;
+          flattenLeavesAU({subsecciones:[sub]}).forEach(function(lf){
+            if(lf.esSeparado) return;
+            (lf.items||[]).forEach(function(it){ totG += calcAUItem(it, lf.tipo, cd, baseTot) * factorPItem(it, lf.id); });
+          });
+          [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("E8E8E8"),border:brd}); });
+          sc(wsAU,r,0, sangria+safe(sub.numero||''), {font:FT("000000",true),fill:FG("E8E8E8"),border:brd});
+          sc(wsAU,r,1, safe(sub.titulo), {font:FT("000000",true),fill:FG("E8E8E8"),border:brd});
+          nc(wsAU,r,7, totG, {font:FT("000000",true),fill:FG("E8E8E8"),border:brd,alignment:R_AL});
+          if(depth===0){ refsAdmin.push(ref(r,7)); refsSec.push(ref(r,7)); totalSec += totG; }
+          r++;
+          return;
+        }
+
+        // HOJA con ítems
+        var itsAU = sub.items||[];
+        var filaSub = r;
+        var svF = 0; itsAU.forEach(function(it){ svF += calcAUItem(it, sub.tipo, cd, baseTot) * factorPItem(it, sub.id); });
+
         [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.lbl()); });
-        sc(wsAU,r,0,'  '+safe(sub.numero),ST.lbl());
+        sc(wsAU,r,0,sangria+safe(sub.numero),ST.lbl());
         sc(wsAU,r,1,safe(sub.titulo),ST.lbl());
-        if(itsAU.length) fc(wsAU,filaSub,7,'SUM('+rng(filaSub+1,filaSub+itsAU.length,7)+')',sv,{font:FT("B91C1C",true),fill:FG("F3F4F6"),border:brd,alignment:R_AL});
-        else nc(wsAU,filaSub,7,0,{font:FT("B91C1C",true),fill:FG("F3F4F6"),border:brd,alignment:R_AL});
+        if(itsAU.length) fc(wsAU,filaSub,7,'SUM('+rng(filaSub+1,filaSub+itsAU.length,7)+')',svF,{font:FT("4D4D4D",true),fill:FG("F2F2F2"),border:brd,alignment:R_AL});
+        else nc(wsAU,filaSub,7,0,{font:FT("4D4D4D",true),fill:FG("F2F2F2"),border:brd,alignment:R_AL});
         r++;
 
-        // Ítems
         itsAU.forEach(function(it, ii) {
           var stR = ii%2===0?ST.rowA():ST.rowB();
-          var vIt = calcAUItem(it, sub.tipo, cd, baseTot);
-          // Recordar dónde quedan los 3 ítems circulares, para verificarlos después
+          var fac = factorPItem(it, sub.id);
+          var vIt = calcAUItem(it, sub.tipo, cd, baseTot) * fac;
           var _d = String(it.descripcion||'').toLowerCase();
-          if(_d.indexOf('póliza')>=0 || _d.indexOf('poliza')>=0) { fila18Pol = r; _val18Pol = vIt; }
+          if(_d.indexOf('p\u00f3liza')>=0 || _d.indexOf('poliza')>=0) { fila18Pol = r; _val18Pol = vIt; }
           else if(_d.indexOf('estampilla')>=0) { fila18Est = r; _val18Est = vIt; }
           else if(_d.indexOf('transacci')>=0)  { fila18TB  = r; _val18TB  = vIt; }
           var esPersonal = sub.tipo==='personal';
           var esOtrosFijo = sub.tipo==='otros' && it.valorFijo;
           var esOtrosPct  = sub.tipo==='otros' && it.porcentaje!=null && !it.valorFijo;
           var tieneMeses  = it.meses!=null;
+          var facTxt = fac!==1 ? ('*'+fac) : '';
 
-          sc(wsAU,r,0,'',stR);                                   // Ítem (vacío, como en pantalla)
-          sc(wsAU,r,1,'    '+safe(it.descripcion),stR);          // Descripción
-          sc(wsAU,r,2,safe(it.unidad||''),{fill:stR.fill,border:brd,alignment:C_AL}); // Und.
-
-          // Ded.
+          sc(wsAU,r,0,'',stR);
+          sc(wsAU,r,1,'    '+safe(it.descripcion),stR);
+          sc(wsAU,r,2,safe(it.unidad||''),{fill:stR.fill,border:brd,alignment:C_AL});
           if(esPersonal) ndc(wsAU,r,3,Number(it.dedicacion)||0,{fill:stR.fill,border:brd,alignment:R_AL});
-          else sc(wsAU,r,3,'—',{fill:stR.fill,border:brd,alignment:C_AL});
-
-          // Cant.
+          else sc(wsAU,r,3,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
           if(it.cantidad!=null) ndc(wsAU,r,4,Number(it.cantidad)||0,{fill:stR.fill,border:brd,alignment:R_AL});
           else if(it.porcentaje!=null) sc(wsAU,r,4,fmtN2(it.porcentaje)+'%',{fill:stR.fill,border:brd,alignment:R_AL});
-          else sc(wsAU,r,4,'—',{fill:stR.fill,border:brd,alignment:C_AL});
-
-          // Valor Base/Unit.
+          else sc(wsAU,r,4,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
           if(esPersonal) nc(wsAU,r,5,it.valorMesBase||0,ST.mon(stR));
           else if(esOtrosFijo) nc(wsAU,r,5,it.valorFijo||0,ST.mon(stR));
           else if(esOtrosPct) sc(wsAU,r,5,fmtN2(it.porcentaje)+'% s/'+(it.baseCalculo==='total'?'Total':'C.D.'),{fill:stR.fill,border:brd,alignment:R_AL});
           else nc(wsAU,r,5,it.valorUnitario||0,ST.mon(stR));
-
-          // Meses — formato 'General' (el formato '#,##0.##' dejaba un punto/coma
-          // suelto al final cuando el número no tenía decimales, ej. "17,").
-          // Se le agrega borde y centrado, igual que las columnas vecinas.
           if(tieneMeses) n(wsAU,r,6,Number(it.meses)||0,'General',{fill:stR.fill,border:brd,alignment:C_AL});
-          else sc(wsAU,r,6,'—',{fill:stR.fill,border:brd,alignment:C_AL});
-
-          // Total — fórmula viva cuando la cuenta es un producto
+          else sc(wsAU,r,6,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
           var stT = {font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL};
           if(esPersonal) {
-            // Ded × Cant × Valor Mes × Meses
-            fc(wsAU,r,7,ref(r,3)+'*'+ref(r,4)+'*'+ref(r,5)+'*'+ref(r,6),vIt,stT);
+            fc(wsAU,r,7,ref(r,3)+'*'+ref(r,4)+'*'+ref(r,5)+'*'+ref(r,6)+facTxt,vIt,stT);
           } else if(esOtrosFijo) {
-            fc(wsAU,r,7,ref(r,5),vIt,stT);
+            fc(wsAU,r,7,ref(r,5)+facTxt,vIt,stT);
           } else if(esOtrosPct) {
-            nc(wsAU,r,7,vIt,stT);   // % sobre C.D. / Total (se deja el valor del sistema)
+            nc(wsAU,r,7,vIt,stT);
           } else if(sub.tipo==='desplazamiento') {
-            // Cant × Valor Unit × Meses (si no hay meses, el sistema usa 1)
-            if(tieneMeses) fc(wsAU,r,7,ref(r,4)+'*'+ref(r,5)+'*'+ref(r,6),vIt,stT);
-            else           fc(wsAU,r,7,ref(r,4)+'*'+ref(r,5),vIt,stT);
+            if(tieneMeses) fc(wsAU,r,7,ref(r,4)+'*'+ref(r,5)+'*'+ref(r,6)+facTxt,vIt,stT);
+            else           fc(wsAU,r,7,ref(r,4)+'*'+ref(r,5)+facTxt,vIt,stT);
           } else {
             nc(wsAU,r,7,vIt,stT);
           }
           r++;
         });
 
-        // Filas de prestaciones — idénticas a las de pantalla
-        if(sub.id==='s1_1' && sv>0) {
-          [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("F0FDF4"),border:brd}); });
-          sc(wsAU,r,0,'',{fill:FG("F0FDF4"),border:brd});
-          sc(wsAU,r,1,'    Personal Profesional y Técnico + Prestaciones (×1.45)',{font:FT("15803D",true),fill:FG("F0FDF4"),border:brd});
-          fc(wsAU,r,7,ref(filaSub,7)+'*1.45',sv*1.45,{font:FT("15803D",true),fill:FG("F0FDF4"),border:brd,alignment:R_AL});
-          refsAdmin.push(ref(r,7)); refsSec.push(ref(r,7)); totalSec += sv*1.45; r++;
-        } else if(sub.id==='s1_3' && sv>0) {
-          [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("EFF6FF"),border:brd}); });
-          sc(wsAU,r,0,'',{fill:FG("EFF6FF"),border:brd});
-          sc(wsAU,r,1,'    Personal Administrativo y Operativo + Prestaciones (×1.70)',{font:FT("1D4ED8",true),fill:FG("EFF6FF"),border:brd});
-          fc(wsAU,r,7,ref(filaSub,7)+'*1.70',sv*1.70,{font:FT("1D4ED8",true),fill:FG("EFF6FF"),border:brd,alignment:R_AL});
-          refsAdmin.push(ref(r,7)); refsSec.push(ref(r,7)); totalSec += sv*1.70; r++;
-        } else if(sub.id!=='s1_1' && sub.id!=='s1_3') {
-          refsAdmin.push(ref(filaSub,7));   // 1.2 y 1.4 a 1.8 entran sin factor
-          refsSec.push(ref(filaSub,7)); totalSec += sv;
-        }
+        // El subtotal de la hoja YA incluye el factor por línea (sin filas de prestaciones aparte)
+        if(depth===0){ refsAdmin.push(ref(filaSub,7)); refsSec.push(ref(filaSub,7)); totalSec += svF; }
       });
 
       // Ya conocemos las filas: el total de la sección es la suma de sus subsecciones
@@ -9243,11 +9388,11 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
     // Base: el COSTO TOTAL del proyecto. Se pone en una celda visible y todas las
     // estampillas apuntan a ella.
-    sc(wsE,r,0,'Base gravable',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
-    sc(wsE,r,1,'',{fill:FG("1F2937"),border:brd});
+    sc(wsE,r,0,'Base gravable',{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd});
+    sc(wsE,r,1,'',{fill:FG("E2E2E2"),border:brd});
     var filaBaseE = r;
     fc(wsE,r,2,(refTotAU||String(NUM(res.total))),res.total,
-       {font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
+       {font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd,alignment:R_AL});
     r++; r++;
 
     ['Estampilla','%','Valor'].forEach(function(c2,ci){ sc(wsE,r,ci,c2,ST.hdr()); }); r++;
@@ -9282,16 +9427,16 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var fmD = Object.assign({}, FM_DEFAULTS, ((proyecto.presupInterv||{}).fmData)||{});
     var nmFM = nombreUnico('Factor Multiplicador');
 
-    sc(wsFM,r,0,'⚙️ FACTOR MULTIPLICADOR',{font:FT("FFFFFF",true,13),fill:FG("1F2937"),border:brd});
-    [1,2].forEach(function(ci){ sc(wsFM,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+    sc(wsFM,r,0,'⚙️ FACTOR MULTIPLICADOR',{font:FT("000000",true,13),fill:FG("E2E2E2"),border:brd});
+    [1,2].forEach(function(ci){ sc(wsFM,r,ci,'',{fill:FG("E2E2E2"),border:brd}); });
     r++;
-    sc(wsFM,r,0,'A.1 Salario Mensual (base fija)',{font:FT("92400E",true),fill:FG("FFFBEB"),border:brd});
-    sc(wsFM,r,1,'',{fill:FG("FFFBEB"),border:brd});
+    sc(wsFM,r,0,'A.1 Salario Mensual (base fija)',{font:FT("808080",true),fill:FG("F7F7F7"),border:brd});
+    sc(wsFM,r,1,'',{fill:FG("F7F7F7"),border:brd});
     var filaBaseFM = r;
-    nz(wsFM,r,2,1,'0.0000',{font:FT("92400E",true),fill:FG("FFFBEB"),border:brd,alignment:R_AL});
+    nz(wsFM,r,2,1,'0.0000',{font:FT("808080",true),fill:FG("F7F7F7"),border:brd,alignment:R_AL});
     r++;
-    sc(wsFM,r,0,'Los demás se ingresan como % sobre el salario',{font:FT("92400E",false,10),fill:FG("FFFBEB"),border:brd});
-    [1,2].forEach(function(ci){ sc(wsFM,r,ci,'',{fill:FG("FFFBEB"),border:brd}); });
+    sc(wsFM,r,0,'Los demás se ingresan como % sobre el salario',{font:FT("808080",false,10),fill:FG("F7F7F7"),border:brd});
+    [1,2].forEach(function(ci){ sc(wsFM,r,ci,'',{fill:FG("F7F7F7"),border:brd}); });
     r++; r++;
 
     ['Concepto','%','Equivalente'].forEach(function(h,ci){ sc(wsFM,r,ci,h,ST.hdr()); }); r++;
@@ -9326,15 +9471,15 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var filaSumFM = r;
     sc(wsFM,r,0,'TOTAL CARGAS',ST.tot());
     var sumaFM = Object.keys(FM_DEFAULTS).reduce(function(a,k){ return a+(Number(fmD[k])||0); },0);
-    fc(wsFM,r,1,refsSub.join('+'),sumaFM,{font:FT("FFFFFF",true),fill:FG("991B1B"),border:brd,alignment:R_AL},'0.00"%"');
-    fc(wsFM,r,2,ref(r,1)+'/100',sumaFM/100,{font:FT("FFFFFF",true),fill:FG("991B1B"),border:brd,alignment:R_AL},'0.0000');
+    fc(wsFM,r,1,refsSub.join('+'),sumaFM,{font:FT("000000",true),fill:FG("E2E2E2"),border:brd,alignment:R_AL},'0.00"%"');
+    fc(wsFM,r,2,ref(r,1)+'/100',sumaFM/100,{font:FT("000000",true),fill:FG("E2E2E2"),border:brd,alignment:R_AL},'0.0000');
     r++;
 
     var filaFM = r;
     sc(wsFM,r,0,'FACTOR MULTIPLICADOR  =  1,00 + cargas',ST.tot2());
     sc(wsFM,r,1,'',ST.tot2());
     fc(wsFM,r,2,ref(filaBaseFM,2)+'+'+ref(filaSumFM,2), 1+sumaFM/100,
-       {font:FT("FFFFFF",true,13),fill:FG("991B1B"),border:brd,alignment:R_AL},'0.0000');
+       {font:FT("000000",true,13),fill:FG("E2E2E2"),border:brd,alignment:R_AL},'0.0000');
     r++;
 
     refFM = link(nmFM, refA(filaFM,2));
@@ -9356,8 +9501,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var RR = calcResumenInterv(subtotal12, _piEst, _piPolD.polizasActivas||[], _piPlazo);
 
     // Título
-    sc(wsI,r,0,"PRESUPUESTO INTERVENTORÍA",{font:FT("FFFFFF",true,13),fill:FG("1D4ED8"),border:brd});
-    [1,2,3,4].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("1D4ED8"),border:brd}); });
+    sc(wsI,r,0,"PRESUPUESTO INTERVENTORÍA",{font:FT("000000",true,13),fill:FG("D9D9D9"),border:brd});
+    [1,2,3,4].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("D9D9D9"),border:brd}); });
     r++; r++;
 
     // Factor Multiplicador desglose
@@ -9365,12 +9510,12 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     // Aquí solo se muestra el resultado, enlazado a esa hoja.
     sc(wsI,r,0,"Factor Multiplicador (FM)",ST.lbl());
     [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.lbl()); });
-    if(refFM) fc(wsI,r,7,refFM,fm,{font:FT("1D4ED8",true,12),fill:FG("EFF6FF"),border:brd,alignment:R_AL},'0.0000');
-    else nz(wsI,r,7,fm,'0.0000',{font:FT("1D4ED8",true,12),fill:FG("EFF6FF"),border:brd,alignment:R_AL});
+    if(refFM) fc(wsI,r,7,refFM,fm,{font:FT("4D4D4D",true,12),fill:FG("F2F2F2"),border:brd,alignment:R_AL},'0.0000');
+    else nz(wsI,r,7,fm,'0.0000',{font:FT("4D4D4D",true,12),fill:FG("F2F2F2"),border:brd,alignment:R_AL});
     r++;
     sc(wsI,r,0,"Ver el desglose completo en la hoja «Factor Multiplicador»",
-       {font:FT("6B7280",false,10),fill:FG("F9FAFB"),border:brd});
-    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("F9FAFB"),border:brd}); });
+       {font:FT("808080",false,10),fill:FG("F7F7F7"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("F7F7F7"),border:brd}); });
     r++; r++;
 
     // Column headers
@@ -9435,10 +9580,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     // si la base se desactualiza.
     r++;
     sc(wsI,r,0,"Base de perfeccionamiento (SUBTOTAL GENERAL convergido)",
-       {font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
-    [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("1F2937"),border:brd}); });
+       {font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd});
+    [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("E2E2E2"),border:brd}); });
     var filaBaseP = r;
-    nc(wsI,r,7,RR.subtotalGeneral,{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd,alignment:R_AL});
+    nc(wsI,r,7,RR.subtotalGeneral,{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd,alignment:R_AL});
     r++;
 
     // IVA: 19% del subtotal (1+2). Esto NO es circular.
@@ -9465,7 +9610,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       var filaTotImp = r;
       sc(wsI,r,0,"Total Estampillas",ST.tot());
       [1,2,3,4,5].forEach(function(ci){ sc(wsI,r,ci,"",ST.tot()); });
-      npct(wsI,r,6,(RR.tasaTotal||0)*100,{font:{bold:true},fill:FG("FEE2E2"),border:brd,alignment:C_AL});
+      npct(wsI,r,6,(RR.tasaTotal||0)*100,{font:{bold:true},fill:FG("F2F2F2"),border:brd,alignment:C_AL});
       // El sistema redondea la TASA TOTAL sobre la base (no suma los redondeos uno a uno)
       fc(wsI,r,7,'ROUND('+refA(filaBaseP,7)+'*'+ref(r,6)+'/100,0)',RR.impuestos,ST.tot());
       refImp = ref(filaTotImp,7);
@@ -9512,8 +9657,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
     // Semáforo: ¿la base sigue al día?
     r++;
-    sc(wsI,r,0,"VERIFICACIÓN",{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
-    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("1F2937"),border:brd}); });
+    sc(wsI,r,0,"VERIFICACIÓN",{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsI,r,ci,"",{fill:FG("E2E2E2"),border:brd}); });
     r++;
     sc(wsI,r,0,"La base de perfeccionamiento debe ser igual al SUBTOTAL GENERAL",ST.rowA());
     [1,2,3,4,5,6].forEach(function(ci){ sc(wsI,r,ci,"",ST.rowA()); });
@@ -9521,7 +9666,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       f:'IF(ROUND('+ref(filaSubG,7)+'-'+ref(filaBaseP,7)+',0)=0,"✓ cuadra",'+
         '"⚠ BASE DESACTUALIZADA: copia "&TEXT('+ref(filaSubG,7)+',"#,##0")&" en la celda de arriba")',
       v:'✓ cuadra',
-      s:{font:FT('15803D',true),fill:FG('F0FDF4'),border:brd} };
+      s:{font:FT('595959',true),fill:FG('F2F2F2'),border:brd} };
     r++;
 
     setRange(wsI,[{wch:52},{wch:8},{wch:10},{wch:18},{wch:8},{wch:8},{wch:10},{wch:18}]);
@@ -9537,8 +9682,8 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   // se calculan. Si no cuadran, la celda lo dice: nunca un descuadre silencioso.
   if(_verif) {
     var wsV = _verif.ws, rv = _verif.r;
-    sc(wsV,rv,0,'VERIFICACIÓN',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
-    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsV,rv,ci,'',{fill:FG("1F2937"),border:brd}); });
+    sc(wsV,rv,0,'VERIFICACIÓN',{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd});
+    [1,2,3,4,5,6,7].forEach(function(ci){ sc(wsV,rv,ci,'',{fill:FG("E2E2E2"),border:brd}); });
     rv++;
     var _chk = function(etiqueta, filaItem, expr, esperado, actual) {
       if(filaItem===null || filaItem===undefined) return;
@@ -9613,12 +9758,12 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   var nmFF = nombreUnico('Ficha Financiera');
   var tieneConsult = comps.includes('consultoria');
 
-  sc(wsFF,r,0,'FICHA FINANCIERA',{font:FT("FFFFFF",true,14),fill:FG("1F2937"),border:brd});
-  [1,2,3,4].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:FG("1F2937"),border:brd}); });
+  sc(wsFF,r,0,'FICHA FINANCIERA',{font:FT("000000",true,14),fill:FG("E2E2E2"),border:brd});
+  [1,2,3,4].forEach(function(ci){ sc(wsFF,r,ci,'',{fill:FG("E2E2E2"),border:brd}); });
   r++; r++;
 
   // ── Componentes de Costos Indirectos ────────────────────────────────────
-  sc(wsFF,r,0,'Componentes de Costos Indirectos',{font:FT("FFFFFF",true,11),fill:FG("1F2937"),border:brd});
+  sc(wsFF,r,0,'Componentes de Costos Indirectos',{font:FT("000000",true,11),fill:FG("E2E2E2"),border:brd});
   sc(wsFF,r,1,'Cant.',ST.hdr()); sc(wsFF,r,2,'Meses',ST.hdr());
   sc(wsFF,r,3,'V. Unitario',ST.hdr()); sc(wsFF,r,4,'Total',ST.hdr()); r++;
 
@@ -9764,9 +9909,9 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     wsEd[kAviso] = { t:'s', f:'IF(ROUND('+refFichaB+'-'+ref(fb,2)+',0)=0,"✓ Base al día",'+
                     '"⚠ BASE DESACTUALIZADA — el SUBTOTAL de la Ficha cambió. Copia el nuevo valor aquí arriba o vuelve a exportar desde el sistema.")',
                     v:'✓ Base al día',
-                    s:{font:FT('15803D',true),fill:FG('F0FDF4'),border:brd} };
+                    s:{font:FT('595959',true),fill:FG('F2F2F2'),border:brd} };
     [1,2,3,4,5].forEach(function(ci){
-      wsEd[XLSX.utils.encode_cell({r:fb+1, c:ci})] = { t:'s', v:'', s:{fill:FG('F0FDF4'),border:brd} };
+      wsEd[XLSX.utils.encode_cell({r:fb+1, c:ci})] = { t:'s', v:'', s:{fill:FG('F2F2F2'),border:brd} };
     });
     var cols = wsEd['!cols'];
     setRange(wsEd, cols);
@@ -9850,7 +9995,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
   }
 
   setRange(wsR,[{wch:8},{wch:55},{wch:20},{wch:10}]);
-  XLSX.utils.book_append_sheet(wb, wsR, 'Resumen');
+  XLSX.utils.book_append_sheet(wb, wsR, 'Resumen de obra (costo directo)');
 
   // ── 10. HOJAS DE APUs Y RECURSOS (construidas al inicio para poder enlazarlas) ──
   hojasFin.forEach(function(h){ XLSX.utils.book_append_sheet(wb, h.ws, h.nm); });
@@ -17372,15 +17517,24 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
   if (hasObra) {
     var aur='';
     (au.secciones||[]).forEach(function(sec) {
-      (sec.subsecciones||[]).forEach(function(sub) {
+      flatWithDepthAU(sec.subsecciones||[], 0).forEach(function(ent) {
+        var sub = ent.node, depth = ent.depth;
+        if(sub.esSeparado) return;
+        var ind = Array(depth+1).join('&nbsp;&nbsp;');
+        if(ent.isGroup){
+          var totG=0;
+          flattenLeavesAU({subsecciones:[sub]}).forEach(function(lf){ if(lf.esSeparado) return; (lf.items||[]).forEach(function(it){ totG += calcAUItem(it, lf.tipo, res.cd, res.total) * factorPItem(it, lf.id); }); });
+          aur+='<tr class="cr"><td colspan="4">'+ind+'<b>'+(sub.numero||'')+' '+esc(sub.titulo)+'</b></td><td class="r">'+fP(Math.round(totG))+'</td></tr>';
+          return;
+        }
         if(!(sub.items||[]).length) return;
-        var fc=sub.id==='s1_1'?1.45:sub.id==='s1_3'?1.70:1;
-        var sv=Math.round(calcAUSubseccion(sub,res.cd,res.total));
-        aur+='<tr class="cr"><td colspan="4">'+(sub.numero||'')+' '+esc(sub.titulo)+'</td><td class="r">'+fP(Math.round(sv*fc))+'</td></tr>';
+        var svF=0; (sub.items||[]).forEach(function(it){ svF += calcAUItem(it,sub.tipo,res.cd,res.total)*factorPItem(it,sub.id); });
+        aur+='<tr class="cr"><td colspan="4">'+ind+(sub.numero||'')+' '+esc(sub.titulo)+'</td><td class="r">'+fP(Math.round(svF))+'</td></tr>';
         (sub.items||[]).forEach(function(it) {
-          var v=Math.round(calcAUItem(it,sub.tipo,res.cd,res.total)*fc);
+          var fac=factorPItem(it, sub.id);
+          var v=Math.round(calcAUItem(it,sub.tipo,res.cd,res.total)*fac);
           var det='';
-          if(sub.tipo==='personal') det=fNN(it.dedicacion||0,2)+'ded x '+fNN(it.cantidad||0,0)+'cant x '+fP(it.valorMesBase||0)+'/mes x '+(it.meses||0)+'m'+(fc>1?' x'+fc:'');
+          if(sub.tipo==='personal') det=fNN(it.dedicacion||0,2)+'ded x '+fNN(it.cantidad||0,0)+'cant x '+fP(it.valorMesBase||0)+'/mes x '+(it.meses||0)+'m'+(fac!==1?' x'+fac:'');
           else if(sub.tipo==='desplazamiento') det=fNN(it.cantidad||0,0)+' viajes x '+fP(it.valorUnitario||0)+' x '+(it.meses||1)+'m';
           else if(it.porcentaje!=null) det=fNN(it.porcentaje,4)+'% s/CD';
           else if(it.valorFijo) det='Valor fijo: '+fP(it.valorFijo);
@@ -17601,8 +17755,8 @@ window.__edesoPrint = function(pActivo, apus, recursos, calcProyecto, calcItem, 
     if(totEx>0) rr+='<tr class="tr"><td colspan="3">COSTOS TOTALES</td><td class="r">'+fP(cdPs+adm+util+totEx)+'</td></tr>';
     rr+='<tr><td colspan="4">&nbsp;</td></tr>';
   });
-  secs.push({title:'Resumen', html:
-    hdr('Resumen')+'<div class="st">Resumen por Presupuesto</div>'
+  secs.push({title:'Resumen de obra (costo directo)', html:
+    hdr('Resumen de obra (costo directo)')+'<div class="st">Resumen por Presupuesto</div>'
     +'<table><thead><tr><th>Item</th><th>Capitulo</th><th class="c">% Incid.</th><th class="r">C.D.</th></tr></thead>'
     +'<tbody>'+rr+'</tbody></table>'
   });
