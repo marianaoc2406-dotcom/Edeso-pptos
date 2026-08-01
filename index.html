@@ -466,6 +466,25 @@ function findNodoAU(nodes, id) {
   }
   return null;
 }
+// Total de un ítem del A+U respetando el sistema de COLUMNAS por subcapítulo (#2).
+// Si el subcapítulo tiene .cols (creado por el usuario, con columnas a la carta),
+// Total = Valor Base × (cada columna marcada: Ded, Cant, Factor P., Meses).
+// Columna marcada pero vacía = 1 (neutro). Si NO tiene .cols (subsecciones fijas de
+// siempre), usa el cálculo de siempre (calcAUItem por tipo × factor) — nada cambia atrás.
+function valorItemAU(item, sub, cd, total) {
+  if (sub && sub.cols) {
+    var c = sub.cols;
+    var m = function(v){ if (v === "" || v == null) return 1; var n = Number(v); return isNaN(n) ? 1 : n; };
+    var base = Number(item.valorBase != null ? item.valorBase : (item.valorMesBase != null ? item.valorMesBase : (item.valorUnitario || 0))) || 0;
+    var t = base;
+    if (c.ded)     t *= m(item.dedicacion);
+    if (c.cant)    t *= m(item.cantidad);
+    if (c.factorP) t *= m(item.factorP);
+    if (c.meses)   t *= m(item.meses);
+    return t;
+  }
+  return calcAUItem(item, sub ? sub.tipo : undefined, cd, total) * factorPItem(item, sub ? sub.id : undefined);
+}
 function calcAUSubseccion(sub, cd, total) {
   return (sub.items || []).reduce((s, i) => s + calcAUItem(i, sub.tipo, cd, total), 0);
 }
@@ -484,7 +503,7 @@ function calcAUTotal(au, cd) {
     } else if (sub.id === 's1_3') {
       (sub.items || []).forEach(item => { personal13 += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, 's1_3'); });
     } else {
-      (sub.items || []).forEach(item => { resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id); });
+      (sub.items || []).forEach(item => { resto += valorItemAU(item, sub, cd, 0); });
     }
   }));
   return personal11 + personal13 + resto + cd * pctU / 100;
@@ -614,7 +633,7 @@ function calcProyecto(p, apus, recursos) {
         });
       } else {
         sub.items.forEach(item => {
-          resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id);
+          resto += valorItemAU(item, sub, cd, 0);
         });
       }
     }));
@@ -669,7 +688,7 @@ function calcTotalSinPolizas(p, apus, recursos) {
           const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
                            (item.descripcion || "").toLowerCase().includes("poliza");
           if (!(sub.id === "s1_8" && esPoliza)) {
-            resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id);
+            resto += valorItemAU(item, sub, cd, 0);
           }
         });
       }
@@ -704,7 +723,7 @@ function calcTotalConvergido(proyecto, apus, recursos) {
           const esPoliza = (item.descripcion || "").toLowerCase().includes("póliza") ||
                            (item.descripcion || "").toLowerCase().includes("poliza");
           if (!(sub.id === "s1_8" && esPoliza)) {
-            resto += calcAUItem(item, sub.tipo, cd, 0) * factorPItem(item, sub.id);
+            resto += valorItemAU(item, sub, cd, 0);
           }
         });
       }
@@ -997,6 +1016,8 @@ const CSS = `
   }
   .tbl td { padding: 11px 16px; font-size: 13px; color: var(--ink2); border-bottom: 1px solid var(--line2); }
   .tbl tbody tr:hover td { background: #FAFAFA; }
+  .tbl tbody tr.au-grupo:hover td, .tbl tbody tr.au-sec:hover td { background: transparent !important; }
+  tr.au-grupo:hover td, tr.au-sec:hover td { background: transparent !important; }
   .tbl tr.pick:hover td { background: var(--red-soft); cursor: pointer; }
   .tbl tbody tr:last-child td { border-bottom: none; }
 
@@ -5136,6 +5157,7 @@ function TabAU({
   const setExtras = (field,val) => { if(window.__markEditing) window.__markEditing("extras_"+field); setAu(prev => ({...prev, extras:{...(prev.extras||{}), [field]:val}})); };
   const au = auProp || auVacio();
   const [modalItem, setModalItem] = useState(null);
+  const [agregandoEn, setAgregandoEn] = useState(null); // id del grupo mostrando el menú "agregar dentro"
   const [formItem, setFormItem] = useState({});
   const [modalSelector, setModalSelector] = useState(null);
   const [busqPlantilla, setBusqPlantilla] = useState("");
@@ -5233,6 +5255,7 @@ function TabAU({
   const addGrupoHijo = parentId => { if (readOnly) return; _mkEdit(); _setSubs(subs => _addChild(subs, parentId, _nuevoGrupo("Nuevo subcapítulo"))); };
   const addHojaHijo = parentId => { if (readOnly) return; _mkEdit(); _setSubs(subs => _addChild(subs, parentId, _nuevaHoja())); };
   const renameSubsec = (id, titulo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, titulo }))); };
+  const renameSeccion = (secId, titulo) => { _mkEdit(); setAu(prev => ({ ...prev, secciones: (prev.secciones || []).map(s => s.id === secId ? { ...s, titulo } : s) })); };
   const setSubsecTipo = (id, tipo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, tipo }))); };
   const delSubsec = id => { if (readOnly) return; if (!window.confirm("¿Eliminar esto y todo su contenido?")) return; _mkEdit(); _setSubs(subs => _rmTree(subs, id)); };
   const editItem = (subsecId, item) => {
@@ -5268,27 +5291,18 @@ function TabAU({
   const guardarItem = () => {
     if(window.__markEditing) window.__markEditing("au");
     if (!(formItem.descripcion || "").trim()) return;
-    setAu(prev => {
-      const secciones = prev.secciones.map(sec => ({
+    setAu(prev => ({
+      ...prev,
+      secciones: prev.secciones.map(sec => ({
         ...sec,
-        subsecciones: sec.subsecciones.map(sub => {
-          if (sub.id !== modalItem.subsecId) return sub;
-          const items = modalItem.itemId ? sub.items.map(i => i.id === modalItem.itemId ? {
-            ...formItem
-          } : i) : [...sub.items, {
-            ...formItem
-          }];
-          return {
-            ...sub,
-            items
-          };
+        subsecciones: _updTree(sec.subsecciones || [], modalItem.subsecId, sub => {
+          const items = modalItem.itemId
+            ? (sub.items || []).map(i => i.id === modalItem.itemId ? { ...formItem } : i)
+            : [...(sub.items || []), { ...formItem }];
+          return { ...sub, items };
         })
-      }));
-      return {
-        ...prev,
-        secciones
-      };
-    });
+      }))
+    }));
     dbSaveAUItem(formItem, modalItem.subsecId);
     setModalItem(null);
   };
@@ -5298,10 +5312,10 @@ function TabAU({
     ...prev,
     secciones: prev.secciones.map(sec => ({
       ...sec,
-      subsecciones: sec.subsecciones.map(sub => sub.id === subsecId ? {
+      subsecciones: _updTree(sec.subsecciones || [], subsecId, sub => ({
         ...sub,
-        items: sub.items.filter(i => i.id !== itemId)
-      } : sub)
+        items: (sub.items || []).filter(i => i.id !== itemId)
+      }))
     }))
   }));
   };
@@ -5347,18 +5361,23 @@ function TabAU({
   const renderGrupoAU = (nodo, depth) => {
     const pad = 16 + depth * 20;
     const hojas = flattenLeavesAU({ subsecciones: [nodo] });
-    const tot = hojas.reduce((s, lf) => lf.esSeparado ? s : s + (lf.items || []).reduce((ss, it) => ss + calcAUItem(it, lf.tipo, cd, cd + totalAU) * factorPItem(it, lf.id), 0), 0);
+    const tot = hojas.reduce((s, lf) => lf.esSeparado ? s : s + (lf.items || []).reduce((ss, it) => ss + valorItemAU(it, lf, cd, cd + totalAU), 0), 0);
     const dark = depth === 0;
     const bg = dark ? "#1E2430" : depth === 1 ? "#EEF1F6" : "#F5F6F8";
     const fg = dark ? "#fff" : "var(--ink)";
     const bd = dark ? "rgba(255,255,255,.3)" : "var(--line)";
-    return /*#__PURE__*/React.createElement("tr", { key: nodo.id, style: { background: bg } },
+    return /*#__PURE__*/React.createElement("tr", { key: nodo.id, className: "au-grupo", style: { background: bg } },
       /*#__PURE__*/React.createElement("td", { style: { padding: "8px 16px", paddingLeft: pad, color: fg, fontWeight: 700, fontFamily: "var(--mono)" } }, nodo.numero || ""),
       /*#__PURE__*/React.createElement("td", { colSpan: 7, style: { padding: "6px 8px", color: fg } },
         /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
           !readOnly ? /*#__PURE__*/React.createElement("input", { className: "ifield", style: { fontSize: 12, fontWeight: 700, padding: "2px 6px", minWidth: 220, background: dark ? "rgba(255,255,255,.12)" : "#fff", color: fg, border: "1px solid " + bd }, value: nodo.titulo || "", onChange: e => renameSubsec(nodo.id, e.target.value) }) : /*#__PURE__*/React.createElement("b", null, nodo.titulo),
-          !readOnly && /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Agregar un subcapítulo (grupo) dentro", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 7px" }, onClick: () => addGrupoHijo(nodo.id) }, "+ subcap\xEDtulo"),
-          !readOnly && /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Agregar una hoja de ítems dentro", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 7px" }, onClick: () => addHojaHijo(nodo.id) }, "+ hoja de \xEDtems"))),
+          !readOnly && (agregandoEn === nodo.id
+            ? /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
+                /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: fg, opacity: .85 } }, "dentro de «" + (nodo.titulo || "") + "»:"),
+                /*#__PURE__*/React.createElement("button", { className: "btn-ghost", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 8px", fontWeight: 600 }, onClick: () => { addGrupoHijo(nodo.id); setAgregandoEn(null); } }, "\uD83D\uDCC1 Subcap\xEDtulo"),
+                /*#__PURE__*/React.createElement("button", { className: "btn-ghost", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 8px", fontWeight: 600 }, onClick: () => { addHojaHijo(nodo.id); setAgregandoEn(null); } }, "\uD83D\uDCC4 Hoja de \xEDtems"),
+                /*#__PURE__*/React.createElement("button", { className: "btn-ghost", style: { color: fg, fontSize: 11, opacity: .7, padding: "1px 5px" }, onClick: () => setAgregandoEn(null) }, "\u2715"))
+            : /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Agregar un subcapítulo u hoja DENTRO de este capítulo", style: { color: fg, fontSize: 11, border: "1px solid " + bd, borderRadius: 5, padding: "1px 8px", fontWeight: 600 }, onClick: () => setAgregandoEn(nodo.id) }, "\uFF0B Agregar aqu\xED dentro")))),
       /*#__PURE__*/React.createElement("td", { style: { padding: "8px 16px", textAlign: "right", fontFamily: "var(--mono)", fontWeight: 700, color: fg } }, fmt(tot)),
       /*#__PURE__*/React.createElement("td", null, !readOnly && esSubsecEditable(nodo) ? /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Eliminar", style: { color: dark ? "#F5C6C2" : "#DC2626" }, onClick: () => delSubsec(nodo.id) }, "\xD7") : null));
   };
@@ -5497,7 +5516,7 @@ function TabAU({
     // adentro, dando un número que no correspondía a nada.
     const totalSec = flattenLeavesAU(sec).reduce((s, sub) => {
       if (sub.esSeparado) return s;                       // 1.9 Imprevistos / 1.10 Utilidad
-      return s + (sub.items || []).reduce((ss, item) => ss + calcAUItem(item, sub.tipo, cd, cd + totalAU) * factorPItem(item, sub.id), 0);
+      return s + (sub.items || []).reduce((ss, item) => ss + valorItemAU(item, sub, cd, cd + totalAU), 0);
     }, 0);
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: sec.id
@@ -5512,7 +5531,12 @@ function TabAU({
         padding: "9px 16px"
       },
       colSpan: 7
-    }, sec.titulo), /*#__PURE__*/React.createElement("td", {
+    }, !readOnly ? /*#__PURE__*/React.createElement("input", {
+      className: "ifield",
+      style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", padding: "3px 8px", minWidth: 320, background: "rgba(255,255,255,.12)", color: "#fff", border: "1px solid rgba(255,255,255,.25)", borderRadius: 4 },
+      value: sec.titulo || "",
+      onChange: e => renameSeccion(sec.id, e.target.value)
+    }) : sec.titulo), /*#__PURE__*/React.createElement("td", {
       style: {
         padding: "9px 16px",
         textAlign: "right",
@@ -5523,7 +5547,7 @@ function TabAU({
       if (sub.esSeparado) return null; // I y U se renderizan fuera de la sección
       if (sub.id === "s1_8") return null; // Pólizas/Estampillas/Transacciones → bloque fijo antes de la A
       if (_ent.isGroup) return renderGrupoAU(sub, _depth);
-      const subTotal = (sub.items || []).reduce((s, it) => s + calcAUItem(it, sub.tipo, cd, cd + totalAU) * factorPItem(it, sub.id), 0);
+      const subTotal = (sub.items || []).reduce((s, it) => s + valorItemAU(it, sub, cd, cd + totalAU), 0);
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: sub.id
       }, /*#__PURE__*/React.createElement("tr", {
@@ -5560,7 +5584,7 @@ function TabAU({
         className: "btn-ghost", title: "Eliminar", style: { color: "#F5C6C2" },
         onClick: () => delSubsec(sub.id)
       }, "\xD7") : null)), (sub.items || []).map(item => {
-        const vItem = calcAUItem(item, sub.tipo, cd, cd + totalAU) * factorPItem(item, sub.id);
+        const vItem = valorItemAU(item, sub, cd, cd + totalAU);
         return [/*#__PURE__*/React.createElement("tr", {
           key: item.id
         }, /*#__PURE__*/React.createElement("td", {
@@ -5662,10 +5686,8 @@ function TabAU({
     }, /*#__PURE__*/React.createElement("td", {
       colSpan: 10, style: { padding: "6px 16px", paddingLeft: 16, background: "var(--line2)" }
     }, /*#__PURE__*/React.createElement("button", {
-      className: "btn-dashed", style: { fontWeight: 600, marginRight: 8 }, onClick: () => addCapitulo()
-    }, "+ Agregar cap\xEDtulo"), /*#__PURE__*/React.createElement("button", {
-      className: "btn-dashed", style: { fontWeight: 600 }, onClick: () => addSubsec()
-    }, "+ Agregar subcap\xEDtulo (hoja de \xEDtems)"))));
+      className: "btn-dashed", style: { fontWeight: 600 }, onClick: () => addCapitulo()
+    }, "\uFF0B Nuevo cap\xEDtulo principal"))));
   }), ((_subI$items$, _subU$items$) => {
     let personal11 = 0,
       personal13 = 0,
@@ -5677,7 +5699,7 @@ function TabAU({
       });else if (sub.id === "s1_3") (sub.items || []).forEach(i => {
         personal13 += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, "s1_3");
       });else (sub.items || []).forEach(i => {
-        resto += calcAUItem(i, sub.tipo, cd, 0) * factorPItem(i, sub.id);
+        resto += valorItemAU(i, sub, cd, 0);
       });
     }));
     const prestaciones11 = personal11;
@@ -5722,7 +5744,7 @@ function TabAU({
       var s18 = findNodoAU(au.secciones[0].subsecciones, "s1_8");
       var its18 = (s18 && s18.items) || [];
       if (!its18.length) return null;
-      var val18 = function (it) { return calcAUItem(it, s18.tipo, cd, cd + totalAU) * factorPItem(it, s18.id); };
+      var val18 = function (it) { return valorItemAU(it, s18, cd, cd + totalAU); };
       var tot18 = its18.reduce(function (s, it) { return s + val18(it); }, 0);
       return /*#__PURE__*/React.createElement(React.Fragment, { key: "blk18" },
         /*#__PURE__*/React.createElement("tr", { style: { background: "#EEF1F6", borderTop: "2px solid var(--line)" } },
@@ -8202,9 +8224,15 @@ function TabEstampillas({ proyecto, setEstampillas, setAU, totalProyecto, readOn
     // están dentro de él (subsección 1.8), así que un paso solo deja el número corto.
     var G = window.__PREX || {};
     if (!G.apus || !G.recursos) return;
-    var conv = convergerAU(proyecto, G.apus, G.recursos, G.catEst || []);
-    // Guarda anti-bucle: solo se actualiza si el A+U realmente cambió.
-    if (conv && conv.au && JSON.stringify(conv.au) !== JSON.stringify(proyecto.au)) setAU(conv.au);
+    // DEBOUNCE: convergerAU corre el cálculo completo hasta 200 veces y es pesado.
+    // Antes se ejecutaba en CADA edición (cada cambio de total) y volvía la app lenta.
+    // Ahora esperamos 500ms después de que paras de editar, así escribir es fluido.
+    var _t = setTimeout(function(){
+      var conv = convergerAU(proyecto, G.apus, G.recursos, G.catEst || []);
+      // Guarda anti-bucle: solo se actualiza si el A+U realmente cambió.
+      if (conv && conv.au && JSON.stringify(conv.au) !== JSON.stringify(proyecto.au)) setAU(conv.au);
+    }, 500);
+    return function(){ clearTimeout(_t); };
   }, [total, proyecto.municipioId]);
 
   var S = {
@@ -8926,10 +8954,10 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         var apu = apus.find(function(a){ return a.id===item.apuId; });
         if(!apu) return;
         var numItem = safe(cap.numero) + "." + (ii+1);
-        var ao = apus.find(function(a){ return a.id===apu.id; })||{};
-        var lineas = (proyecto.apuOverrides&&proyecto.apuOverrides[apu.id])||(ao.lineas||[]);
+        var apuEf = getApuEfectivo(apu, proyecto);
+        var lineas = (apuEf && apuEf.lineas) || [];
         var totalMO = calcTotalMO(lineas, recursos);
-        var vu = calcAPUTotal(ao.id?Object.assign({},ao,{lineas:lineas}):{lineas:lineas}, recursos, pctHerr);
+        var vu = calcAPUTotal(apuEf, recursos, pctHerr);
 
         var filaVU = r, refsSec = [];
         sc(wsAPU,r,0,numItem,ST.cap());
@@ -9044,11 +9072,16 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         sc(ws,r,2,(apu?safe(apu.unidad):'')||safe(item.unidad),{fill:st2.fill,border:brd,alignment:C_AL});
         ndc(ws,r,3,item.cantidad||0,{fill:st2.fill,border:brd,alignment:R_AL});
         // V. Unitario → valor EXACTO del sistema (calcAPUTotal), escrito como número.
-        // Antes se enlazaba a la hoja de APUs, pero esa hoja redondea y el Costo Directo
-        // se descuadraba en millones. Con el valor exacto, el CD del Excel coincide AL PESO
-        // con el sistema (cantidad × V.Unitario exacto = mismo total que calcItem).
+        // El enlace a la hoja de APUs hacía que Excel recalculara un valor un poco distinto
+        // y descuadraba el Costo Directo. Con el valor exacto, cantidad × V.Unitario da
+        // idéntico a calcItem y el CD coincide AL PESO con el sistema. La trazabilidad
+        // (de qué APU sale) se ve en la hoja "APUs Proyectos" por la numeración (4.5, etc.).
         nc(ws,r,4,vu,ST.mon(st2));
-        fc(ws,r,5,ref(r,3)+'*'+ref(r,4),vt,{font:{bold:true},fill:st2.fill,border:brd,alignment:R_AL});
+        // Total → valor EXACTO del sistema (vt = calcItem), como número fijo (no fórmula).
+        // La fórmula =Cantidad×V.Unitario Excel la recalculaba y, con el V.Unitario mostrado
+        // redondeado, acumulaba un pico de miles en el Costo Directo. Como valor fijo, el CD
+        // del Excel = suma de vt = EXACTAMENTE el CD del sistema, al peso.
+        nc(ws,r,5,vt,{font:{bold:true},fill:st2.fill,border:brd,alignment:R_AL});
         celdasPct.push({r:r, v:(cdPs>0?vt/cdPs:0), st:{fill:st2.fill,border:brd,alignment:C_AL}});
         r++;
       });
@@ -9199,6 +9232,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       // multiplicada por su factor prestacional (1.1 ×1.45, 1.3 ×1.70, el resto ×1).
       // Se escribe como fórmula al final, cuando ya se conocen las filas que la componen.
       var filaSec = r, refsSec = [], totalSec = 0;
+      var _s18 = null;   // se recuerda el 1.8 para pintarlo como bloque antes de la A
       [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.cap()); });
       sc(wsAU,r,0,safe(sec.numero),ST.cap());
       sc(wsAU,r,1,safe(sec.titulo),ST.cap());
@@ -9210,6 +9244,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
       flatWithDepthAU(sec.subsecciones||[], 0).forEach(function(ent) {
         var sub = ent.node, depth = ent.depth;
         if(sub.esSeparado) return;   // Imprevistos y Utilidad van en el pie, igual que en pantalla
+        if(sub.id==='s1_8'){ _s18 = sub; return; }   // Pólizas/Estampillas/Transacciones → bloque antes de la A
         var sangria = Array(depth+2).join('  ');
 
         if(ent.isGroup){
@@ -9217,7 +9252,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
           var totG = 0;
           flattenLeavesAU({subsecciones:[sub]}).forEach(function(lf){
             if(lf.esSeparado) return;
-            (lf.items||[]).forEach(function(it){ totG += calcAUItem(it, lf.tipo, cd, baseTot) * factorPItem(it, lf.id); });
+            (lf.items||[]).forEach(function(it){ totG += valorItemAU(it, lf, cd, baseTot); });
           });
           [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("E8E8E8"),border:brd}); });
           sc(wsAU,r,0, sangria+safe(sub.numero||''), {font:FT("000000",true),fill:FG("E8E8E8"),border:brd});
@@ -9231,7 +9266,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         // HOJA con ítems
         var itsAU = sub.items||[];
         var filaSub = r;
-        var svF = 0; itsAU.forEach(function(it){ svF += calcAUItem(it, sub.tipo, cd, baseTot) * factorPItem(it, sub.id); });
+        var svF = 0; itsAU.forEach(function(it){ svF += valorItemAU(it, sub, cd, baseTot); });
 
         [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.lbl()); });
         sc(wsAU,r,0,sangria+safe(sub.numero),ST.lbl());
@@ -9287,6 +9322,38 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         // El subtotal de la hoja YA incluye el factor por línea (sin filas de prestaciones aparte)
         if(depth===0){ refsAdmin.push(ref(filaSub,7)); refsSec.push(ref(filaSub,7)); totalSec += svF; }
       });
+
+      // Bloque Pólizas/Estampillas/Transacciones (antes de la A), igual que en pantalla.
+      // Se suma a la sección (refsSec) y a la Administración (refsAdmin): el total NO cambia.
+      if(_s18 && (_s18.items||[]).length){
+        var its18 = _s18.items||[];
+        var fila18 = r, svF18 = 0;
+        its18.forEach(function(it){ svF18 += valorItemAU(it, _s18, cd, baseTot); });
+        [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.lbl()); });
+        sc(wsAU,r,0,'',ST.lbl());
+        sc(wsAU,r,1,'Pólizas, Estampillas y Transacciones',ST.lbl());
+        fc(wsAU,fila18,7,'SUM('+rng(fila18+1,fila18+its18.length,7)+')',svF18,{font:FT("000000",true),fill:FG("F2F2F2"),border:brd,alignment:R_AL});
+        r++;
+        its18.forEach(function(it, ii){
+          var stR = ii%2===0?ST.rowA():ST.rowB();
+          var v18 = valorItemAU(it, _s18, cd, baseTot);
+          var _d = String(it.descripcion||'').toLowerCase();
+          if(_d.indexOf('póliza')>=0||_d.indexOf('poliza')>=0){ fila18Pol=r; _val18Pol=v18; }
+          else if(_d.indexOf('estampilla')>=0){ fila18Est=r; _val18Est=v18; }
+          else if(_d.indexOf('transacci')>=0){ fila18TB=r; _val18TB=v18; }
+          sc(wsAU,r,0,'',stR);
+          sc(wsAU,r,1,'    '+safe(it.descripcion),stR);
+          sc(wsAU,r,2,'',{fill:stR.fill,border:brd});
+          sc(wsAU,r,3,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
+          sc(wsAU,r,4,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
+          nc(wsAU,r,5,it.valorFijo||v18,ST.mon(stR));
+          sc(wsAU,r,6,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
+          nc(wsAU,r,7,v18,{font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+          r++;
+        });
+        refsSec.push(ref(fila18,7)); totalSec += svF18;
+        refsAdmin.push(ref(fila18,7));
+      }
 
       // Ya conocemos las filas: el total de la sección es la suma de sus subsecciones
       // CON factor aplicado -> coincide exactamente con la Administración (A).
