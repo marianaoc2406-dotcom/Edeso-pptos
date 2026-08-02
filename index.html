@@ -314,15 +314,14 @@ function migrarAU(au) {
   const subsExistentes = sec.subsecciones.map(s => s.id);
   const faltantes = SUBSECCIONES_AU.filter(s => CRIT_AU.indexOf(s.id) !== -1 && !subsExistentes.includes(s.id));
   if (faltantes.length === 0) return au;
+  // Solo el PRIMER capítulo recibe las protegidas (pólizas/imprevistos/utilidad);
+  // los demás capítulos de nivel superior se conservan tal cual.
   return {
     ...au,
-    secciones: [{
-      ...sec,
-      subsecciones: [...sec.subsecciones, ...faltantes.map(s => ({
-        ...s,
-        items: []
-      }))]
-    }]
+    secciones: au.secciones.map((s, i) => i !== 0 ? s : {
+      ...s,
+      subsecciones: [...s.subsecciones, ...faltantes.map(f => ({ ...f, items: [] }))]
+    })
   };
 }
 const PROYECTOS_INIT = [];
@@ -446,14 +445,20 @@ function flattenLeavesAU(sec) {
 }
 // Recorre el árbol y devuelve una lista PLANA con profundidad, para pintarlo con sangría.
 // Cada entrada: { node, depth, isGroup }. Un grupo (con .hijos) se lista y luego sus hijos.
-function flatWithDepthAU(nodes, depth) {
+function flatWithDepthAU(nodes, depth, prefix) {
   const out = [];
+  var i = 0;
   (nodes || []).forEach(n => {
+    // Los ocultos (Imprevistos/Utilidad = esSeparado, y Pólizas s1_8) van en el pie:
+    // no consumen numeración para que la lista visible quede 1.1, 1.2, 1.3… sin saltos.
+    var hidden = n.esSeparado || n.id === "s1_8";
+    var num = "";
+    if (!hidden) { i++; num = (prefix ? prefix + "." : "") + i; }
     if (Array.isArray(n.hijos)) {
-      out.push({ node: n, depth: depth, isGroup: true });
-      out.push.apply(out, flatWithDepthAU(n.hijos, depth + 1));
+      out.push({ node: n, depth: depth, isGroup: true, num: num });
+      out.push.apply(out, flatWithDepthAU(n.hijos, depth + 1, num));
     } else {
-      out.push({ node: n, depth: depth, isGroup: false });
+      out.push({ node: n, depth: depth, isGroup: false, num: num });
     }
   });
   return out;
@@ -463,6 +468,14 @@ function findNodoAU(nodes, id) {
   for (const n of (nodes || [])) {
     if (n.id === id) return n;
     if (Array.isArray(n.hijos)) { const f = findNodoAU(n.hijos, id); if (f) return f; }
+  }
+  return null;
+}
+// Busca un nodo por id en TODAS las secciones (capítulos de nivel superior).
+function findNodoAUsecs(secciones, id) {
+  for (const sec of (secciones || [])) {
+    const f = findNodoAU(sec.subsecciones || [], id);
+    if (f) return f;
   }
   return null;
 }
@@ -5168,7 +5181,7 @@ function TabAU({
   };
   const seleccionarPlantilla = (plantilla, subsecId) => {
     // Solo copiamos descripción y unidad de la plantilla \u2014 los números los ingresa el usuario
-    const sub = findNodoAU(au.secciones[0].subsecciones, subsecId);
+    const sub = findNodoAUsecs(au.secciones, subsecId);
     let base;
     if (sub.tipo === "personal") base = {
       descripcion: plantilla.descripcion,
@@ -5201,7 +5214,7 @@ function TabAU({
     setModalSelector(null);
   };
   const crearDesdeZero = subsecId => {
-    const sub = findNodoAU(au.secciones[0].subsecciones, subsecId);
+    const sub = findNodoAUsecs(au.secciones, subsecId);
     const base = sub.tipo === "personal" ? {
       descripcion: "",
       unidad: "un",
@@ -5250,12 +5263,23 @@ function TabAU({
   const _addChild = (nodes, parentId, child) => (nodes || []).map(n => n.id === parentId ? { ...n, hijos: [...(n.hijos || []), child] } : (Array.isArray(n.hijos) ? { ...n, hijos: _addChild(n.hijos, parentId, child) } : n));
   const _setSubs = fn => setAu(prev => ({ ...prev, secciones: prev.secciones.map((sec, i) => i !== 0 ? sec : { ...sec, subsecciones: fn(sec.subsecciones || []) }) }));
   const _insBeforeSep = (arr, nodo) => { const a = [...arr]; const i = a.findIndex(s => s.esSeparado); if (i === -1) a.push(nodo); else a.splice(i, 0, nodo); return a; };
-  const addCapitulo = () => { if (readOnly) return; _mkEdit(); _setSubs(subs => _insBeforeSep(subs, _nuevoGrupo("Nuevo capítulo"))); };
+  const addCapitulo = () => { if (readOnly) return; _mkEdit(); setAu(prev => ({ ...prev, secciones: [...(prev.secciones || []), { id: _nid(), titulo: "Nuevo capítulo", subsecciones: [] }] })); };
   const addSubsec = () => { if (readOnly) return; _mkEdit(); _setSubs(subs => _insBeforeSep(subs, _nuevaHoja())); };
   const addGrupoHijo = parentId => { if (readOnly) return; _mkEdit(); _setSubs(subs => _addChild(subs, parentId, _nuevoGrupo("Nuevo subcapítulo"))); };
   const addHojaHijo = parentId => { if (readOnly) return; _mkEdit(); _setSubs(subs => _addChild(subs, parentId, _nuevaHoja())); };
   const renameSubsec = (id, titulo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, titulo }))); };
   const renameSeccion = (secId, titulo) => { _mkEdit(); setAu(prev => ({ ...prev, secciones: (prev.secciones || []).map(s => s.id === secId ? { ...s, titulo } : s) })); };
+  // Capítulos de NIVEL SUPERIOR = "secciones". Cada uno numerado 1, 2, 3…
+  const _setSubsDe = (secId, fn) => setAu(prev => ({ ...prev, secciones: (prev.secciones || []).map(s => s.id === secId ? { ...s, subsecciones: fn(s.subsecciones || []) } : s) }));
+  const addHojaASec = secId => { if (readOnly) return; _mkEdit(); _setSubsDe(secId, subs => _insBeforeSep(subs, _nuevaHoja())); };
+  const addGrupoASec = secId => { if (readOnly) return; _mkEdit(); _setSubsDe(secId, subs => _insBeforeSep(subs, _nuevoGrupo("Nuevo subcapítulo"))); };
+  const delSeccion = secId => {
+    if (readOnly) return;
+    if ((au.secciones || [])[0] && au.secciones[0].id === secId) { window.alert("El primer capítulo no se puede borrar: contiene pólizas, imprevistos y utilidad."); return; }
+    if (!window.confirm("¿Eliminar este capítulo y todo su contenido?")) return;
+    _mkEdit();
+    setAu(prev => ({ ...prev, secciones: (prev.secciones || []).filter(s => s.id !== secId) }));
+  };
   const setSubsecTipo = (id, tipo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, tipo }))); };
   const delSubsec = id => { if (readOnly) return; if (!window.confirm("¿Eliminar esto y todo su contenido?")) return; _mkEdit(); _setSubs(subs => _rmTree(subs, id)); };
   const editItem = (subsecId, item) => {
@@ -5358,7 +5382,7 @@ function TabAU({
   }));
   // Pinta la fila-cabecera de un GRUPO (capítulo / subcapítulo con hijos), con sangría
   // por nivel, su subtotal agregado y botones para agregar hijos / renombrar / borrar.
-  const renderGrupoAU = (nodo, depth) => {
+  const renderGrupoAU = (nodo, depth, num) => {
     const pad = 16 + depth * 20;
     const hojas = flattenLeavesAU({ subsecciones: [nodo] });
     const tot = hojas.reduce((s, lf) => lf.esSeparado ? s : s + (lf.items || []).reduce((ss, it) => ss + valorItemAU(it, lf, cd, cd + totalAU), 0), 0);
@@ -5367,7 +5391,7 @@ function TabAU({
     const fg = dark ? "#fff" : "var(--ink)";
     const bd = dark ? "rgba(255,255,255,.3)" : "var(--line)";
     return /*#__PURE__*/React.createElement("tr", { key: nodo.id, className: "au-grupo", style: { background: bg } },
-      /*#__PURE__*/React.createElement("td", { style: { padding: "8px 16px", paddingLeft: pad, color: fg, fontWeight: 700, fontFamily: "var(--mono)" } }, nodo.numero || ""),
+      /*#__PURE__*/React.createElement("td", { style: { padding: "8px 16px", paddingLeft: pad, color: fg, fontWeight: 700, fontFamily: "var(--mono)" } }, num || nodo.numero || ""),
       /*#__PURE__*/React.createElement("td", { colSpan: 7, style: { padding: "6px 8px", color: fg } },
         /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
           !readOnly ? /*#__PURE__*/React.createElement("input", { className: "ifield", style: { fontSize: 12, fontWeight: 700, padding: "2px 6px", minWidth: 220, background: dark ? "rgba(255,255,255,.12)" : "#fff", color: fg, border: "1px solid " + bd }, value: nodo.titulo || "", onChange: e => renameSubsec(nodo.id, e.target.value) }) : /*#__PURE__*/React.createElement("b", null, nodo.titulo),
@@ -5509,7 +5533,7 @@ function TabAU({
     style: {
       width: 70
     }
-  }))), /*#__PURE__*/React.createElement("tbody", null, (au.secciones || []).map(sec => {
+  }))), /*#__PURE__*/React.createElement("tbody", null, (au.secciones || []).map((sec, _sidx) => {
     // La fila de sección debe mostrar la ADMINISTRACIÓN REAL: cada subsección con su
     // factor prestacional ya aplicado (1.1 ×1.45, 1.3 ×1.70) y SIN Imprevistos ni
     // Utilidad (que van aparte, en el pie). Antes sumaba en crudo y metía la Utilidad
@@ -5521,32 +5545,31 @@ function TabAU({
     return /*#__PURE__*/React.createElement(React.Fragment, {
       key: sec.id
     }, /*#__PURE__*/React.createElement("tr", {
-      className: "au-sec"
+      className: "au-sec au-grupo"
     }, /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 16px"
-      }
-    }, sec.numero), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 16px"
-      },
+      style: { padding: "9px 16px", fontFamily: "var(--mono)", fontWeight: 700 }
+    }, String(_sidx + 1)), /*#__PURE__*/React.createElement("td", {
+      style: { padding: "9px 16px" },
       colSpan: 7
-    }, !readOnly ? /*#__PURE__*/React.createElement("input", {
-      className: "ifield",
-      style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", padding: "3px 8px", minWidth: 320, background: "rgba(255,255,255,.12)", color: "#fff", border: "1px solid rgba(255,255,255,.25)", borderRadius: 4 },
-      value: sec.titulo || "",
-      onChange: e => renameSeccion(sec.id, e.target.value)
-    }) : sec.titulo), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 16px",
-        textAlign: "right",
-        fontFamily: "var(--mono)"
-      }
-    }, fmt(totalSec)), /*#__PURE__*/React.createElement("td", null)), flatWithDepthAU(sec.subsecciones || [], 0).map(_ent => {
+    }, /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+      !readOnly ? /*#__PURE__*/React.createElement("input", {
+        style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", padding: "3px 8px", minWidth: 300, background: "rgba(255,255,255,.15)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 4, outline: "none", fontFamily: "var(--sans)" },
+        value: sec.titulo || "",
+        onChange: e => renameSeccion(sec.id, e.target.value)
+      }) : /*#__PURE__*/React.createElement("b", null, sec.titulo),
+      !readOnly && (agregandoEn === sec.id
+        ? /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
+            /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: "#fff", opacity: .85 } }, "dentro de «" + (sec.titulo || "") + "»:"),
+            /*#__PURE__*/React.createElement("button", { className: "btn-ghost", style: { color: "#fff", fontSize: 11, border: "1px solid rgba(255,255,255,.3)", borderRadius: 5, padding: "1px 8px", fontWeight: 600 }, onClick: () => { addGrupoASec(sec.id); setAgregandoEn(null); } }, "\uD83D\uDCC1 Subcap\xEDtulo"),
+            /*#__PURE__*/React.createElement("button", { className: "btn-ghost", style: { color: "#fff", fontSize: 11, border: "1px solid rgba(255,255,255,.3)", borderRadius: 5, padding: "1px 8px", fontWeight: 600 }, onClick: () => { addHojaASec(sec.id); setAgregandoEn(null); } }, "\uD83D\uDCC4 Hoja de \xEDtems"),
+            /*#__PURE__*/React.createElement("button", { className: "btn-ghost", style: { color: "#fff", fontSize: 11, opacity: .7, padding: "1px 5px" }, onClick: () => setAgregandoEn(null) }, "\u2715"))
+        : /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Agregar un subcapítulo u hoja dentro de este capítulo", style: { color: "#fff", fontSize: 11, border: "1px solid rgba(255,255,255,.3)", borderRadius: 5, padding: "1px 8px", fontWeight: 600 }, onClick: () => setAgregandoEn(sec.id) }, "\uFF0B Agregar aqu\xED dentro")))), /*#__PURE__*/React.createElement("td", {
+      style: { padding: "9px 16px", textAlign: "right", fontFamily: "var(--mono)" }
+    }, fmt(totalSec)), /*#__PURE__*/React.createElement("td", null, !readOnly && _sidx > 0 ? /*#__PURE__*/React.createElement("button", { className: "btn-ghost", title: "Eliminar capítulo", style: { color: "#F5C6C2" }, onClick: () => delSeccion(sec.id) }, "\xD7") : null)), flatWithDepthAU(sec.subsecciones || [], 0, String(_sidx + 1)).map(_ent => {
       const sub = _ent.node, _depth = _ent.depth, _pad = 24 + _depth * 20;
       if (sub.esSeparado) return null; // I y U se renderizan fuera de la sección
       if (sub.id === "s1_8") return null; // Pólizas/Estampillas/Transacciones → bloque fijo antes de la A
-      if (_ent.isGroup) return renderGrupoAU(sub, _depth);
+      if (_ent.isGroup) return renderGrupoAU(sub, _depth, _ent.num);
       const subTotal = (sub.items || []).reduce((s, it) => s + valorItemAU(it, sub, cd, cd + totalAU), 0);
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: sub.id
@@ -5557,7 +5580,7 @@ function TabAU({
           padding: "7px 16px",
           paddingLeft: _pad
         }
-      }, sub.numero), /*#__PURE__*/React.createElement("td", {
+      }, _ent.num || sub.numero || ""), /*#__PURE__*/React.createElement("td", {
         style: {
           padding: "7px 16px"
         },
@@ -5583,7 +5606,7 @@ function TabAU({
       }, fmt(subTotal)), /*#__PURE__*/React.createElement("td", null, esSubsecEditable(sub) && !readOnly ? /*#__PURE__*/React.createElement("button", {
         className: "btn-ghost", title: "Eliminar", style: { color: "#F5C6C2" },
         onClick: () => delSubsec(sub.id)
-      }, "\xD7") : null)), (sub.items || []).map(item => {
+      }, "\xD7") : null)), (sub.items || []).map((item, _ii) => {
         const vItem = valorItemAU(item, sub, cd, cd + totalAU);
         return [/*#__PURE__*/React.createElement("tr", {
           key: item.id
@@ -5594,7 +5617,7 @@ function TabAU({
             color: "var(--ink4)",
             fontFamily: "var(--mono)"
           }
-        }), /*#__PURE__*/React.createElement("td", {
+        }, _ent.num ? _ent.num + "." + (_ii + 1) : ""), /*#__PURE__*/React.createElement("td", {
           style: {
             fontSize: 12
           }
@@ -5867,7 +5890,7 @@ function TabAU({
     onDesdeZero: () => crearDesdeZero(modalSelector),
     onCancel: () => setModalSelector(null)
   }), modalItem && (() => {
-    const subEdit = findNodoAU(au.secciones[0].subsecciones, modalItem.subsecId);
+    const subEdit = findNodoAUsecs(au.secciones, modalItem.subsecId);
     const esPersonal = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "personal",
       esOtros = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "otros",
       esDesp = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "desplazamiento";
@@ -9227,21 +9250,21 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
     var fila18Pol = null, fila18Est = null, fila18TB = null;
     var _val18Pol = 0, _val18Est = 0, _val18TB = 0;
 
-    (au.secciones||[]).forEach(function(sec) {
+    (au.secciones||[]).forEach(function(sec, _sidx) {
       // Fila de SECCIÓN — su total es la Administración REAL: cada subsección ya
       // multiplicada por su factor prestacional (1.1 ×1.45, 1.3 ×1.70, el resto ×1).
       // Se escribe como fórmula al final, cuando ya se conocen las filas que la componen.
       var filaSec = r, refsSec = [], totalSec = 0;
       var _s18 = null;   // se recuerda el 1.8 para pintarlo como bloque antes de la A
       [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.cap()); });
-      sc(wsAU,r,0,safe(sec.numero),ST.cap());
+      sc(wsAU,r,0,String(_sidx+1),ST.cap());
       sc(wsAU,r,1,safe(sec.titulo),ST.cap());
       r++;
 
       // Recorre el ÁRBOL del A+U con profundidad: grupos (capítulos/subcapítulos) como
       // filas-cabecera con subtotal agregado, y hojas con sus ítems. El Factor P. va POR
       // LÍNEA (incluido en el Total de cada ítem); el subtotal de la hoja ya suma con factor.
-      flatWithDepthAU(sec.subsecciones||[], 0).forEach(function(ent) {
+      flatWithDepthAU(sec.subsecciones||[], 0, String(_sidx+1)).forEach(function(ent) {
         var sub = ent.node, depth = ent.depth;
         if(sub.esSeparado) return;   // Imprevistos y Utilidad van en el pie, igual que en pantalla
         if(sub.id==='s1_8'){ _s18 = sub; return; }   // Pólizas/Estampillas/Transacciones → bloque antes de la A
@@ -9255,7 +9278,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
             (lf.items||[]).forEach(function(it){ totG += valorItemAU(it, lf, cd, baseTot); });
           });
           [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',{fill:FG("E8E8E8"),border:brd}); });
-          sc(wsAU,r,0, sangria+safe(sub.numero||''), {font:FT("000000",true),fill:FG("E8E8E8"),border:brd});
+          sc(wsAU,r,0, sangria+safe(ent.num||''), {font:FT("000000",true),fill:FG("E8E8E8"),border:brd});
           sc(wsAU,r,1, safe(sub.titulo), {font:FT("000000",true),fill:FG("E8E8E8"),border:brd});
           nc(wsAU,r,7, totG, {font:FT("000000",true),fill:FG("E8E8E8"),border:brd,alignment:R_AL});
           if(depth===0){ refsAdmin.push(ref(r,7)); refsSec.push(ref(r,7)); totalSec += totG; }
@@ -9269,7 +9292,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         var svF = 0; itsAU.forEach(function(it){ svF += valorItemAU(it, sub, cd, baseTot); });
 
         [2,3,4,5,6].forEach(function(ci){ sc(wsAU,r,ci,'',ST.lbl()); });
-        sc(wsAU,r,0,sangria+safe(sub.numero),ST.lbl());
+        sc(wsAU,r,0,sangria+safe(ent.num||''),ST.lbl());
         sc(wsAU,r,1,safe(sub.titulo),ST.lbl());
         if(itsAU.length) fc(wsAU,filaSub,7,'SUM('+rng(filaSub+1,filaSub+itsAU.length,7)+')',svF,{font:FT("4D4D4D",true),fill:FG("F2F2F2"),border:brd,alignment:R_AL});
         else nc(wsAU,filaSub,7,0,{font:FT("4D4D4D",true),fill:FG("F2F2F2"),border:brd,alignment:R_AL});
@@ -9289,7 +9312,7 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
           var tieneMeses  = it.meses!=null;
           var facTxt = fac!==1 ? ('*'+fac) : '';
 
-          sc(wsAU,r,0,'',stR);
+          sc(wsAU,r,0, ent.num ? ent.num+'.'+(ii+1) : '', stR);
           sc(wsAU,r,1,'    '+safe(it.descripcion),stR);
           sc(wsAU,r,2,safe(it.unidad||''),{fill:stR.fill,border:brd,alignment:C_AL});
           if(esPersonal) ndc(wsAU,r,3,Number(it.dedicacion)||0,{fill:stR.fill,border:brd,alignment:R_AL});
