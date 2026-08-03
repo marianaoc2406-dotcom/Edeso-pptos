@@ -1345,6 +1345,15 @@ function usoDeApus(apuIds, proyectos) {
 }
 
 // APUs (y por arrastre, proyectos) afectados si se borran estos recursos
+// Genera un ID de recurso GARANTIZADO único: no colisiona con los existentes ni con
+// otros generados en el mismo lote (para importaciones). Así nunca más hay IDs duplicados.
+function idRecursoUnico(existentes, usados) {
+  var set = usados || new Set((existentes || []).map(function (r) { return String(r && r.id); }));
+  var nid;
+  do { nid = Date.now() + Math.random(); } while (set.has(String(nid)));
+  set.add(String(nid));
+  return nid;
+}
 function usoDeRecursos(recIds, apus, proyectos) {
   var ids = new Set(recIds);
   var apusAfectados = (apus || []).filter(function(a) {
@@ -1516,7 +1525,7 @@ function ModuloRecursos({
     } : r));else setRecursos(p => [...p, {
       ...form,
       precio: Number(form.precio),
-      id: Date.now()
+      id: idRecursoUnico(p)
     }]);
     setModal(false);
   };
@@ -1562,6 +1571,7 @@ function ModuloRecursos({
           setImportError("El archivo debe tener columnas: codigo, nombre, categoria, unidad, precio"); return;
         }
         const nuevos = []; const errores = [];
+        const _usadosImp = new Set((recursos || []).map(r => String(r && r.id)));
         filas.slice(1).forEach((fila, i) => {
           if (fila.every(c => c === "")) return;
           const cod = String(fila[idx.codigo]||"").trim();
@@ -1572,7 +1582,7 @@ function ModuloRecursos({
           if (!cod||!nom) { errores.push(`Fila ${i+2}: código y nombre requeridos`); return; }
           if (!CATS_VALIDAS.includes(cat)) { errores.push(`Fila ${i+2}: categoría "${cat}" inválida (usa: material, mano_obra, maquinaria, transporte)`); return; }
           if (isNaN(prec)) { errores.push(`Fila ${i+2}: precio inválido (debe ser número)`); return; }
-          nuevos.push({ id: Date.now()+i, codigo: cod, nombre: nom, categoria: cat, unidad: und, precio: prec });
+          nuevos.push({ id: idRecursoUnico(recursos, _usadosImp), codigo: cod, nombre: nom, categoria: cat, unidad: und, precio: prec });
         });
         if (errores.length) { setImportError(errores.slice(0,5).join(" | ") + (errores.length>5?` ... y ${errores.length-5} más`:"")); return; }
         if (!nuevos.length) { setImportError("No se encontraron filas válidas"); return; }
@@ -1605,9 +1615,19 @@ function ModuloRecursos({
     f,
     d: "asc"
   });
+  const _dupsRec = (function(){ var m={}; (recursos||[]).forEach(function(r){ var k=String(r&&r.id); (m[k]=m[k]||[]).push(r); }); return Object.keys(m).filter(function(k){return m[k].length>1;}); })();
+  const repararDuplicadosRec = function(){
+    if(!window.confirm("Se le dará un ID ÚNICO a cada recurso duplicado (se conserva el primero de cada grupo). Los APUs que usaban el ID compartido quedan apuntando al primero — revísalos después si hace falta. ¿Continuar?")) return;
+    setRecursos(function(prev){
+      var vistos=new Set(); var usados=new Set(prev.map(function(r){return String(r.id);}));
+      return prev.map(function(r){ var k=String(r.id); if(!vistos.has(k)){ vistos.add(k); return r; } return Object.assign({}, r, { id: idRecursoUnico(prev, usados) }); });
+    });
+  };
   return /*#__PURE__*/React.createElement("div", {
     className: "page"
-  }, /*#__PURE__*/React.createElement("div", {
+  }, _dupsRec.length ? /*#__PURE__*/React.createElement("div", {
+    style: { background: "#FEF3C7", border: "1px solid #F59E0B", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }
+  }, /*#__PURE__*/React.createElement("span", null, "\u26A0\uFE0F Hay ", /*#__PURE__*/React.createElement("b", null, _dupsRec.length), " ID(s) de recurso ", /*#__PURE__*/React.createElement("b", null, "duplicados"), " \u2014 dos recursos distintos comparten el mismo ID, lo que puede dar precios equivocados en los APUs."), /*#__PURE__*/React.createElement("button", { className: "btn-s", style: { background: "#B45309", color: "#fff" }, onClick: repararDuplicadosRec }, "Separar en IDs \u00FAnicos")) : null, /*#__PURE__*/React.createElement("div", {
     className: "page-hdr"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-title"
@@ -9095,16 +9115,15 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
         sc(ws,r,2,(apu?safe(apu.unidad):'')||safe(item.unidad),{fill:st2.fill,border:brd,alignment:C_AL});
         ndc(ws,r,3,item.cantidad||0,{fill:st2.fill,border:brd,alignment:R_AL});
         // V. Unitario → valor EXACTO del sistema (calcAPUTotal), escrito como número.
-        // El enlace a la hoja de APUs hacía que Excel recalculara un valor un poco distinto
-        // y descuadraba el Costo Directo. Con el valor exacto, cantidad × V.Unitario da
-        // idéntico a calcItem y el CD coincide AL PESO con el sistema. La trazabilidad
-        // (de qué APU sale) se ve en la hoja "APUs Proyectos" por la numeración (4.5, etc.).
-        nc(ws,r,4,vu,ST.mon(st2));
-        // Total → valor EXACTO del sistema (vt = calcItem), como número fijo (no fórmula).
-        // La fórmula =Cantidad×V.Unitario Excel la recalculaba y, con el V.Unitario mostrado
-        // redondeado, acumulaba un pico de miles en el Costo Directo. Como valor fijo, el CD
-        // del Excel = suma de vt = EXACTAMENTE el CD del sistema, al peso.
-        nc(ws,r,5,vt,{font:{bold:true},fill:st2.fill,border:brd,alignment:R_AL});
+        // V. Unitario → LIGADO a la celda del APU en la hoja "APUs Proyectos" (formulado y vivo).
+        // Ya se pueden ligar porque los IDs de recurso duplicados quedaron corregidos: el APU
+        // arma su V.Unitario de sus recursos y da el valor correcto, así que el enlace es exacto.
+        var lnkVU = apu && refVU[ps.id] && refVU[ps.id][apu.id];
+        if(lnkVU) fc(ws,r,4,lnkVU,vu,ST.mon(st2));
+        else nc(ws,r,4,vu,ST.mon(st2));
+        // Total → FÓRMULA viva: Cantidad × V.Unitario. Todo el Excel queda formulado y encadenado
+        // (obra → APU → recursos), y da el mismo valor que el sistema.
+        fc(ws,r,5,ref(r,3)+'*'+ref(r,4),vt,{font:{bold:true},fill:st2.fill,border:brd,alignment:R_AL});
         celdasPct.push({r:r, v:(cdPs>0?vt/cdPs:0), st:{fill:st2.fill,border:brd,alignment:C_AL}});
         r++;
       });
