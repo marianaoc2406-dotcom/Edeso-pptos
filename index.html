@@ -5203,7 +5203,15 @@ function TabAU({
     // Solo copiamos descripción y unidad de la plantilla \u2014 los números los ingresa el usuario
     const sub = findNodoAUsecs(au.secciones, subsecId);
     let base;
-    if (sub.tipo === "personal") base = {
+    if (sub && sub.cols) base = {
+      descripcion: plantilla.descripcion,
+      unidad: plantilla.unidad || "un",
+      valorBase: 0,
+      dedicacion: 1,
+      cantidad: 1,
+      factorP: 1,
+      meses: sub.cols.meses ? (au.plazo || 0) : null
+    };else if (sub.tipo === "personal") base = {
       descripcion: plantilla.descripcion,
       unidad: plantilla.unidad || "un",
       dedicacion: 0,
@@ -5235,7 +5243,15 @@ function TabAU({
   };
   const crearDesdeZero = subsecId => {
     const sub = findNodoAUsecs(au.secciones, subsecId);
-    const base = sub.tipo === "personal" ? {
+    const base = sub && sub.cols ? {
+      descripcion: "",
+      unidad: "un",
+      valorBase: 0,
+      dedicacion: 1,
+      cantidad: 1,
+      factorP: 1,
+      meses: sub.cols.meses ? (au.plazo || 1) : null
+    } : sub.tipo === "personal" ? {
       descripcion: "",
       unidad: "un",
       dedicacion: 1,
@@ -5276,7 +5292,7 @@ function TabAU({
   const _mkEdit = () => { if (window.__markEditing) window.__markEditing("au"); };
   const _nid = () => "sub_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
   const _nuevoGrupo = titulo => ({ id: _nid(), titulo: titulo || "Nuevo capítulo", hijos: [] });
-  const _nuevaHoja = () => ({ id: _nid(), titulo: "Nuevo subcapítulo", tipo: "personal", items: [] });
+  const _nuevaHoja = () => ({ id: _nid(), titulo: "Nuevo subcapítulo", tipo: "personal", items: [], cols: { und: true, ded: true, cant: true, factorP: true, meses: true } });
   // Actualiza / borra / agrega-hijo en el árbol, a cualquier profundidad.
   const _updTree = (nodes, id, fn) => (nodes || []).map(n => n.id === id ? fn(n) : (Array.isArray(n.hijos) ? { ...n, hijos: _updTree(n.hijos, id, fn) } : n));
   const _rmTree = (nodes, id) => (nodes || []).filter(n => n.id !== id).map(n => Array.isArray(n.hijos) ? { ...n, hijos: _rmTree(n.hijos, id) } : n);
@@ -5301,6 +5317,7 @@ function TabAU({
     setAu(prev => ({ ...prev, secciones: (prev.secciones || []).filter(s => s.id !== secId) }));
   };
   const setSubsecTipo = (id, tipo) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, tipo }))); };
+  const setSubsecCols = (id, col, val) => { _mkEdit(); _setSubs(subs => _updTree(subs, id, n => ({ ...n, cols: { ...(n.cols || {}), [col]: val } }))); };
   const delSubsec = id => { if (readOnly) return; if (!window.confirm("¿Eliminar esto y todo su contenido?")) return; _mkEdit(); _setSubs(subs => _rmTree(subs, id)); };
   const editItem = (subsecId, item) => {
     if (readOnly) return;
@@ -5439,18 +5456,23 @@ function TabAU({
               var v = parseFloat(e.target.value)||0;
               var oldPlazo = au.plazo || 0;
               setAu(function(prev) {
-                var secciones = (prev.secciones||[]).map(function(sec) {
-                  return Object.assign({}, sec, {
-                    subsecciones: (sec.subsecciones||[]).map(function(sub) {
-                      if (sub.tipo !== 'personal' && sub.tipo !== 'desplazamiento') return sub;
-                      return Object.assign({}, sub, {
-                        items: (sub.items||[]).map(function(item) {
-                          if (Number(item.meses) === oldPlazo) return Object.assign({}, item, { meses: v });
-                          return item;
-                        })
-                      });
-                    })
+                var _updMeses = function(nodes) {
+                  return (nodes||[]).map(function(n) {
+                    if (Array.isArray(n.hijos)) return Object.assign({}, n, { hijos: _updMeses(n.hijos) });
+                    // Sigue el plazo: hojas con columna Meses activa (nuevo sistema), o
+                    // las viejas de tipo personal/desplazamiento.
+                    var sigue = (n.cols && n.cols.meses) || (!n.cols && (n.tipo === 'personal' || n.tipo === 'desplazamiento'));
+                    if (!sigue) return n;
+                    return Object.assign({}, n, {
+                      items: (n.items||[]).map(function(item) {
+                        if (Number(item.meses) === oldPlazo) return Object.assign({}, item, { meses: v });
+                        return item;
+                      })
+                    });
                   });
+                };
+                var secciones = (prev.secciones||[]).map(function(sec) {
+                  return Object.assign({}, sec, { subsecciones: _updMeses(sec.subsecciones||[]) });
                 });
                 return Object.assign({}, prev, { plazo: v, secciones: secciones });
               });
@@ -5612,11 +5634,16 @@ function TabAU({
         style: { fontSize: 12, fontWeight: 600, padding: "2px 6px", minWidth: 240 },
         value: sub.titulo || "",
         onChange: e => renameSubsec(sub.id, e.target.value)
-      }), esSubsecCustom(sub) && /*#__PURE__*/React.createElement("select", {
+      }), sub.cols ? /*#__PURE__*/React.createElement("span", { style: { display: "inline-flex", gap: 4, flexWrap: "wrap", alignItems: "center" } },
+        /*#__PURE__*/React.createElement("span", { style: { fontSize: 10, color: "var(--ink4)", marginRight: 2 } }, "Columnas:"),
+        [["und", "Und"], ["ded", "Ded"], ["cant", "Cant"], ["factorP", "Factor P."], ["meses", "Meses"]].map(function (p) {
+          var k = p[0], lbl = p[1], on = !!sub.cols[k];
+          return /*#__PURE__*/React.createElement("button", { key: k, title: on ? "Quitar columna " + lbl : "Agregar columna " + lbl, onClick: () => setSubsecCols(sub.id, k, !on), style: { fontSize: 10, padding: "1px 7px", borderRadius: 4, cursor: "pointer", border: "1px solid " + (on ? "var(--red)" : "var(--line)"), background: on ? "var(--red)" : "transparent", color: on ? "#fff" : "var(--ink4)", fontWeight: 600 } }, lbl);
+        })) : (esSubsecCustom(sub) && /*#__PURE__*/React.createElement("select", {
         style: { fontSize: 11, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--line)" },
         value: sub.tipo || "personal",
         onChange: e => setSubsecTipo(sub.id, e.target.value)
-      }, /*#__PURE__*/React.createElement("option", { value: "personal" }, "Personal (con Factor P.)"), /*#__PURE__*/React.createElement("option", { value: "otros" }, "Otros (valor fijo / %)"))) : sub.titulo), /*#__PURE__*/React.createElement("td", {
+      }, /*#__PURE__*/React.createElement("option", { value: "personal" }, "Personal (con Factor P.)"), /*#__PURE__*/React.createElement("option", { value: "otros" }, "Otros (valor fijo / %)")))) : sub.titulo), /*#__PURE__*/React.createElement("td", {
         style: {
           padding: "7px 16px",
           textAlign: "right",
@@ -5647,23 +5674,23 @@ function TabAU({
             fontSize: 11,
             color: "var(--ink3)"
           }
-        }, item.unidad)), /*#__PURE__*/React.createElement("td", {
+        }, sub.cols ? (sub.cols.und ? item.unidad : "\u2014") : item.unidad)), /*#__PURE__*/React.createElement("td", {
           style: {
             textAlign: "right",
             fontFamily: "var(--mono)",
             fontSize: 12,
             color: "var(--ink3)"
           }
-        }, sub.tipo === "personal" ? fmtN(item.dedicacion, 2) : "\u2014"), /*#__PURE__*/React.createElement("td", {
+        }, sub.cols ? (sub.cols.ded ? fmtN(item.dedicacion, 2) : "\u2014") : (sub.tipo === "personal" ? fmtN(item.dedicacion, 2) : "\u2014")), /*#__PURE__*/React.createElement("td", {
           style: {
             textAlign: "right",
             fontFamily: "var(--mono)",
             fontSize: 12
           }
-        }, item.cantidad != null ? fmtN(item.cantidad, 2) : item.porcentaje != null ? fmtN(item.porcentaje, 2) + "%" : "\u2014"),
+        }, sub.cols ? (sub.cols.cant ? fmtN(item.cantidad, 2) : "\u2014") : (item.cantidad != null ? fmtN(item.cantidad, 2) : item.porcentaje != null ? fmtN(item.porcentaje, 2) + "%" : "\u2014")),
         /*#__PURE__*/React.createElement("td", {
           style: { textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink4)" }
-        }, sub.tipo === "personal" ? ("\u00D7" + fmtN(factorPItem(item, sub.id), 2)) : "\u2014"),
+        }, sub.cols ? (sub.cols.factorP ? ("\u00D7" + fmtN(item.factorP || 1, 2)) : "\u2014") : (sub.tipo === "personal" ? ("\u00D7" + fmtN(factorPItem(item, sub.id), 2)) : "\u2014")),
         /*#__PURE__*/React.createElement("td", {
           style: {
             textAlign: "right",
@@ -5671,13 +5698,13 @@ function TabAU({
             fontSize: 12,
             color: "var(--ink3)"
           }
-        }, sub.tipo === "personal" ? fmt(item.valorMesBase) : sub.tipo === "otros" && item.valorFijo ? fmt(item.valorFijo) : sub.tipo === "otros" && item.porcentaje != null ? `${fmtN(item.porcentaje, 2)}% s/${item.baseCalculo === "total" ? "Total" : "C.D."}` : fmt(item.valorUnitario)), /*#__PURE__*/React.createElement("td", {
+        }, sub.cols ? fmt(item.valorBase || 0) : (sub.tipo === "personal" ? fmt(item.valorMesBase) : sub.tipo === "otros" && item.valorFijo ? fmt(item.valorFijo) : sub.tipo === "otros" && item.porcentaje != null ? `${fmtN(item.porcentaje, 2)}% s/${item.baseCalculo === "total" ? "Total" : "C.D."}` : fmt(item.valorUnitario))), /*#__PURE__*/React.createElement("td", {
           style: {
             textAlign: "right",
             fontFamily: "var(--mono)",
             fontSize: 12
           }
-        }, item.meses != null ? item.meses : "\u2014"), /*#__PURE__*/React.createElement("td", {
+        }, sub.cols ? (sub.cols.meses ? (item.meses != null ? item.meses : "\u2014") : "\u2014") : (item.meses != null ? item.meses : "\u2014")), /*#__PURE__*/React.createElement("td", {
           style: {
             textAlign: "right",
             fontFamily: "var(--mono)",
@@ -5911,10 +5938,11 @@ function TabAU({
     onCancel: () => setModalSelector(null)
   }), modalItem && (() => {
     const subEdit = findNodoAUsecs(au.secciones, modalItem.subsecId);
-    const esPersonal = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "personal",
-      esOtros = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "otros",
-      esDesp = (subEdit === null || subEdit === void 0 ? void 0 : subEdit.tipo) === "desplazamiento";
-    const valPreview = subEdit ? calcAUItem(formItem, subEdit.tipo, cd, cd + totalAU) : 0;
+    const esCols = !!(subEdit && subEdit.cols);
+    const esPersonal = !esCols && (subEdit && subEdit.tipo) === "personal",
+      esOtros = !esCols && (subEdit && subEdit.tipo) === "otros",
+      esDesp = !esCols && (subEdit && subEdit.tipo) === "desplazamiento";
+    const valPreview = esCols ? valorItemAU(formItem, subEdit, cd, cd + totalAU) : (subEdit ? calcAUItem(formItem, subEdit.tipo, cd, cd + totalAU) : 0);
     return /*#__PURE__*/React.createElement("div", {
       className: "modal-bg",
       onClick: e => e.target === e.currentTarget && setModalItem(null)
@@ -5959,7 +5987,13 @@ function TabAU({
         ...f,
         unidad: e.target.value
       }))
-    })), esPersonal && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    })), esCols && /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "lbl" }, "Valor Base (COP)"), /*#__PURE__*/React.createElement("input", { className: "ifield", type: "number", min: "0", value: formItem.valorBase != null ? formItem.valorBase : "", onChange: e => setFormItem(f => ({ ...f, valorBase: parseFloat(e.target.value) || 0 })) })),
+      subEdit.cols.ded && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "lbl" }, "Dedicaci\xF3n"), /*#__PURE__*/React.createElement("input", { className: "ifield", type: "number", step: "0.1", value: formItem.dedicacion != null ? formItem.dedicacion : "", onChange: e => setFormItem(f => ({ ...f, dedicacion: parseFloat(e.target.value) || 0 })) })),
+      subEdit.cols.cant && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "lbl" }, "Cantidad"), /*#__PURE__*/React.createElement("input", { className: "ifield", type: "number", value: formItem.cantidad != null ? formItem.cantidad : "", onChange: e => setFormItem(f => ({ ...f, cantidad: parseFloat(e.target.value) || 0 })) })),
+      subEdit.cols.factorP && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "lbl" }, "Factor P."), /*#__PURE__*/React.createElement("input", { className: "ifield", type: "number", step: "0.01", value: formItem.factorP != null ? formItem.factorP : "", onChange: e => setFormItem(f => ({ ...f, factorP: parseFloat(e.target.value) || 0 })) })),
+      subEdit.cols.meses && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", { className: "lbl" }, "Meses"), /*#__PURE__*/React.createElement("input", { className: "ifield", type: "number", value: formItem.meses != null ? formItem.meses : "", onChange: e => setFormItem(f => ({ ...f, meses: parseFloat(e.target.value) || 0 })) }))
+    ), esPersonal && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
       className: "lbl"
     }, "Dedicaci\xF3n"), /*#__PURE__*/React.createElement("input", {
       className: "ifield",
@@ -9333,6 +9367,23 @@ function exportarProyectoExcel(proyecto, apus, recursos, opcion, catEst) {
 
           sc(wsAU,r,0, ent.num ? ent.num+'.'+(ii+1) : '', stR);
           sc(wsAU,r,1,'    '+safe(it.descripcion),stR);
+          if(sub.cols){
+            var _c = sub.cols;
+            sc(wsAU,r,2, _c.und ? safe(it.unidad||'') : '\u2014', {fill:stR.fill,border:brd,alignment:C_AL});
+            if(_c.ded) ndc(wsAU,r,3,Number(it.dedicacion)||0,{fill:stR.fill,border:brd,alignment:R_AL}); else sc(wsAU,r,3,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
+            if(_c.cant) ndc(wsAU,r,4,Number(it.cantidad)||0,{fill:stR.fill,border:brd,alignment:R_AL}); else sc(wsAU,r,4,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
+            nc(wsAU,r,5,Number(it.valorBase)||0,ST.mon(stR));
+            if(_c.meses) n(wsAU,r,6,Number(it.meses)||0,'General',{fill:stR.fill,border:brd,alignment:C_AL}); else sc(wsAU,r,6,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
+            var _parts = [ref(r,5)];
+            if(_c.ded) _parts.push(ref(r,3));
+            if(_c.cant) _parts.push(ref(r,4));
+            if(_c.meses) _parts.push(ref(r,6));
+            var _fp = _c.factorP ? (Number(it.factorP)||1) : 1;
+            var _fpTxt = (_c.factorP && _fp!==1) ? ('*'+_fp) : '';
+            fc(wsAU,r,7, _parts.join('*')+_fpTxt, valorItemAU(it, sub, cd, baseTot), {font:{bold:true},fill:stR.fill,border:brd,alignment:R_AL});
+            r++;
+            return;
+          }
           sc(wsAU,r,2,safe(it.unidad||''),{fill:stR.fill,border:brd,alignment:C_AL});
           if(esPersonal) ndc(wsAU,r,3,Number(it.dedicacion)||0,{fill:stR.fill,border:brd,alignment:R_AL});
           else sc(wsAU,r,3,'\u2014',{fill:stR.fill,border:brd,alignment:C_AL});
@@ -13063,7 +13114,7 @@ const mergeItemExterno = React.useCallback((event, row) => {
       caps:"capitulos", au:"au", pol:"polizasPorComp",
       est:"estampillas", interv:"presupInterv", consult:"presupConsult"
     };
-    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
+    const metaFields=["codigo","nombre","contratante","descripcion","componentes","aiu","apuOverrides","apuNombreOverrides","apusLocales","recursosLocales","porcentajeHerramienta","finalizado","fichaFinanciera","snapshot","extras_sgSst","activo_sgSst","extras_pma","activo_pma","extras_pmt","activo_pmt","extras_gestionSocial","activo_gestionSocial"];
 
     // BLINDAJE MULTIUSUARIO: solo se persiste la sección que corresponde a la pestaña
     // abierta. Si un handler ensucia OTRA sección de rebote (p.ej. cambiar el plazo
@@ -13656,136 +13707,61 @@ const sincronizarPolizasAU = (proyecto) => {
   const itemNum = (cap, idx) => `${cap.numero}.${idx + 1}`;
 
   // ── LISTA ──
-  if (vista === "lista") return /*#__PURE__*/React.createElement("div", {
-    className: "page"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "page-hdr"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    className: "page-title"
-  }, "Proyectos"), /*#__PURE__*/React.createElement("div", {
-    className: "page-sub"
-  }, "Presupuestos con componentes por tipo \xB7 Obra, Interventor\xEDa, Consultor\xEDa")), /*#__PURE__*/React.createElement("button", {
-    className: "btn-p",
-    onClick: () => setShowNuevo(true)
-  }, "+ Nuevo Proyecto"), !esLectura&&null), /*#__PURE__*/React.createElement("div", {
-    className: "metric-grid"
-  }, /*#__PURE__*/React.createElement(MetricCard, {
-    label: "Total Proyectos",
-    value: proyectos.length,
-    sub: "Activos",
-    accent: "#6B7280"
-  }), TIPOS_COMPONENTE.map(t => /*#__PURE__*/React.createElement(MetricCard, {
-    key: t.id,
-    label: t.label,
-    value: proyectos.filter(p => p.componentes.includes(t.id)).length,
-    sub: "proyectos",
-    accent: t.color
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "card"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "card-header"
-  }, /*#__PURE__*/React.createElement("input", {
-    className: "ifield",
-    style: {
-      maxWidth: 320
-    },
-    placeholder: "\uD83D\uDD0D  Buscar proyecto...",
-    value: busq,
-    onChange: e => setBusq(e.target.value)
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: "var(--ink4)"
-    }
-  }, filtered.length, " proyectos")), /*#__PURE__*/React.createElement("table", {
-    className: "tbl"
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "C\xF3digo"), /*#__PURE__*/React.createElement("th", null, "Proyecto"), /*#__PURE__*/React.createElement("th", null, "Componentes"), /*#__PURE__*/React.createElement("th", {
-    style: {
-      width: 150
-    }
-  }))), /*#__PURE__*/React.createElement("tbody", null, filtered.length === 0 ? /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: 6
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "empty"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "empty-icon"
-  }, "\uD83C\uDFE2"), /*#__PURE__*/React.createElement("div", {
-    className: "empty-title"
-  }, "Sin proyectos"), /*#__PURE__*/React.createElement("div", {
-    className: "empty-desc"
-  }, "Crea el primer proyecto con el bot\xF3n de arriba")))) : filtered.map(p => {
-    return /*#__PURE__*/React.createElement("tr", {
-      key: p.id
-    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("code", {
-      style: {
-        fontFamily: "var(--mono)",
-        fontSize: 11,
-        color: "var(--red)",
-        fontWeight: 500
-      }
-    }, p.codigo || "\u2014")), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div",{style:{fontWeight:500,display:"flex",alignItems:"center",gap:6}},
-      p.nombre,
-      p.finalizado&&React.createElement("span",{style:{fontSize:10,background:"#FEF2F2",color:"#B91C1C",border:"1px solid #FECACA",borderRadius:4,padding:"1px 5px",fontWeight:600}},"🔒")
-    ), p.contratante && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: "var(--ink4)",
-        marginTop: 1
-      }
-    }, p.contratante)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 4,
-        flexWrap: "wrap"
-      }
-    }, (p.componentes || []).map(c => {
-      const t = TIPOS_COMPONENTE.find(x => x.id === c);
-      return /*#__PURE__*/React.createElement("span", {
-        key: c,
-        className: `tag tag-${c}`
-      }, t === null || t === void 0 ? void 0 : t.icon, " ", t === null || t === void 0 ? void 0 : t.label);
-    }))),  /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 4,
-        justifyContent: "flex-end"
-      }
-    }, /*#__PURE__*/React.createElement("button", {
-      className: "btn-o",
-      onClick: () => abrirDetalle(p)
-    }, "Ver"), !esLectura&&/*#__PURE__*/React.createElement("button", {
-      className: "btn-o",
-      onClick: () => abrirEditor(p)
-    }, "Editar"), !esLectura&&React.createElement("button", {
-      className: "btn-o",
-      title: "Duplicar proyecto",
-      onClick: () => {
-        const copia = JSON.parse(JSON.stringify(p));
-        copia.id = Date.now();
-        copia.codigo = (p.codigo||"") + "-COPIA";
-        copia.nombre = (p.nombre||"") + " (Copia)";
-        copia.finalizado = false;
-        copia.snapshot = null;
-        setProyectos(prev => [...prev, copia]);
-      }
-    }, "⧉"),
-    !esLectura&&/*#__PURE__*/React.createElement("button", {
-      className: "btn-o",
-      onClick: () => setDelItem(p)
-    }, "\u2715"))));
-  })))), !esLectura && showNuevo && /*#__PURE__*/React.createElement(ModalNuevoProyecto, {
-    onGuardar: crearProyecto,
-    onCancel: () => setShowNuevo(false),
-    catalogoEstampillas: catalogoEstampillas || []
-  }), delItem && /*#__PURE__*/React.createElement(ConfirmModal, {
-    item: delItem.nombre,
-    msg: "Se eliminar\xE1n todos los cap\xEDtulos e \xEDtems.",
-    onConfirm: () => {
-      setProyectos(p => p.filter(x => x.id !== delItem.id));
-      setDelItem(null);
-    },
-    onCancel: () => setDelItem(null)
-  }));
+  const _iconoTipo = (nombre) => {
+    const n = (nombre || "").toLowerCase();
+    if (/r[ií]o|quebrada|limpieza/.test(n)) return { e: "\uD83C\uDF0A", bg: "#E6F1FB", fg: "#185FA5" };
+    if (/intercambio|glorieta|puente/.test(n)) return { e: "\uD83D\uDD00", bg: "#EEEDFE", fg: "#534AB7" };
+    if (/estadio|coliseo|escenario/.test(n)) return { e: "\uD83C\uDFDF\uFE0F", bg: "#FAEEDA", fg: "#854F0B" };
+    if (/v[ií]a|pavimenta|tramo|calzada|and[eé]n/.test(n)) return { e: "\uD83D\uDEE3\uFE0F", bg: "#E1F5EE", fg: "#0F6E56" };
+    return { e: "\uD83C\uDFD7\uFE0F", bg: "#F1EFE8", fg: "#5F5E5A" };
+  };
+  const _statsProy = (p) => {
+    let items = (p.capitulos || []).reduce((s, c) => s + (c.items || []).length, 0);
+    let caps = (p.capitulos || []).length;
+    (p.presupuestosObra || []).forEach(h => { caps += (h.capitulos || []).length; items += (h.capitulos || []).reduce((s, c) => s + (c.items || []).length, 0); });
+    return { items, caps };
+  };
+  const _lblComp = { obra: "Obra", interventoria: "Interv.", consultoria: "Consult." };
+  const _conInterv = proyectos.filter(p => (p.componentes || []).includes("interventoria")).length;
+  const _conPresup = proyectos.filter(p => _statsProy(p).items > 0).length;
+  if (vista === "lista") return /*#__PURE__*/React.createElement("div", { className: "page" },
+    /*#__PURE__*/React.createElement("div", { className: "page-hdr" },
+      /*#__PURE__*/React.createElement("div", null,
+        /*#__PURE__*/React.createElement("div", { className: "page-title" }, "Proyectos"),
+        /*#__PURE__*/React.createElement("div", { className: "page-sub" }, "Gestiona y construye tus presupuestos de obra")),
+      !esLectura && /*#__PURE__*/React.createElement("button", { className: "btn-p", onClick: () => setShowNuevo(true) }, "+ Nuevo proyecto")),
+    /*#__PURE__*/React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16 } },
+      [["Proyectos", proyectos.length], ["Con presupuesto", _conPresup], ["Con interventor\u00EDa", _conInterv]].map(function (m) {
+        return /*#__PURE__*/React.createElement("div", { key: m[0], style: { background: "var(--line2)", borderRadius: 10, padding: "12px 14px" } },
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--ink4)" } }, m[0]),
+          /*#__PURE__*/React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "var(--ink)", marginTop: 3 } }, m[1]));
+      })),
+    /*#__PURE__*/React.createElement("div", { className: "card", style: { padding: 0, overflow: "hidden" } },
+      /*#__PURE__*/React.createElement("div", { style: { padding: "10px 12px", borderBottom: "1px solid var(--line)" } },
+        /*#__PURE__*/React.createElement("input", { className: "ifield", style: { maxWidth: 340 }, placeholder: "\uD83D\uDD0D  Buscar por nombre, contratante o c\u00F3digo...", value: busq, onChange: e => setBusq(e.target.value) })),
+      filtered.length === 0
+        ? /*#__PURE__*/React.createElement("div", { className: "empty", style: { padding: 40 } }, /*#__PURE__*/React.createElement("div", { className: "empty-icon" }, "\uD83C\uDFD7\uFE0F"), /*#__PURE__*/React.createElement("div", { className: "empty-title" }, "Sin proyectos"), /*#__PURE__*/React.createElement("div", { className: "empty-desc" }, "Crea el primer proyecto con el bot\u00F3n de arriba"))
+        : /*#__PURE__*/React.createElement("div", null, filtered.map(function (p, idx) {
+          const ico = _iconoTipo(p.nombre);
+          const st = _statsProy(p);
+          const vac = st.items === 0;
+          const estado = vac ? { t: "Sin presupuesto", bg: "#F1EFE8", fg: "#5F5E5A" } : p.finalizado ? { t: "Finalizado", bg: "#EAF3DE", fg: "#3B6D11" } : { t: "En elaboraci\u00F3n", bg: "#FAEEDA", fg: "#854F0B" };
+          const comps = (p.componentes || []).map(c => _lblComp[c] || c).join(" \u00B7 ") || "\u2014";
+          return /*#__PURE__*/React.createElement("div", { key: p.id, style: { display: "flex", alignItems: "center", gap: 13, padding: "12px 14px", borderTop: idx === 0 ? "none" : "1px solid var(--line)", cursor: "pointer" }, onClick: () => abrirDetalle(p) },
+            /*#__PURE__*/React.createElement("div", { style: { width: 40, height: 40, borderRadius: 10, background: ico.bg, color: ico.fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 20 } }, ico.e),
+            /*#__PURE__*/React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 6 } }, p.nombre, p.finalizado && /*#__PURE__*/React.createElement("span", { style: { fontSize: 10 } }, "\uD83D\uDD12")),
+              /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: "var(--ink4)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 } }, (p.contratante || "Sin contratante"), /*#__PURE__*/React.createElement("span", { style: { margin: "0 6px", color: "var(--line)" } }, "|"), /*#__PURE__*/React.createElement("code", { style: { fontFamily: "var(--mono)", fontSize: 10 } }, p.codigo || "\u2014"))),
+            /*#__PURE__*/React.createElement("div", { style: { flexShrink: 0, fontSize: 10, color: "var(--ink4)", width: 92 } }, comps),
+            /*#__PURE__*/React.createElement("div", { style: { flexShrink: 0, width: 120 } }, /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, padding: "3px 10px", borderRadius: 20, background: estado.bg, color: estado.fg, whiteSpace: "nowrap" } }, estado.t)),
+            /*#__PURE__*/React.createElement("div", { style: { width: 92, textAlign: "right", flexShrink: 0 } }, vac ? /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: "var(--ink4)" } }, "vac\u00EDo") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--ink)" } }, st.items + " \u00EDtems"), /*#__PURE__*/React.createElement("div", { style: { fontSize: 9, color: "var(--ink4)" } }, st.caps + " cap\u00EDtulos"))),
+            /*#__PURE__*/React.createElement("div", { style: { flexShrink: 0, display: "flex", gap: 4 }, onClick: e => e.stopPropagation() },
+              !esLectura && /*#__PURE__*/React.createElement("button", { className: "btn-o", title: "Editar", onClick: () => abrirEditor(p) }, "\u270F\uFE0F"),
+              !esLectura && /*#__PURE__*/React.createElement("button", { className: "btn-o", title: "Duplicar", onClick: () => { const copia = JSON.parse(JSON.stringify(p)); copia.id = Date.now(); copia.codigo = (p.codigo || "") + "-COPIA"; copia.nombre = (p.nombre || "") + " (Copia)"; copia.finalizado = false; copia.snapshot = null; setProyectos(prev => [...prev, copia]); } }, "\u29C9"),
+              !esLectura && /*#__PURE__*/React.createElement("button", { className: "btn-o", title: "Eliminar", onClick: () => setDelItem(p) }, "\u2715")));
+        }))),
+    !esLectura && showNuevo && /*#__PURE__*/React.createElement(ModalNuevoProyecto, { onGuardar: crearProyecto, onCancel: () => setShowNuevo(false), catalogoEstampillas: catalogoEstampillas || [] }),
+    delItem && /*#__PURE__*/React.createElement(ConfirmModal, { item: delItem.nombre, msg: "Se eliminar\u00E1n todos los cap\u00EDtulos e \u00EDtems.", onConfirm: () => { setProyectos(p => p.filter(x => x.id !== delItem.id)); setDelItem(null); }, onCancel: () => setDelItem(null) }))
 
   // ── EDITOR ──
   if (vista === "editor" && pActivo) return /*#__PURE__*/React.createElement("div", {
