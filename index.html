@@ -12093,6 +12093,7 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
   // ── Auto-sync duracion when presupInterv.plazo changes ─────────────────────
   React.useEffect(function() {
     if (readOnly || !autoD) return;
+    if (ff.duracionManual) return;   // respeta la duración puesta a mano; no la pisa con interv+1
     var oldD = Number(ff.duracion) || 0;
     if (oldD === autoD) return;
     var updItems = function(lista) {
@@ -12254,17 +12255,22 @@ function TabFichaFinanciera({ proyecto, setPActivo, readOnly, obraTotal, intervT
                     disabled:readOnly,
                     onChange:function(e){
                       var v = parseFloat(e.target.value)||0;
-                      var oldD = duracion;
-                      var updItems = function(lista) {
-                        return (lista||[]).map(function(item) {
-                          return (Number(item.meses)===oldD||oldD===0) ? Object.assign({},item,{meses:v}) : item;
-                        });
+                      var setAll = function(lista) {
+                        return (lista||[]).map(function(item) { return Object.assign({},item,{meses:v}); });
                       };
-                      setFF({ duracion:v, componentesSocial:updItems(ff.componentesSocial), componentesLogistico:updItems(ff.componentesLogistico), componentesDiseno:updItems(ff.componentesDiseno) });
+                      // Cambio MANUAL: se propaga a TODOS los componentes (incluido Personal, que antes
+                      // se omitía) y marca duracionManual para que el automático (interv+1) no lo pise.
+                      setFF({ duracion:v, duracionManual:true,
+                        componentesPersonal:setAll(ff.componentesPersonal),
+                        componentesSocial:setAll(ff.componentesSocial),
+                        componentesLogistico:setAll(ff.componentesLogistico),
+                        componentesDiseno:setAll(ff.componentesDiseno) });
                     }
                   }),
-                  !ff.duracion && autoD > 0 && React.createElement('span', { style:{fontSize:10,color:'#15803D',background:'#DCFCE7',padding:'2px 8px',borderRadius:20,fontWeight:600} },
+                  !ff.duracionManual && !ff.duracion && autoD > 0 && React.createElement('span', { style:{fontSize:10,color:'#15803D',background:'#DCFCE7',padding:'2px 8px',borderRadius:20,fontWeight:600} },
                     'auto: interv. '+intervPlazo+'+1'),
+                  ff.duracionManual && autoD > 0 && React.createElement('span', { style:{fontSize:10,color:'#92400E',background:'#FEF3C7',padding:'2px 8px',borderRadius:20,fontWeight:600,cursor:'pointer'}, title:'Volver al automático (interventoría + 1 mes)', onClick:function(){ var setAll=function(l){return (l||[]).map(function(it){return Object.assign({},it,{meses:autoD});});}; setFF({duracion:autoD, duracionManual:false, componentesPersonal:setAll(ff.componentesPersonal), componentesSocial:setAll(ff.componentesSocial), componentesLogistico:setAll(ff.componentesLogistico), componentesDiseno:setAll(ff.componentesDiseno)}); } },
+                    'manual \u00B7 volver a auto'),
                   React.createElement('span', { style:{fontSize:11,color:'var(--ink4)'} }, 'meses')
                 )
               ),
